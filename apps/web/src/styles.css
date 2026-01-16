@@ -29,15 +29,10 @@ body {
 .app {
   display: grid;
   grid-template-columns: 96px minmax(0, 1fr);
-  grid-template-rows: auto minmax(0, 1fr);
-  grid-template-areas:
-    'nav topbar'
-    'nav main';
   min-height: 100vh;
 }
 
 .side-nav {
-  grid-area: nav;
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
@@ -49,11 +44,14 @@ body {
   border: 1px solid var(--border);
   background: var(--panel);
   color: var(--ink);
-  padding: 10px 8px;
-  border-radius: 10px;
-  font-size: 12px;
+  padding: 12px;
+  border-radius: 24px;
+  height: 52px;
+  width: 52px;
   cursor: pointer;
   text-align: center;
+  display: grid;
+  place-items: center;
 }
 
 .side-nav button.is-active {
@@ -61,49 +59,17 @@ body {
   color: var(--bg);
 }
 
-.topbar {
-  grid-area: topbar;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 12px 20px;
-  border-bottom: 1px solid var(--border);
-  background: var(--panel);
-}
-
-.brand {
-  font-size: 18px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-}
-
-.deck-meta {
-  display: flex;
-  gap: 12px;
-  font-size: 13px;
-  color: var(--muted);
-  flex-wrap: wrap;
+.side-nav svg {
+  width: 22px;
+  height: 22px;
+  fill: currentColor;
 }
 
 .deck-root {
   font-family: 'JetBrains Mono', monospace;
 }
 
-.api-base {
-  font-family: 'JetBrains Mono', monospace;
-  opacity: 0.7;
-}
-
-.topbar-actions {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-  align-items: center;
-}
-
 .main {
-  grid-area: main;
   padding: 16px 20px 20px;
   min-height: 0;
 }
@@ -111,7 +77,7 @@ body {
 .panel {
   background: var(--panel);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 24px;
   padding: 12px;
   display: flex;
   flex-direction: column;
@@ -177,8 +143,9 @@ body {
 }
 
 .workspace-form {
-  display: grid;
+  display: flex;
   gap: 10px;
+  align-items: flex-end;
   margin-bottom: 12px;
 }
 
@@ -188,9 +155,13 @@ body {
   font-size: 12px;
 }
 
+.workspace-form .field {
+  flex: 1;
+}
+
 .field input {
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 16px;
   padding: 6px 8px;
   font-size: 13px;
   font-family: 'JetBrains Mono', monospace;
@@ -200,7 +171,7 @@ body {
   display: grid;
   gap: 8px;
   padding: 10px;
-  border-radius: 8px;
+  border-radius: 20px;
   border: 1px solid var(--border);
   margin-bottom: 10px;
   background: var(--panel);
@@ -232,12 +203,14 @@ body {
   width: 100%;
   text-align: left;
   padding: 10px 12px;
-  border-radius: 8px;
+  border-radius: 20px;
   border: 1px solid var(--border);
   background: var(--panel);
   color: var(--ink);
   cursor: pointer;
   margin-bottom: 8px;
+  display: grid;
+  gap: 4px;
 }
 
 .deck-item.is-active {
@@ -302,7 +275,7 @@ body {
 }
 
 .editor-pane .panel-body {
-  border-radius: 6px;
+  border-radius: 18px;
   overflow: hidden;
 }
 
@@ -348,7 +321,7 @@ body {
 
 .terminal-view {
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 24px;
   padding: 12px;
   display: flex;
   flex-direction: column;
@@ -380,7 +353,7 @@ body {
 
 .terminal-tile {
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 24px;
   background: #000000;
   color: #ffffff;
   min-width: 320px;
@@ -400,6 +373,7 @@ body {
   font-size: 12px;
   background: #111111;
   border-bottom: 1px solid #222222;
+  border-radius: 24px 24px 0 0;
 }
 
 .terminal-tile-body {
@@ -415,13 +389,20 @@ body {
   font-size: 14px;
 }
 
-.status-pill {
-  padding: 4px 10px;
+.status-float {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  padding: 6px 12px;
   border-radius: 999px;
-  font-size: 11px;
+  font-size: 12px;
   background: var(--bg-soft);
   border: 1px solid var(--border);
   color: var(--ink);
+  max-width: min(480px, calc(100vw - 40px));
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
 }
 
 @media (max-width: 1024px) {
@@ -438,10 +419,7 @@ body {
 @media (max-width: 720px) {
   .app {
     grid-template-columns: 1fr;
-    grid-template-areas:
-      'topbar'
-      'main'
-      'nav';
+    grid-template-rows: minmax(0, 1fr) auto;
   }
 
   .side-nav {
@@ -449,9 +427,13 @@ body {
     border-right: none;
     border-top: 1px solid var(--border);
     justify-content: center;
+    grid-column: 1;
+    grid-row: 2;
   }
 
   .main {
+    grid-column: 1;
+    grid-row: 1;
     padding: 12px;
   }
 }

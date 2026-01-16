@@ -3,53 +3,43 @@ import type { Workspace } from '../types';
 
 interface WorkspaceListProps {
   workspaces: Workspace[];
-  activeWorkspaceId: string;
+  activeWorkspaceId: string | null;
   defaultPath: string;
   onSelect: (workspaceId: string) => void;
-  onCreate: (name: string, path: string) => void;
-  onOpenEditor: (workspaceId: string) => void;
+  onCreate: (path: string) => void;
 }
+
+const LABEL_PROJECT = '\u30d7\u30ed\u30b8\u30a7\u30af\u30c8';
+const LABEL_PATH = '\u30d1\u30b9';
+const LABEL_ADD = '\u8ffd\u52a0';
+const LABEL_EMPTY = '\u30d7\u30ed\u30b8\u30a7\u30af\u30c8\u304c\u3042\u308a\u307e\u305b\u3093\u3002';
 
 export function WorkspaceList({
   workspaces,
   activeWorkspaceId,
   defaultPath,
   onSelect,
-  onCreate,
-  onOpenEditor
+  onCreate
 }: WorkspaceListProps) {
-  const [name, setName] = useState('');
-  const [path, setPath] = useState(defaultPath);
+  const [path, setPath] = useState('');
 
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
-    const trimmedName = name.trim();
     const trimmedPath = path.trim() || defaultPath;
-    onCreate(trimmedName, trimmedPath);
-    setName('');
-    setPath(trimmedPath);
+    onCreate(trimmedPath);
+    setPath('');
   };
 
   return (
     <section className="panel workspace-panel">
       <div className="panel-header">
         <div>
-          <div className="panel-title">ワークスペース</div>
-          <div className="panel-subtitle">作業フォルダを定義</div>
+          <div className="panel-title">{LABEL_PROJECT}</div>
         </div>
       </div>
       <form className="workspace-form" onSubmit={handleSubmit}>
         <label className="field">
-          <span>名前</span>
-          <input
-            type="text"
-            value={name}
-            placeholder="ワークスペース名"
-            onChange={(event) => setName(event.target.value)}
-          />
-        </label>
-        <label className="field">
-          <span>パス</span>
+          <span>{LABEL_PATH}</span>
           <input
             type="text"
             value={path}
@@ -58,34 +48,30 @@ export function WorkspaceList({
           />
         </label>
         <button type="submit" className="chip">
-          追加
+          {LABEL_ADD}
         </button>
       </form>
       <div className="panel-body">
-        {workspaces.map((workspace) => (
-          <div
-            key={workspace.id}
-            className={`workspace-item ${
-              workspace.id === activeWorkspaceId ? 'is-active' : ''
-            }`}
-          >
-            <button
-              type="button"
-              className="workspace-main"
-              onClick={() => onSelect(workspace.id)}
+        {workspaces.length === 0 ? (
+          <div className="empty-state">{LABEL_EMPTY}</div>
+        ) : (
+          workspaces.map((workspace) => (
+            <div
+              key={workspace.id}
+              className={`workspace-item ${
+                workspace.id === activeWorkspaceId ? 'is-active' : ''
+              }`}
             >
-              <div className="workspace-name">{workspace.name}</div>
-              <div className="workspace-path">{workspace.path}</div>
-            </button>
-            <button
-              type="button"
-              className="chip"
-              onClick={() => onOpenEditor(workspace.id)}
-            >
-              エディタを開く
-            </button>
-          </div>
-        ))}
+              <button
+                type="button"
+                className="workspace-main"
+                onClick={() => onSelect(workspace.id)}
+              >
+                <div className="workspace-path">{workspace.path}</div>
+              </button>
+            </div>
+          ))
+        )}
       </div>
     </section>
   );

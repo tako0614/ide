@@ -9,6 +9,11 @@ interface TerminalPaneProps {
   onNewTerminal: () => void;
 }
 
+const LABEL_TERMINAL = '\u30bf\u30fc\u30df\u30ca\u30eb';
+const LABEL_MULTI = '\u30c7\u30c3\u30ad\u3054\u3068\u306b\u8907\u6570\u8d77\u52d5';
+const LABEL_ADD = '\u30bf\u30fc\u30df\u30ca\u30eb\u8ffd\u52a0';
+const LABEL_EMPTY = '\u30bf\u30fc\u30df\u30ca\u30eb\u3092\u8ffd\u52a0\u3057\u3066\u304f\u3060\u3055\u3044\u3002';
+
 export function TerminalPane({
   terminals,
   activeTerminalId,
@@ -20,17 +25,17 @@ export function TerminalPane({
     <section className="terminal-view">
       <div className="terminal-header">
         <div>
-          <div className="panel-title">ターミナル</div>
-          <div className="panel-subtitle">複数表示・リサイズ対応</div>
+          <div className="panel-title">{LABEL_TERMINAL}</div>
+          <div className="panel-subtitle">{LABEL_MULTI}</div>
         </div>
         <div className="terminal-actions">
           <button type="button" className="chip" onClick={onNewTerminal}>
-            新規ターミナル
+            {LABEL_ADD}
           </button>
         </div>
       </div>
       {terminals.length === 0 ? (
-        <div className="empty-state">ターミナルを作成してください。</div>
+        <div className="empty-state">{LABEL_EMPTY}</div>
       ) : (
         <div className="terminal-grid">
           {terminals.map((terminal) => (

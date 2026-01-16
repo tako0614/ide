@@ -4,15 +4,15 @@ import { EditorPane } from './components/EditorPane';
 import { FileTree } from './components/FileTree';
 import { SideNav } from './components/SideNav';
 import { TerminalPane } from './components/TerminalPane';
-import { TopBar } from './components/TopBar';
 import { WorkspaceList } from './components/WorkspaceList';
 import {
   createDeck as apiCreateDeck,
   createTerminal as apiCreateTerminal,
-  getApiBase,
+  createWorkspace as apiCreateWorkspace,
   getWsBase,
   listDecks,
   listFiles,
+  listWorkspaces,
   readFile,
   writeFile
 } from './api';
@@ -22,18 +22,14 @@ import type {
   EditorFile,
   FileSystemEntry,
   FileTreeNode,
-  Workspace
+  Workspace,
+  WorkspaceState
 } from './types';
 
 type AppView = 'workspace' | 'terminal';
 
 const DEFAULT_ROOT = import.meta.env.VITE_DEFAULT_ROOT || 'C:/workspace';
-
-const INITIAL_WORKSPACE: Workspace = {
-  id: crypto.randomUUID(),
-  name: 'デフォルト',
-  path: DEFAULT_ROOT
-};
+const SAVED_MESSAGE = '\u4fdd\u5b58\u3057\u307e\u3057\u305f\u3002';
 
 const LANGUAGE_BY_EXTENSION: Record<string, string> = {
   js: 'javascript',
@@ -53,81 +49,17 @@ const LANGUAGE_BY_EXTENSION: Record<string, string> = {
   rs: 'rust'
 };
 
-const fallbackTree: FileTreeNode[] = [
-  {
-    name: 'src',
-    path: 'src',
-    type: 'dir',
-    expanded: true,
-    loading: false,
-    children: [
-      {
-        name: 'components',
-        path: 'src/components',
-        type: 'dir',
-        expanded: false,
-        loading: false,
-        children: []
-      },
-      {
-        name: 'app.tsx',
-        path: 'src/app.tsx',
-        type: 'file',
-        expanded: false,
-        loading: false
-      },
-      {
-        name: 'styles.css',
-        path: 'src/styles.css',
-        type: 'file',
-        expanded: false,
-        loading: false
-      }
-    ]
-  },
-  {
-    name: 'README.md',
-    path: 'README.md',
-    type: 'file',
-    expanded: false,
-    loading: false
-  },
-  {
-    name: 'package.json',
-    path: 'package.json',
-    type: 'file',
-    expanded: false,
-    loading: false
-  }
-];
-
-const fallbackFiles: EditorFile[] = [
-  {
-    id: 'readme',
-    name: 'README.md',
-    path: 'README.md',
-    language: 'markdown',
-    contents: '# Deck IDE\n\nフルスクリーンのターミナルと編集可能なデッキ。',
-    dirty: false
-  },
-  {
-    id: 'app',
-    name: 'App.tsx',
-    path: 'src/App.tsx',
-    language: 'typescript',
-    contents: `export default function App() {\n  return <div>Deck IDE</div>;\n}`,
-    dirty: false
-  }
-];
-
-const createEmptyDeckState = (): DeckState => ({
+const createEmptyWorkspaceState = (): WorkspaceState => ({
   files: [],
   activeFileId: null,
-  terminals: [],
-  activeTerminalId: null,
   tree: [],
   treeLoading: false,
   treeError: null
+});
+
+const createEmptyDeckState = (): DeckState => ({
+  terminals: [],
+  activeTerminalId: null
 });
 
 const toTreeNodes = (entries: FileSystemEntry[]): FileTreeNode[] =>
@@ -146,42 +78,59 @@ const getLanguageFromPath = (filePath: string): string => {
 const getErrorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
+const normalizeWorkspacePath = (value: string): string =>
+  value
+    .trim()
+    .replace(/[\\/]+$/, '')
+    .replace(/\\/g, '/')
+    .toLowerCase();
+
 export default function App() {
   const [view, setView] = useState<AppView>('terminal');
-  const [workspaces, setWorkspaces] = useState<Workspace[]>([INITIAL_WORKSPACE]);
-  const [activeWorkspaceId, setActiveWorkspaceId] = useState<string>(
-    INITIAL_WORKSPACE.id
-  );
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
+  const [workspaceStates, setWorkspaceStates] = useState<
+    Record<string, WorkspaceState>
+  >({});
   const [decks, setDecks] = useState<Deck[]>([]);
   const [activeDeckId, setActiveDeckId] = useState<string | null>(null);
   const [deckStates, setDeckStates] = useState<Record<string, DeckState>>({});
-  const [deckWorkspaceMap, setDeckWorkspaceMap] = useState<
-    Record<string, string>
-  >({});
   const [statusMessage, setStatusMessage] = useState('');
   const [savingFileId, setSavingFileId] = useState<string | null>(null);
 
-  const defaultDeckState = useMemo<DeckState>(() => createEmptyDeckState(), []);
+  const defaultWorkspaceState = useMemo(
+    () => createEmptyWorkspaceState(),
+    []
+  );
+  const defaultDeckState = useMemo(() => createEmptyDeckState(), []);
   const activeWorkspace =
-    workspaces.find((workspace) => workspace.id === activeWorkspaceId) ||
-    workspaces[0];
-  const activeDeck = decks.find((deck) => deck.id === activeDeckId) || null;
-  const activeState = activeDeckId
+    workspaces.find((workspace) => workspace.id === activeWorkspaceId) || null;
+  const activeWorkspaceState = activeWorkspaceId
+    ? workspaceStates[activeWorkspaceId] || defaultWorkspaceState
+    : defaultWorkspaceState;
+  const activeDeckState = activeDeckId
     ? deckStates[activeDeckId] || defaultDeckState
     : defaultDeckState;
-  const apiBase = getApiBase();
   const wsBase = getWsBase();
 
-  const deckListItems = decks.map((deck) => {
-    const workspaceId = deckWorkspaceMap[deck.id] || INITIAL_WORKSPACE.id;
-    const workspace = workspaces.find((item) => item.id === workspaceId);
-    return {
-      id: deck.id,
-      name: deck.name,
-      root: deck.root,
-      workspaceName: workspace?.name || 'デフォルト'
-    };
-  });
+  const decksForWorkspace = activeWorkspaceId
+    ? decks.filter((deck) => deck.workspaceId === activeWorkspaceId)
+    : [];
+  const deckListItems = decksForWorkspace.map((deck) => ({
+    id: deck.id,
+    name: deck.name,
+    path: deck.root
+  }));
+
+  const updateWorkspaceState = useCallback(
+    (workspaceId: string, updater: (state: WorkspaceState) => WorkspaceState) => {
+      setWorkspaceStates((prev) => {
+        const current = prev[workspaceId] || createEmptyWorkspaceState();
+        return { ...prev, [workspaceId]: updater(current) };
+      });
+    },
+    []
+  );
 
   const updateDeckState = useCallback(
     (deckId: string, updater: (state: DeckState) => DeckState) => {
@@ -195,11 +144,32 @@ export default function App() {
 
   useEffect(() => {
     let alive = true;
+    listWorkspaces()
+      .then((data) => {
+        if (!alive) return;
+        setWorkspaces(data);
+        setActiveWorkspaceId((prev) => prev ?? data[0]?.id ?? null);
+        setWorkspaceStates((prev) => {
+          const next = { ...prev };
+          data.forEach((workspace) => {
+            if (!next[workspace.id]) {
+              next[workspace.id] = createEmptyWorkspaceState();
+            }
+          });
+          return next;
+        });
+      })
+      .catch((error: unknown) => {
+        if (!alive) return;
+        setStatusMessage(
+          `\u30d7\u30ed\u30b8\u30a7\u30af\u30c8\u3092\u53d6\u5f97\u3067\u304d\u307e\u305b\u3093\u3067\u3057\u305f: ${getErrorMessage(error)}`
+        );
+      });
+
     listDecks()
       .then((data) => {
         if (!alive) return;
         setDecks(data);
-        setActiveDeckId((prev) => prev ?? data[0]?.id ?? null);
         setDeckStates((prev) => {
           const next = { ...prev };
           data.forEach((deck) => {
@@ -209,146 +179,137 @@ export default function App() {
           });
           return next;
         });
-        setDeckWorkspaceMap((prev) => {
-          const next = { ...prev };
-          data.forEach((deck) => {
-            if (!next[deck.id]) {
-              next[deck.id] = INITIAL_WORKSPACE.id;
-            }
-          });
-          return next;
-        });
-        setStatusMessage('');
       })
-      .catch(() => {
+      .catch((error: unknown) => {
         if (!alive) return;
-        const fallbackDeck: Deck = {
-          id: crypto.randomUUID(),
-          name: 'デッキ 1',
-          root: DEFAULT_ROOT,
-          createdAt: new Date().toISOString()
-        };
-        setDecks([fallbackDeck]);
-        setActiveDeckId(fallbackDeck.id);
-        setDeckStates({
-          [fallbackDeck.id]: {
-            ...createEmptyDeckState(),
-            tree: fallbackTree,
-            files: fallbackFiles,
-            activeFileId: fallbackFiles[0]?.id ?? null
-          }
-        });
-        setDeckWorkspaceMap({ [fallbackDeck.id]: INITIAL_WORKSPACE.id });
-        setStatusMessage('API未起動です。サーバーを起動してください。');
+        setStatusMessage(
+          `\u30c7\u30c3\u30ad\u3092\u53d6\u5f97\u3067\u304d\u307e\u305b\u3093\u3067\u3057\u305f: ${getErrorMessage(error)}`
+        );
       });
+
     return () => {
       alive = false;
     };
   }, []);
 
   useEffect(() => {
-    if (statusMessage !== '保存しました。') return;
+    if (statusMessage !== SAVED_MESSAGE) return;
     const timer = setTimeout(() => setStatusMessage(''), 2000);
     return () => clearTimeout(timer);
   }, [statusMessage]);
 
   useEffect(() => {
-    if (!activeDeckId) return;
-    const current = deckStates[activeDeckId];
+    if (!activeWorkspaceId) {
+      setActiveDeckId(null);
+      return;
+    }
+    const workspaceDecks = decks.filter(
+      (deck) => deck.workspaceId === activeWorkspaceId
+    );
+    if (workspaceDecks.length === 0) {
+      setActiveDeckId(null);
+      return;
+    }
+    if (!workspaceDecks.some((deck) => deck.id === activeDeckId)) {
+      setActiveDeckId(workspaceDecks[0].id);
+    }
+  }, [activeWorkspaceId, decks, activeDeckId]);
+
+  useEffect(() => {
+    if (!activeWorkspaceId) return;
+    const current = workspaceStates[activeWorkspaceId];
     if (current?.tree?.length || current?.treeLoading) return;
-    updateDeckState(activeDeckId, (state) => ({
+    updateWorkspaceState(activeWorkspaceId, (state) => ({
       ...state,
       treeLoading: true,
       treeError: null
     }));
-    listFiles('')
+    listFiles(activeWorkspaceId, '')
       .then((entries) => {
-        updateDeckState(activeDeckId, (state) => ({
+        updateWorkspaceState(activeWorkspaceId, (state) => ({
           ...state,
           tree: toTreeNodes(entries),
           treeLoading: false
         }));
       })
       .catch((error: unknown) => {
-        updateDeckState(activeDeckId, (state) => ({
+        updateWorkspaceState(activeWorkspaceId, (state) => ({
           ...state,
           treeLoading: false,
           treeError: getErrorMessage(error)
         }));
       });
-  }, [activeDeckId, deckStates, updateDeckState]);
+  }, [activeWorkspaceId, updateWorkspaceState, workspaceStates]);
 
-  useEffect(() => {
-    if (view !== 'workspace') return;
-    const deckForWorkspace = decks.find(
-      (deck) => deckWorkspaceMap[deck.id] === activeWorkspaceId
+  const handleCreateWorkspace = async (path: string) => {
+    const trimmedPath = path.trim() || DEFAULT_ROOT;
+    const normalized = normalizeWorkspacePath(trimmedPath);
+    const exists = workspaces.some(
+      (workspace) => normalizeWorkspacePath(workspace.path) === normalized
     );
-    if (!deckForWorkspace) {
-      setActiveDeckId(null);
+    if (exists) {
+      setStatusMessage(
+        '\u540c\u3058\u30d1\u30b9\u306e\u30d7\u30ed\u30b8\u30a7\u30af\u30c8\u306f\u8ffd\u52a0\u3067\u304d\u307e\u305b\u3093\u3002'
+      );
       return;
     }
-    if (deckForWorkspace.id !== activeDeckId) {
-      setActiveDeckId(deckForWorkspace.id);
+    try {
+      const workspace = await apiCreateWorkspace(trimmedPath);
+      setWorkspaces((prev) => [...prev, workspace]);
+      setActiveWorkspaceId(workspace.id);
+      setWorkspaceStates((prev) => ({
+        ...prev,
+        [workspace.id]: createEmptyWorkspaceState()
+      }));
+    } catch (error: unknown) {
+      setStatusMessage(
+        `\u30d7\u30ed\u30b8\u30a7\u30af\u30c8\u3092\u8ffd\u52a0\u3067\u304d\u307e\u305b\u3093\u3067\u3057\u305f: ${getErrorMessage(error)}`
+      );
     }
-  }, [activeWorkspaceId, deckWorkspaceMap, decks, view, activeDeckId]);
-
-  const handleCreateWorkspace = (name: string, path: string) => {
-    const trimmedName = name.trim();
-    const trimmedPath = path.trim() || DEFAULT_ROOT;
-    const workspace: Workspace = {
-      id: crypto.randomUUID(),
-      name: trimmedName || `ワークスペース ${workspaces.length + 1}`,
-      path: trimmedPath
-    };
-    setWorkspaces((prev) => [...prev, workspace]);
-    setActiveWorkspaceId(workspace.id);
   };
 
-  const handleCreateDeck = async (workspaceId: string) => {
+  const handleCreateDeck = async (workspaceId: string | null) => {
+    if (!workspaceId) {
+      setStatusMessage(
+        '\u30d7\u30ed\u30b8\u30a7\u30af\u30c8\u3092\u9078\u629e\u3057\u3066\u304f\u3060\u3055\u3044\u3002'
+      );
+      return;
+    }
     try {
-      setActiveWorkspaceId(workspaceId);
-      const deck = await apiCreateDeck(`デッキ ${decks.length + 1}`);
+      const deck = await apiCreateDeck(
+        `\u30c7\u30c3\u30ad ${decks.length + 1}`,
+        workspaceId
+      );
       setDecks((prev) => [...prev, deck]);
       setActiveDeckId(deck.id);
-      updateDeckState(deck.id, (state) => ({ ...state }));
-      setDeckWorkspaceMap((prev) => ({ ...prev, [deck.id]: workspaceId }));
-      setView('terminal');
+      setDeckStates((prev) => ({
+        ...prev,
+        [deck.id]: createEmptyDeckState()
+      }));
     } catch (error: unknown) {
-      setStatusMessage(`デッキの作成に失敗しました: ${getErrorMessage(error)}`);
+      setStatusMessage(
+        `\u30c7\u30c3\u30ad\u306e\u4f5c\u6210\u306b\u5931\u6557\u3057\u307e\u3057\u305f: ${getErrorMessage(error)}`
+      );
     }
-  };
-
-  const handleOpenEditor = async (workspaceId: string) => {
-    setActiveWorkspaceId(workspaceId);
-    const existing = decks.find(
-      (deck) => deckWorkspaceMap[deck.id] === workspaceId
-    );
-    if (existing) {
-      setActiveDeckId(existing.id);
-      setView('workspace');
-      return;
-    }
-    await handleCreateDeck(workspaceId);
-    setView('workspace');
   };
 
   const handleRefreshTree = () => {
-    if (!activeDeckId) return;
-    updateDeckState(activeDeckId, (state) => ({
+    if (!activeWorkspaceId) return;
+    updateWorkspaceState(activeWorkspaceId, (state) => ({
       ...state,
       treeLoading: true,
       treeError: null
     }));
-    listFiles('')
+    listFiles(activeWorkspaceId, '')
       .then((entries) => {
-        updateDeckState(activeDeckId, (state) => ({
+        updateWorkspaceState(activeWorkspaceId, (state) => ({
           ...state,
           tree: toTreeNodes(entries),
           treeLoading: false
         }));
       })
       .catch((error: unknown) => {
-        updateDeckState(activeDeckId, (state) => ({
+        updateWorkspaceState(activeWorkspaceId, (state) => ({
           ...state,
           treeLoading: false,
           treeError: getErrorMessage(error)
@@ -375,9 +336,9 @@ export default function App() {
     });
 
   const handleToggleDir = (node: FileTreeNode) => {
-    if (!activeDeckId || node.type !== 'dir') return;
+    if (!activeWorkspaceId || node.type !== 'dir') return;
     if (node.expanded) {
-      updateDeckState(activeDeckId, (state) => ({
+      updateWorkspaceState(activeWorkspaceId, (state) => ({
         ...state,
         tree: updateTreeNode(state.tree, node.path, (item) => ({
           ...item,
@@ -387,7 +348,7 @@ export default function App() {
       return;
     }
     if (node.children && node.children.length > 0) {
-      updateDeckState(activeDeckId, (state) => ({
+      updateWorkspaceState(activeWorkspaceId, (state) => ({
         ...state,
         tree: updateTreeNode(state.tree, node.path, (item) => ({
           ...item,
@@ -397,16 +358,16 @@ export default function App() {
       return;
     }
 
-    updateDeckState(activeDeckId, (state) => ({
+    updateWorkspaceState(activeWorkspaceId, (state) => ({
       ...state,
       tree: updateTreeNode(state.tree, node.path, (item) => ({
         ...item,
         loading: true
       }))
     }));
-    listFiles(node.path)
+    listFiles(activeWorkspaceId, node.path)
       .then((entries) => {
-        updateDeckState(activeDeckId, (state) => ({
+        updateWorkspaceState(activeWorkspaceId, (state) => ({
           ...state,
           tree: updateTreeNode(state.tree, node.path, (item) => ({
             ...item,
@@ -417,7 +378,7 @@ export default function App() {
         }));
       })
       .catch((error: unknown) => {
-        updateDeckState(activeDeckId, (state) => ({
+        updateWorkspaceState(activeWorkspaceId, (state) => ({
           ...state,
           treeError: getErrorMessage(error),
           tree: updateTreeNode(state.tree, node.path, (item) => ({
@@ -429,16 +390,18 @@ export default function App() {
   };
 
   const handleOpenFile = (entry: FileTreeNode) => {
-    if (!activeDeckId || entry.type !== 'file') return;
-    const existing = activeState.files.find((file) => file.path === entry.path);
+    if (!activeWorkspaceId || entry.type !== 'file') return;
+    const existing = activeWorkspaceState.files.find(
+      (file) => file.path === entry.path
+    );
     if (existing) {
-      updateDeckState(activeDeckId, (state) => ({
+      updateWorkspaceState(activeWorkspaceId, (state) => ({
         ...state,
         activeFileId: existing.id
       }));
       return;
     }
-    readFile(entry.path)
+    readFile(activeWorkspaceId, entry.path)
       .then((data) => {
         const file: EditorFile = {
           id: crypto.randomUUID(),
@@ -448,20 +411,22 @@ export default function App() {
           contents: data.contents,
           dirty: false
         };
-        updateDeckState(activeDeckId, (state) => ({
+        updateWorkspaceState(activeWorkspaceId, (state) => ({
           ...state,
           files: [...state.files, file],
           activeFileId: file.id
         }));
       })
       .catch((error: unknown) => {
-        setStatusMessage(`ファイルを開けませんでした: ${getErrorMessage(error)}`);
+        setStatusMessage(
+          `\u30d5\u30a1\u30a4\u30eb\u3092\u958b\u3051\u307e\u305b\u3093\u3067\u3057\u305f: ${getErrorMessage(error)}`
+        );
       });
   };
 
   const handleFileChange = (fileId: string, contents: string) => {
-    if (!activeDeckId) return;
-    updateDeckState(activeDeckId, (state) => ({
+    if (!activeWorkspaceId) return;
+    updateWorkspaceState(activeWorkspaceId, (state) => ({
       ...state,
       files: state.files.map((file) =>
         file.id === fileId ? { ...file, contents, dirty: true } : file
@@ -470,21 +435,23 @@ export default function App() {
   };
 
   const handleSaveFile = async (fileId: string) => {
-    if (!activeDeckId) return;
-    const file = activeState.files.find((item) => item.id === fileId);
+    if (!activeWorkspaceId) return;
+    const file = activeWorkspaceState.files.find((item) => item.id === fileId);
     if (!file) return;
     setSavingFileId(fileId);
     try {
-      await writeFile(file.path, file.contents);
-      updateDeckState(activeDeckId, (state) => ({
+      await writeFile(activeWorkspaceId, file.path, file.contents);
+      updateWorkspaceState(activeWorkspaceId, (state) => ({
         ...state,
         files: state.files.map((item) =>
           item.id === fileId ? { ...item, dirty: false } : item
         )
       }));
-      setStatusMessage('保存しました。');
+      setStatusMessage(SAVED_MESSAGE);
     } catch (error: unknown) {
-      setStatusMessage(`保存に失敗しました: ${getErrorMessage(error)}`);
+      setStatusMessage(
+        `\u4fdd\u5b58\u306b\u5931\u6557\u3057\u307e\u3057\u305f: ${getErrorMessage(error)}`
+      );
     } finally {
       setSavingFileId(null);
     }
@@ -492,14 +459,19 @@ export default function App() {
 
   const handleCreateTerminal = async () => {
     if (!activeDeckId) {
-      setStatusMessage('デッキを選択してください。');
+      setStatusMessage(
+        '\u30c7\u30c3\u30ad\u3092\u9078\u629e\u3057\u3066\u304f\u3060\u3055\u3044\u3002'
+      );
       return;
     }
     try {
-      const session = await apiCreateTerminal();
+      const session = await apiCreateTerminal(activeDeckId);
       updateDeckState(activeDeckId, (state) => {
         const index = state.terminals.length + 1;
-        const terminal = { id: session.id, title: `ターミナル ${index}` };
+        const terminal = {
+          id: session.id,
+          title: `\u30bf\u30fc\u30df\u30ca\u30eb ${index}`
+        };
         return {
           ...state,
           terminals: [...state.terminals, terminal],
@@ -508,7 +480,7 @@ export default function App() {
       });
     } catch (error: unknown) {
       setStatusMessage(
-        `ターミナルを起動できませんでした: ${getErrorMessage(error)}`
+        `\u30bf\u30fc\u30df\u30ca\u30eb\u3092\u8d77\u52d5\u3067\u304d\u307e\u305b\u3093\u3067\u3057\u305f: ${getErrorMessage(error)}`
       );
     }
   };
@@ -523,22 +495,11 @@ export default function App() {
 
   const handleSelectDeck = (deckId: string) => {
     setActiveDeckId(deckId);
-    const workspaceId = deckWorkspaceMap[deckId];
-    if (workspaceId) {
-      setActiveWorkspaceId(workspaceId);
-    }
   };
 
   return (
     <div className="app" data-view={view}>
       <SideNav activeView={view} onSelect={setView} />
-      <TopBar
-        view={view}
-        workspace={activeWorkspace}
-        apiBase={apiBase}
-        status={statusMessage}
-      />
-
       <main className="main">
         {view === 'workspace' ? (
           <div className="workspace-view">
@@ -548,30 +509,29 @@ export default function App() {
               defaultPath={DEFAULT_ROOT}
               onSelect={setActiveWorkspaceId}
               onCreate={handleCreateWorkspace}
-              onOpenEditor={handleOpenEditor}
             />
             <div className="workspace-editor">
-              {!activeDeckId ? (
+              {!activeWorkspaceId ? (
                 <div className="panel empty-panel">
-                  デッキを作成してエディタを開いてください。
+                  {'\u30d7\u30ed\u30b8\u30a7\u30af\u30c8\u3092\u8ffd\u52a0\u3057\u3066\u304f\u3060\u3055\u3044\u3002'}
                 </div>
               ) : (
                 <>
                   <FileTree
                     root={activeWorkspace?.path || DEFAULT_ROOT}
-                    entries={activeState.tree}
-                    loading={activeState.treeLoading}
-                    error={activeState.treeError}
+                    entries={activeWorkspaceState.tree}
+                    loading={activeWorkspaceState.treeLoading}
+                    error={activeWorkspaceState.treeError}
                     onToggleDir={handleToggleDir}
                     onOpenFile={handleOpenFile}
                     onRefresh={handleRefreshTree}
                   />
                   <EditorPane
-                    files={activeState.files}
-                    activeFileId={activeState.activeFileId}
+                    files={activeWorkspaceState.files}
+                    activeFileId={activeWorkspaceState.activeFileId}
                     onSelectFile={(fileId) => {
-                      if (!activeDeckId) return;
-                      updateDeckState(activeDeckId, (state) => ({
+                      if (!activeWorkspaceId) return;
+                      updateWorkspaceState(activeWorkspaceId, (state) => ({
                         ...state,
                         activeFileId: fileId
                       }));
@@ -594,20 +554,25 @@ export default function App() {
             />
             {activeDeckId ? (
               <TerminalPane
-                terminals={activeState.terminals}
-                activeTerminalId={activeState.activeTerminalId}
+                terminals={activeDeckState.terminals}
+                activeTerminalId={activeDeckState.activeTerminalId}
                 wsBase={wsBase}
                 onSelectTerminal={handleSelectTerminal}
                 onNewTerminal={handleCreateTerminal}
               />
             ) : (
               <div className="panel empty-panel">
-                デッキを作成してターミナルを起動してください。
+                {'\u30c7\u30c3\u30ad\u3092\u4f5c\u6210\u3057\u3066\u304f\u3060\u3055\u3044\u3002'}
               </div>
             )}
           </div>
         )}
       </main>
+      {statusMessage ? (
+        <div className="status-float" role="status">
+          {statusMessage}
+        </div>
+      ) : null}
     </div>
   );
 }

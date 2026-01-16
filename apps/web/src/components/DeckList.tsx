@@ -1,8 +1,7 @@
 interface DeckListItem {
   id: string;
   name: string;
-  root: string;
-  workspaceName: string;
+  path: string;
 }
 
 interface DeckListProps {
@@ -11,6 +10,11 @@ interface DeckListProps {
   onSelect: (deckId: string) => void;
   onCreate: () => void;
 }
+
+const LABEL_DECK = '\u30c7\u30c3\u30ad';
+const LABEL_MULTI = '\u8907\u6570\u4f5c\u6210\u53ef\u80fd';
+const LABEL_CREATE = '\u30c7\u30c3\u30ad\u4f5c\u6210';
+const LABEL_EMPTY = '\u30c7\u30c3\u30ad\u304c\u3042\u308a\u307e\u305b\u3093\u3002';
 
 export function DeckList({
   decks,
@@ -22,16 +26,16 @@ export function DeckList({
     <section className="panel deck-list">
       <div className="panel-header">
         <div>
-          <div className="panel-title">デッキ</div>
-          <div className="panel-subtitle">同じワークスペースで複数作成可能</div>
+          <div className="panel-title">{LABEL_DECK}</div>
+          <div className="panel-subtitle">{LABEL_MULTI}</div>
         </div>
         <button type="button" className="chip" onClick={onCreate}>
-          デッキ作成
+          {LABEL_CREATE}
         </button>
       </div>
       <div className="panel-body">
         {decks.length === 0 ? (
-          <div className="empty-state">デッキがありません。</div>
+          <div className="empty-state">{LABEL_EMPTY}</div>
         ) : (
           decks.map((deck) => (
             <button
@@ -43,8 +47,7 @@ export function DeckList({
               onClick={() => onSelect(deck.id)}
             >
               <div className="deck-name">{deck.name}</div>
-              <div className="deck-root">{deck.workspaceName}</div>
-              <div className="deck-root">{deck.root}</div>
+              <div className="deck-root">{deck.path}</div>
             </button>
           ))
         )}

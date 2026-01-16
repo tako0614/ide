@@ -11,6 +11,10 @@ interface TerminalTileProps {
   onFocus: () => void;
 }
 
+const TEXT_BOOT = '\u30bf\u30fc\u30df\u30ca\u30eb\u3092\u8d77\u52d5\u3057\u307e\u3057\u305f: ';
+const TEXT_CONNECTED = '\u63a5\u7d9a\u3057\u307e\u3057\u305f\u3002';
+const TEXT_CLOSED = '\u5207\u65ad\u3057\u307e\u3057\u305f\u3002';
+
 export function TerminalTile({
   session,
   wsUrl,
@@ -39,7 +43,7 @@ export function TerminalTile({
     fitAddonRef.current = fitAddon;
     term.open(containerRef.current);
     fitAddon.fit();
-    term.write(`ターミナル準備完了: ${session.title}\r\n`);
+    term.write(`${TEXT_BOOT}${session.title}\r\n\r\n`);
 
     const resizeObserver = new ResizeObserver(() => {
       fitAddon.fit();
@@ -48,13 +52,13 @@ export function TerminalTile({
 
     const socket = new WebSocket(wsUrl);
     socket.addEventListener('open', () => {
-      term.write('\r\n接続しました。\r\n');
+      term.write(`\r\n${TEXT_CONNECTED}\r\n\r\n`);
     });
     socket.addEventListener('message', (event) => {
       term.write(event.data);
     });
     socket.addEventListener('close', () => {
-      term.write('\r\n切断しました。\r\n');
+      term.write(`\r\n${TEXT_CLOSED}\r\n\r\n`);
     });
 
     const dataDisposable: IDisposable = term.onData((data) => {

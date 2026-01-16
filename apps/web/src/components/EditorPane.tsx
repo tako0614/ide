@@ -11,6 +11,11 @@ interface EditorPaneProps {
   savingFileId: string | null;
 }
 
+const LABEL_EDITOR = '\u30a8\u30c7\u30a3\u30bf';
+const LABEL_SAVING = '\u4fdd\u5b58\u4e2d...';
+const LABEL_SAVE = '\u4fdd\u5b58';
+const LABEL_EMPTY = '\u30d5\u30a1\u30a4\u30eb\u3092\u9078\u629e\u3057\u3066\u304f\u3060\u3055\u3044\u3002';
+
 export function EditorPane({
   files,
   activeFileId,
@@ -39,7 +44,7 @@ export function EditorPane({
     <section className="panel editor-pane">
       <div className="panel-header">
         <div>
-          <div className="panel-title">エディタ</div>
+          <div className="panel-title">{LABEL_EDITOR}</div>
           <div className="panel-subtitle">Monaco Editor</div>
         </div>
         <div className="editor-actions">
@@ -49,7 +54,7 @@ export function EditorPane({
             onClick={() => activeFile && onSaveFile?.(activeFile.id)}
             disabled={!activeFile || savingFileId === activeFile.id}
           >
-            {savingFileId === activeFile?.id ? '保存中...' : '保存'}
+            {savingFileId === activeFile?.id ? LABEL_SAVING : LABEL_SAVE}
           </button>
           <div className="tab-strip">
             {files.map((file) => (
@@ -82,7 +87,7 @@ export function EditorPane({
             }}
           />
         ) : (
-          <div className="empty-state">編集するファイルを選択してください。</div>
+          <div className="empty-state">{LABEL_EMPTY}</div>
         )}
       </div>
     </section>

@@ -4,6 +4,7 @@ export interface Deck {
   id: string;
   name: string;
   root: string;
+  workspaceId: string;
   createdAt: string;
 }
 
@@ -39,12 +40,15 @@ export interface Workspace {
   path: string;
 }
 
-export interface DeckState {
+export interface WorkspaceState {
   files: EditorFile[];
   activeFileId: string | null;
-  terminals: TerminalSession[];
-  activeTerminalId: string | null;
   tree: FileTreeNode[];
   treeLoading: boolean;
   treeError: string | null;
+}
+
+export interface DeckState {
+  terminals: TerminalSession[];
+  activeTerminalId: string | null;
 }
