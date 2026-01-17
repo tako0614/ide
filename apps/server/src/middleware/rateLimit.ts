@@ -1,5 +1,6 @@
 import type { Context, MiddlewareHandler } from 'hono';
 import { NODE_ENV, TRUST_PROXY } from '../config.js';
+import { logSecurityEvent } from './security.js';
 
 const RATE_LIMIT_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
 const RATE_LIMIT_MAX_REQUESTS = 100;
@@ -100,6 +101,7 @@ export const apiRateLimitMiddleware: MiddlewareHandler = async (c, next) => {
   c.header('RateLimit-Reset', String(Math.ceil(entry.resetTime / 1000)));
 
   if (entry.count > RATE_LIMIT_MAX_REQUESTS) {
+    logSecurityEvent('API_RATE_LIMIT_EXCEEDED', { ip, count: entry.count, path: c.req.path });
     c.header('Retry-After', String(Math.ceil((entry.resetTime - now) / 1000)));
     return c.json(
       { error: 'Too many requests, please try again later.' },

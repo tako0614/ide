@@ -26,7 +26,8 @@
       "Bash(npm run check:*)",
       "Bash(npx madge:*)",
       "Bash(npm run:*)",
-      "Bash(node -e:*)"
+      "Bash(node -e:*)",
+      "Bash(dir \"C:\\\\Users\\\\shout\\\\desktop\\\\github\\\\ide\" /s /b)"
     ]
   }
 }

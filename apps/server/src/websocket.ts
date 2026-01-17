@@ -1,19 +1,63 @@
 import crypto from 'node:crypto';
 import type { Server as HttpServer } from 'node:http';
 import type { Server as HttpsServer } from 'node:https';
+import type { IncomingMessage } from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { TerminalSession } from './types.js';
 import {
   PORT,
   TERMINAL_IDLE_TIMEOUT_MS,
   WS_RATE_LIMIT_WINDOW_MS,
-  WS_RATE_LIMIT_MAX_MESSAGES
+  WS_RATE_LIMIT_MAX_MESSAGES,
+  TRUST_PROXY
 } from './config.js';
-import { checkWebSocketRateLimit, wsMessageRateLimits } from './middleware/security.js';
+import { checkWebSocketRateLimit, wsMessageRateLimits, logSecurityEvent } from './middleware/security.js';
 import { verifyWebSocketAuth } from './middleware/auth.js';
 
 const MIN_TERMINAL_SIZE = 1;
 const MAX_TERMINAL_SIZE = 500;
+const MAX_MESSAGE_SIZE = 64 * 1024; // 64KB max message size
+const MAX_CONNECTIONS_PER_IP = 10;
+
+// Track connections per IP
+const connectionsByIP = new Map<string, Set<WebSocket>>();
+
+function getClientIP(req: IncomingMessage): string {
+  if (TRUST_PROXY) {
+    const forwarded = req.headers['x-forwarded-for'];
+    if (typeof forwarded === 'string') {
+      return forwarded.split(',')[0].trim();
+    }
+    const realIp = req.headers['x-real-ip'];
+    if (typeof realIp === 'string') {
+      return realIp;
+    }
+  }
+  return req.socket?.remoteAddress || 'unknown';
+}
+
+function trackConnection(ip: string, socket: WebSocket): boolean {
+  let connections = connectionsByIP.get(ip);
+  if (!connections) {
+    connections = new Set();
+    connectionsByIP.set(ip, connections);
+  }
+  if (connections.size >= MAX_CONNECTIONS_PER_IP) {
+    return false;
+  }
+  connections.add(socket);
+  return true;
+}
+
+function untrackConnection(ip: string, socket: WebSocket): void {
+  const connections = connectionsByIP.get(ip);
+  if (connections) {
+    connections.delete(socket);
+    if (connections.size === 0) {
+      connectionsByIP.delete(ip);
+    }
+  }
+}
 
 function validateTerminalSize(value: number): number {
   const intValue = Math.floor(value);
@@ -34,6 +78,7 @@ export function setupWebSocketServer(
 
   wss.on('connection', (socket: WebSocket, req) => {
     const socketId = crypto.randomUUID();
+    const clientIP = getClientIP(req);
 
     // Add error handler for socket
     socket.on('error', (error) => {
@@ -45,7 +90,16 @@ export function setupWebSocketServer(
       }
     });
 
+    // Check connection limit per IP
+    if (!trackConnection(clientIP, socket)) {
+      logSecurityEvent('WS_CONNECTION_LIMIT_EXCEEDED', { ip: clientIP });
+      socket.close(1013, 'Too many connections');
+      return;
+    }
+
     if (!verifyWebSocketAuth(req)) {
+      logSecurityEvent('WS_AUTH_FAILED', { ip: clientIP });
+      untrackConnection(clientIP, socket);
       socket.close(1008, 'Unauthorized');
       return;
     }
@@ -78,8 +132,16 @@ export function setupWebSocketServer(
 
     socket.on('message', (data) => {
       try {
+        // Check message size
+        const messageSize = Buffer.isBuffer(data) ? data.length : Buffer.byteLength(data.toString());
+        if (messageSize > MAX_MESSAGE_SIZE) {
+          logSecurityEvent('WS_MESSAGE_TOO_LARGE', { ip: clientIP, size: messageSize });
+          socket.send('\r\n\x1b[31mMessage too large. Maximum size is 64KB.\x1b[0m\r\n');
+          return;
+        }
+
         if (!checkWebSocketRateLimit(socketId, WS_RATE_LIMIT_WINDOW_MS, WS_RATE_LIMIT_MAX_MESSAGES)) {
-          console.warn(`WebSocket rate limit exceeded for socket ${socketId}`);
+          logSecurityEvent('WS_RATE_LIMIT_EXCEEDED', { ip: clientIP, socketId });
           socket.send('\r\n\x1b[31mRate limit exceeded. Please slow down.\x1b[0m\r\n');
           return;
         }
@@ -115,6 +177,7 @@ export function setupWebSocketServer(
       session.sockets.delete(socket);
       session.lastActive = Date.now();
       wsMessageRateLimits.delete(socketId);
+      untrackConnection(clientIP, socket);
     });
   });
 

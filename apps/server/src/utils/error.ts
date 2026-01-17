@@ -29,7 +29,11 @@ export function handleError(c: Context, error: unknown) {
 export async function readJson<T>(c: Context): Promise<T | null> {
   try {
     return await c.req.json<T>();
-  } catch {
+  } catch (error) {
+    // Log parse errors in development for debugging
+    if (NODE_ENV === 'development') {
+      console.warn('JSON parse error:', getErrorMessage(error));
+    }
     return null;
   }
 }

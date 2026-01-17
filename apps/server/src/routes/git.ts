@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import nodePath from 'node:path';
 import type { Workspace } from '../types.js';
 import { createHttpError, handleError, readJson } from '../utils/error.js';
+import { resolveSafePath } from '../utils/path.js';
 
 export type GitFileStatusCode =
   | 'modified'
@@ -192,15 +193,20 @@ async function isGitRepository(git: SimpleGit): Promise<boolean> {
 
 async function readFileContent(workspacePath: string, filePath: string): Promise<string> {
   try {
-    const fullPath = nodePath.join(workspacePath, filePath);
-    // Security: Ensure the resolved path is within workspace
-    const resolved = nodePath.resolve(fullPath);
-    const workspaceResolved = nodePath.resolve(workspacePath);
-    if (!resolved.startsWith(workspaceResolved + nodePath.sep) && resolved !== workspaceResolved) {
-      throw new Error('Path traversal detected');
-    }
+    // Use resolveSafePath for proper symlink validation
+    const resolved = await resolveSafePath(workspacePath, filePath);
     return await fs.readFile(resolved, 'utf-8');
-  } catch {
+  } catch (error) {
+    // Only return empty for file-not-found errors
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return '';
+    }
+    // For security errors (path traversal), re-throw
+    if ((error as { status?: number })?.status === 400) {
+      throw error;
+    }
+    // Log unexpected errors but return empty to avoid breaking diff
+    console.error('Error reading file for git diff:', error);
     return '';
   }
 }
@@ -208,7 +214,14 @@ async function readFileContent(workspacePath: string, filePath: string): Promise
 async function getOriginalContent(git: SimpleGit, filePath: string): Promise<string> {
   try {
     return await git.show([`HEAD:${filePath}`]);
-  } catch {
+  } catch (error) {
+    // New file or not in HEAD - expected error
+    const message = (error as Error)?.message || '';
+    if (message.includes('does not exist') || message.includes('fatal:')) {
+      return '';
+    }
+    // Log unexpected git errors
+    console.error('Error getting original content from git:', error);
     return '';
   }
 }
@@ -345,19 +358,16 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
 
       // For untracked files, verify each path exists and is within workspace before deleting
       for (const untrackedPath of untrackedPaths) {
-        const fullPath = nodePath.join(workspace.path, untrackedPath);
-        const resolved = nodePath.resolve(fullPath);
-        const workspaceResolved = nodePath.resolve(workspace.path);
-
-        // Security: Ensure path is within workspace
-        if (!resolved.startsWith(workspaceResolved + nodePath.sep)) {
-          throw createHttpError(`Invalid path: ${untrackedPath}`, 400);
-        }
-
         try {
+          // Use resolveSafePath for proper symlink validation
+          const resolved = await resolveSafePath(workspace.path, untrackedPath);
           await fs.unlink(resolved);
-        } catch {
-          // File might already be deleted, ignore
+        } catch (error) {
+          // File might already be deleted or path validation failed
+          if ((error as { status?: number })?.status === 400) {
+            throw error; // Re-throw security errors
+          }
+          // Ignore ENOENT (file not found) errors
         }
       }
 

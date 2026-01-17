@@ -3,15 +3,17 @@ import path from 'node:path';
 import { Hono, type Context } from 'hono';
 import type { MiddlewareHandler } from 'hono';
 import type { Workspace } from '../types.js';
-import { MAX_FILE_SIZE, NODE_ENV, DEFAULT_ROOT } from '../config.js';
+import { MAX_FILE_SIZE, NODE_ENV, DEFAULT_ROOT, TRUST_PROXY } from '../config.js';
 import { createHttpError, handleError, readJson } from '../utils/error.js';
 import { resolveSafePath, normalizeWorkspacePath } from '../utils/path.js';
 import { requireWorkspace } from './workspaces.js';
 import { sortFileEntries } from '@deck-ide/shared/utils-node';
+import { logSecurityEvent } from '../middleware/security.js';
 
 // File upload rate limiting configuration
 const FILE_UPLOAD_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
 const FILE_UPLOAD_MAX_REQUESTS = 30;
+const MAX_TRACKED_IPS = 10000;
 
 interface RateLimitEntry {
   count: number;
@@ -20,30 +22,57 @@ interface RateLimitEntry {
 
 const uploadRateLimits = new Map<string, RateLimitEntry>();
 
-// Cleanup old entries periodically
+// Cleanup old entries periodically with memory limit
 setInterval(() => {
   const now = Date.now();
+  const entriesToDelete: string[] = [];
   for (const [ip, entry] of uploadRateLimits.entries()) {
-    if (now > entry.resetTime + 60000) {
+    if (now > entry.resetTime) {
+      entriesToDelete.push(ip);
+    }
+  }
+  for (const ip of entriesToDelete) {
+    uploadRateLimits.delete(ip);
+  }
+  // Enforce max tracked IPs
+  if (uploadRateLimits.size > MAX_TRACKED_IPS) {
+    const entries = Array.from(uploadRateLimits.entries())
+      .sort((a, b) => a[1].resetTime - b[1].resetTime);
+    const toRemove = entries.slice(0, uploadRateLimits.size - MAX_TRACKED_IPS);
+    for (const [ip] of toRemove) {
       uploadRateLimits.delete(ip);
     }
   }
 }, 60000).unref();
 
+// Validate IP address format
+function isValidIP(ip: string): boolean {
+  if (!ip || ip.length > 45) return false;
+  return /^[\da-fA-F.:]+$/.test(ip);
+}
+
 function getClientIP(c: Context): string {
-  const forwarded = c.req.header('x-forwarded-for');
-  if (forwarded) {
-    return forwarded.split(',')[0].trim();
+  // Only trust proxy headers if explicitly enabled
+  if (TRUST_PROXY) {
+    const forwarded = c.req.header('x-forwarded-for');
+    if (forwarded) {
+      const firstIp = forwarded.split(',')[0].trim();
+      if (isValidIP(firstIp)) {
+        return firstIp;
+      }
+    }
+    const realIp = c.req.header('x-real-ip');
+    if (realIp && isValidIP(realIp)) {
+      return realIp;
+    }
   }
-  const realIp = c.req.header('x-real-ip');
-  if (realIp) {
-    return realIp;
+  // Get actual remote address from socket
+  const raw = c.req.raw as Request & { socket?: { remoteAddress?: string } };
+  const remoteAddr = raw.socket?.remoteAddress;
+  if (remoteAddr && isValidIP(remoteAddr)) {
+    return remoteAddr;
   }
-  const raw = c.req.raw as any;
-  if (raw.socket?.remoteAddress) {
-    return raw.socket.remoteAddress;
-  }
-  return 'unknown';
+  return 'unknown-' + Date.now().toString(36);
 }
 
 const fileUploadRateLimitMiddleware: MiddlewareHandler = async (c, next) => {
@@ -69,6 +98,7 @@ const fileUploadRateLimitMiddleware: MiddlewareHandler = async (c, next) => {
   c.header('RateLimit-Reset', String(Math.ceil(entry.resetTime / 1000)));
 
   if (entry.count > FILE_UPLOAD_MAX_REQUESTS) {
+    logSecurityEvent('FILE_UPLOAD_RATE_LIMIT_EXCEEDED', { ip, count: entry.count });
     c.header('Retry-After', String(Math.ceil((entry.resetTime - now) / 1000)));
     return c.json(
       { error: 'Too many file upload requests, please try again later.' },

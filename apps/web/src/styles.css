@@ -1175,3 +1175,69 @@ input:focus-visible {
   color: #000;
   border-radius: 8px;
 }
+
+/* Error Boundary */
+.error-boundary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 2rem;
+  background: var(--bg);
+}
+
+.error-boundary-content {
+  max-width: 500px;
+  padding: 2rem;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  text-align: center;
+}
+
+.error-boundary-content h1 {
+  margin: 0 0 1rem;
+  font-size: 1.5rem;
+  color: #f14c4c;
+}
+
+.error-boundary-content p {
+  margin: 0 0 1.5rem;
+  color: var(--muted);
+}
+
+.error-boundary-content details {
+  margin-bottom: 1.5rem;
+  text-align: left;
+}
+
+.error-boundary-content summary {
+  cursor: pointer;
+  color: var(--muted);
+  margin-bottom: 0.5rem;
+}
+
+.error-boundary-content pre {
+  padding: 1rem;
+  background: var(--bg-soft);
+  border-radius: var(--radius-sm);
+  font-size: 0.75rem;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.error-boundary-button {
+  padding: 0.75rem 1.5rem;
+  background: var(--ink);
+  color: var(--bg);
+  border: none;
+  border-radius: var(--radius-sm);
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.error-boundary-button:hover {
+  opacity: 0.9;
+}

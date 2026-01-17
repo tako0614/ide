@@ -25,8 +25,32 @@ export const dataDir = path.resolve(__dirname, '..', '..', 'data');
 export const dbPath = process.env.DB_PATH || path.join(dataDir, 'deck-ide.db');
 
 // Validate critical configuration
-if (!CORS_ORIGIN && NODE_ENV === 'production') {
-  console.error('CRITICAL: CORS_ORIGIN must be set in production!');
+if (NODE_ENV === 'production') {
+  if (!CORS_ORIGIN) {
+    console.error('CRITICAL: CORS_ORIGIN must be set in production!');
+    process.exit(1);
+  }
+
+  // Validate password strength in production
+  if (BASIC_AUTH_PASSWORD && BASIC_AUTH_PASSWORD.length < 12) {
+    console.error('CRITICAL: BASIC_AUTH_PASSWORD must be at least 12 characters in production!');
+    process.exit(1);
+  }
+
+  // Warn if no authentication is configured
+  if (!BASIC_AUTH_USER || !BASIC_AUTH_PASSWORD) {
+    console.warn('WARNING: No authentication configured! API is publicly accessible.');
+  }
+}
+
+// Validate numeric configuration values
+if (!Number.isFinite(PORT) || PORT < 1 || PORT > 65535) {
+  console.error('CRITICAL: Invalid PORT value');
+  process.exit(1);
+}
+
+if (!Number.isFinite(MAX_FILE_SIZE) || MAX_FILE_SIZE < 1024) {
+  console.error('CRITICAL: Invalid MAX_FILE_SIZE value');
   process.exit(1);
 }
 

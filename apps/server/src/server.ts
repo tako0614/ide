@@ -1,4 +1,5 @@
 import fsSync from 'node:fs';
+import crypto from 'node:crypto';
 import type { Server } from 'node:http';
 import type { MiddlewareHandler } from 'hono';
 import { Hono } from 'hono';
@@ -33,8 +34,13 @@ import { createTerminalRouter } from './routes/terminals.js';
 import { createGitRouter } from './routes/git.js';
 import { setupWebSocketServer, setupTerminalCleanup } from './websocket.js';
 
-// Simple request logging middleware
-const requestLoggingMiddleware: MiddlewareHandler = async (c, next) => {
+// Request ID and logging middleware
+const requestIdMiddleware: MiddlewareHandler = async (c, next) => {
+  // Use existing request ID or generate new one
+  const requestId = c.req.header('x-request-id') || crypto.randomUUID().slice(0, 8);
+  c.set('requestId', requestId);
+  c.header('X-Request-ID', requestId);
+
   const start = Date.now();
   const method = c.req.method;
   const path = c.req.path;
@@ -46,7 +52,7 @@ const requestLoggingMiddleware: MiddlewareHandler = async (c, next) => {
 
   // Log in production or if DEBUG is set
   if (NODE_ENV === 'production' || process.env.DEBUG) {
-    console.log(`${method} ${path} ${status} ${duration}ms`);
+    console.log(`[${requestId}] ${method} ${path} ${status} ${duration}ms`);
   }
 };
 
@@ -75,7 +81,7 @@ export function createServer() {
   // Global middleware
   app.use('*', securityHeaders);
   app.use('*', corsMiddleware);
-  app.use('*', requestLoggingMiddleware);
+  app.use('*', requestIdMiddleware);
 
   // Body size limit for API routes (except file uploads which have their own limit)
   app.use('/api/*', bodyLimit({

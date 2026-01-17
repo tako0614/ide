@@ -1,12 +1,19 @@
 import { type MiddlewareHandler } from 'hono';
-import { CORS_ORIGIN, NODE_ENV } from '../config.js';
+import { NODE_ENV } from '../config.js';
+
+// Security event logging
+export function logSecurityEvent(event: string, details: Record<string, unknown>): void {
+  const timestamp = new Date().toISOString();
+  console.warn(`[SECURITY] ${timestamp} ${event}:`, JSON.stringify(details));
+}
 
 export const securityHeaders: MiddlewareHandler = async (c, next) => {
   c.header('X-Frame-Options', 'DENY');
   c.header('X-Content-Type-Options', 'nosniff');
   c.header('X-XSS-Protection', '1; mode=block');
   c.header('Referrer-Policy', 'strict-origin-when-cross-origin');
-  c.header('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss:;");
+  // Removed 'unsafe-eval' for better XSS protection
+  c.header('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss:;");
   await next();
 };
 
