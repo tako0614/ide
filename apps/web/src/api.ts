@@ -246,3 +246,68 @@ export function getGitDiff(
   });
   return request<GitDiff>(`/api/git/diff?${query.toString()}`);
 }
+
+/**
+ * Pushes commits to remote
+ */
+export function pushChanges(
+  workspaceId: string
+): Promise<{ success: boolean; branch: string }> {
+  return request('/api/git/push', {
+    method: HTTP_METHOD_POST,
+    headers: { 'Content-Type': CONTENT_TYPE_JSON },
+    body: JSON.stringify({ workspaceId })
+  });
+}
+
+/**
+ * Pulls changes from remote
+ */
+export function pullChanges(
+  workspaceId: string
+): Promise<{
+  success: boolean;
+  summary: { changes: number; insertions: number; deletions: number };
+}> {
+  return request('/api/git/pull', {
+    method: HTTP_METHOD_POST,
+    headers: { 'Content-Type': CONTENT_TYPE_JSON },
+    body: JSON.stringify({ workspaceId })
+  });
+}
+
+/**
+ * Fetches from remote
+ */
+export function fetchChanges(
+  workspaceId: string
+): Promise<{ success: boolean }> {
+  return request('/api/git/fetch', {
+    method: HTTP_METHOD_POST,
+    headers: { 'Content-Type': CONTENT_TYPE_JSON },
+    body: JSON.stringify({ workspaceId })
+  });
+}
+
+/**
+ * Gets branch status (ahead/behind)
+ */
+export function getBranchStatus(
+  workspaceId: string
+): Promise<{ ahead: number; behind: number; hasUpstream: boolean }> {
+  const query = new URLSearchParams({ workspaceId });
+  return request(`/api/git/branch-status?${query.toString()}`);
+}
+
+/**
+ * Gets remote configuration
+ */
+export function getGitRemotes(
+  workspaceId: string
+): Promise<{
+  remotes: { name: string; fetchUrl: string; pushUrl: string }[];
+  hasRemote: boolean;
+}> {
+  const query = new URLSearchParams({ workspaceId });
+  return request(`/api/git/remotes?${query.toString()}`);
+}

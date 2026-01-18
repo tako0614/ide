@@ -197,12 +197,42 @@ export const useFileOperations = ({
     [editorWorkspaceId, activeWorkspaceState.files, updateWorkspaceState, setStatusMessage]
   );
 
+  const handleCloseFile = useCallback(
+    (fileId: string) => {
+      if (!editorWorkspaceId) return;
+      updateWorkspaceState(editorWorkspaceId, (state) => {
+        const fileIndex = state.files.findIndex((f) => f.id === fileId);
+        const newFiles = state.files.filter((f) => f.id !== fileId);
+        let newActiveFileId = state.activeFileId;
+
+        // If closing the active file, select adjacent tab
+        if (state.activeFileId === fileId) {
+          if (newFiles.length === 0) {
+            newActiveFileId = null;
+          } else if (fileIndex >= newFiles.length) {
+            newActiveFileId = newFiles[newFiles.length - 1].id;
+          } else {
+            newActiveFileId = newFiles[fileIndex].id;
+          }
+        }
+
+        return {
+          ...state,
+          files: newFiles,
+          activeFileId: newActiveFileId
+        };
+      });
+    },
+    [editorWorkspaceId, updateWorkspaceState]
+  );
+
   return {
     savingFileId,
     handleRefreshTree,
     handleToggleDir,
     handleOpenFile,
     handleFileChange,
-    handleSaveFile
+    handleSaveFile,
+    handleCloseFile
   };
 };

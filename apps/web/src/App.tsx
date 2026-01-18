@@ -17,7 +17,7 @@ import { useWorkspaces } from './hooks/useWorkspaces';
 import { useDecks } from './hooks/useDecks';
 import { useFileOperations } from './hooks/useFileOperations';
 import { useGitState } from './hooks/useGitState';
-import type { AppView, WorkspaceMode } from './types';
+import type { AppView, WorkspaceMode, SidebarPanel } from './types';
 import {
   DEFAULT_ROOT_FALLBACK,
   SAVED_MESSAGE_TIMEOUT,
@@ -43,6 +43,7 @@ export default function App() {
   const [isWorkspaceModalOpen, setIsWorkspaceModalOpen] = useState(false);
   const [isDeckModalOpen, setIsDeckModalOpen] = useState(false);
   const [isDeckDrawerOpen, setIsDeckDrawerOpen] = useState(false);
+  const [sidebarPanel, setSidebarPanel] = useState<SidebarPanel>('files');
 
   const { workspaceStates, setWorkspaceStates, updateWorkspaceState, initializeWorkspaceStates } =
     useWorkspaceState();
@@ -77,7 +78,7 @@ export default function App() {
     ? deckStates[activeDeckId] || defaultDeckState
     : defaultDeckState;
 
-  const { savingFileId, handleRefreshTree, handleToggleDir, handleOpenFile, handleFileChange, handleSaveFile } =
+  const { savingFileId, handleRefreshTree, handleToggleDir, handleOpenFile, handleFileChange, handleSaveFile, handleCloseFile } =
     useFileOperations({
       editorWorkspaceId,
       activeWorkspaceState,
@@ -95,7 +96,9 @@ export default function App() {
     handleCommit,
     handleDiscardFile,
     handleShowDiff,
-    handleCloseDiff
+    handleCloseDiff,
+    handlePush,
+    handlePull
   } = useGitState(editorWorkspaceId, setStatusMessage);
 
   const wsBase = getWsBase();
@@ -177,11 +180,12 @@ export default function App() {
     }
   }, [workspaceMode, editorWorkspaceId]);
 
+  // Refresh git status when opening workspace editor
   useEffect(() => {
-    if (view === 'git' && editorWorkspaceId) {
+    if (workspaceMode === 'editor' && editorWorkspaceId) {
       refreshGitStatus();
     }
-  }, [view, editorWorkspaceId, refreshGitStatus]);
+  }, [workspaceMode, editorWorkspaceId, refreshGitStatus]);
 
   const handleOpenDeckModal = useCallback(() => {
     if (workspaces.length === 0) {
@@ -275,6 +279,8 @@ export default function App() {
 
   const isWorkspaceEditorOpen = workspaceMode === 'editor' && Boolean(editorWorkspaceId);
 
+  const gitChangeCount = gitState.status?.files.length ?? 0;
+
   const workspaceEditor = isWorkspaceEditorOpen ? (
     <div className="workspace-editor-overlay">
       <div className="workspace-editor-header">
@@ -292,16 +298,72 @@ export default function App() {
         </div>
       </div>
       <div className="workspace-editor-grid">
-        <FileTree
-          root={activeWorkspace?.path || defaultRoot || ''}
-          entries={activeWorkspaceState.tree}
-          loading={activeWorkspaceState.treeLoading}
-          error={activeWorkspaceState.treeError}
-          onToggleDir={handleToggleDir}
-          onOpenFile={handleOpenFile}
-          onRefresh={handleRefreshTree}
-          gitFiles={gitState.status?.files}
-        />
+        <div className="sidebar-panel">
+          <div className="sidebar-tabs">
+            <button
+              type="button"
+              className={`sidebar-tab ${sidebarPanel === 'files' ? 'active' : ''}`}
+              onClick={() => setSidebarPanel('files')}
+              title="Explorer"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              className={`sidebar-tab ${sidebarPanel === 'git' ? 'active' : ''}`}
+              onClick={() => {
+                setSidebarPanel('git');
+                refreshGitStatus();
+              }}
+              title="Source Control"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M6 3v12M18 9a3 3 0 110 6 3 3 0 010-6zM6 21a3 3 0 110-6 3 3 0 010 6z" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                <path d="M18 12c0 3-3 4-6 4s-6-1-6-4" fill="none" stroke="currentColor" strokeWidth="2" />
+              </svg>
+              {gitChangeCount > 0 && (
+                <span className="sidebar-tab-badge">{gitChangeCount}</span>
+              )}
+            </button>
+          </div>
+          <div className="sidebar-content">
+            {sidebarPanel === 'files' ? (
+              <FileTree
+                root={activeWorkspace?.path || defaultRoot || ''}
+                entries={activeWorkspaceState.tree}
+                loading={activeWorkspaceState.treeLoading}
+                error={activeWorkspaceState.treeError}
+                onToggleDir={handleToggleDir}
+                onOpenFile={handleOpenFile}
+                onRefresh={handleRefreshTree}
+                gitFiles={gitState.status?.files}
+              />
+            ) : (
+              <SourceControl
+                status={gitState.status}
+                loading={gitState.loading}
+                error={gitState.error}
+                workspaceId={editorWorkspaceId}
+                branchStatus={gitState.branchStatus}
+                hasRemote={gitState.hasRemote}
+                pushing={gitState.pushing}
+                pulling={gitState.pulling}
+                onRefresh={refreshGitStatus}
+                onStageFile={handleStageFile}
+                onUnstageFile={handleUnstageFile}
+                onStageAll={handleStageAll}
+                onUnstageAll={handleUnstageAll}
+                onCommit={handleCommit}
+                onDiscardFile={handleDiscardFile}
+                onShowDiff={handleShowDiff}
+                onPush={handlePush}
+                onPull={handlePull}
+              />
+            )}
+          </div>
+        </div>
         <EditorPane
           files={activeWorkspaceState.files}
           activeFileId={activeWorkspaceState.activeFileId}
@@ -312,12 +374,21 @@ export default function App() {
               activeFileId: fileId
             }));
           }}
+          onCloseFile={handleCloseFile}
           onChangeFile={handleFileChange}
           onSaveFile={handleSaveFile}
           savingFileId={savingFileId}
           theme={theme}
         />
       </div>
+      {gitState.diffPath && (
+        <DiffViewer
+          diff={gitState.diff}
+          loading={gitState.diffLoading}
+          theme={theme}
+          onClose={handleCloseDiff}
+        />
+      )}
     </div>
   ) : null;
 
@@ -388,8 +459,6 @@ export default function App() {
     </div>
   );
 
-  const gitChangeCount = gitState.status?.files.length ?? 0;
-
   return (
     <div className="app" data-view={view}>
       <SideNav
@@ -397,36 +466,9 @@ export default function App() {
         onSelect={setView}
         theme={theme}
         onToggleTheme={handleToggleTheme}
-        gitChangeCount={gitChangeCount}
       />
       <main className="main">
         {view === 'workspace' && workspaceView}
-        {view === 'git' && (
-          <div className="git-view">
-            <SourceControl
-              status={gitState.status}
-              loading={gitState.loading}
-              error={gitState.error}
-              workspaceId={editorWorkspaceId}
-              onRefresh={refreshGitStatus}
-              onStageFile={handleStageFile}
-              onUnstageFile={handleUnstageFile}
-              onStageAll={handleStageAll}
-              onUnstageAll={handleUnstageAll}
-              onCommit={handleCommit}
-              onDiscardFile={handleDiscardFile}
-              onShowDiff={handleShowDiff}
-            />
-            {gitState.diffPath && (
-              <DiffViewer
-                diff={gitState.diff}
-                loading={gitState.diffLoading}
-                theme={theme}
-                onClose={handleCloseDiff}
-              />
-            )}
-          </div>
-        )}
         {view === 'terminal' && terminalView}
       </main>
       <StatusMessage message={statusMessage} />

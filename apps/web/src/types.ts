@@ -27,9 +27,10 @@ export type {
   GitDiff
 } from '@deck-ide/shared/types';
 
-export type AppView = 'workspace' | 'terminal' | 'git';
+export type AppView = 'workspace' | 'terminal';
 export type WorkspaceMode = 'list' | 'editor';
 export type ThemeMode = 'light' | 'dark';
+export type SidebarPanel = 'files' | 'git';
 
 export interface UrlState {
   view: AppView;

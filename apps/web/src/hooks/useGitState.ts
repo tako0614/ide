@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useState, useEffect } from 'react';
 import type { GitStatus, GitFileStatus, GitDiff } from '../types';
 import {
   getGitStatus,
@@ -6,8 +6,19 @@ import {
   unstageFiles,
   commitChanges,
   discardChanges,
-  getGitDiff
+  getGitDiff,
+  pushChanges,
+  pullChanges,
+  fetchChanges,
+  getBranchStatus,
+  getGitRemotes
 } from '../api';
+
+export interface BranchStatus {
+  ahead: number;
+  behind: number;
+  hasUpstream: boolean;
+}
 
 export interface GitState {
   status: GitStatus | null;
@@ -16,6 +27,10 @@ export interface GitState {
   diffPath: string | null;
   diff: GitDiff | null;
   diffLoading: boolean;
+  branchStatus: BranchStatus | null;
+  hasRemote: boolean;
+  pushing: boolean;
+  pulling: boolean;
 }
 
 const createEmptyGitState = (): GitState => ({
@@ -24,7 +39,11 @@ const createEmptyGitState = (): GitState => ({
   error: null,
   diffPath: null,
   diff: null,
-  diffLoading: false
+  diffLoading: false,
+  branchStatus: null,
+  hasRemote: false,
+  pushing: false,
+  pulling: false
 });
 
 export const useGitState = (
@@ -42,10 +61,17 @@ export const useGitState = (
     setGitState((prev) => ({ ...prev, loading: true, error: null }));
 
     try {
-      const status = await getGitStatus(workspaceId);
+      const [status, branchStatus, remotes] = await Promise.all([
+        getGitStatus(workspaceId),
+        getBranchStatus(workspaceId).catch(() => ({ ahead: 0, behind: 0, hasUpstream: false })),
+        getGitRemotes(workspaceId).catch(() => ({ hasRemote: false, remotes: [] }))
+      ]);
+
       setGitState((prev) => ({
         ...prev,
         status,
+        branchStatus,
+        hasRemote: remotes.hasRemote,
         loading: false,
         error: null
       }));
@@ -200,6 +226,59 @@ export const useGitState = (
     }));
   }, []);
 
+  const handlePush = useCallback(async () => {
+    if (!workspaceId) return;
+
+    setGitState((prev) => ({ ...prev, pushing: true }));
+
+    try {
+      const result = await pushChanges(workspaceId);
+      setStatusMessage(`Pushed to ${result.branch}`);
+      await refreshGitStatus();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to push';
+      setStatusMessage(message);
+    } finally {
+      setGitState((prev) => ({ ...prev, pushing: false }));
+    }
+  }, [workspaceId, refreshGitStatus, setStatusMessage]);
+
+  const handlePull = useCallback(async () => {
+    if (!workspaceId) return;
+
+    setGitState((prev) => ({ ...prev, pulling: true }));
+
+    try {
+      const result = await pullChanges(workspaceId);
+      if (result.summary.changes > 0) {
+        setStatusMessage(
+          `Pulled: ${result.summary.changes} changes, +${result.summary.insertions} -${result.summary.deletions}`
+        );
+      } else {
+        setStatusMessage('Already up to date');
+      }
+      await refreshGitStatus();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to pull';
+      setStatusMessage(message);
+    } finally {
+      setGitState((prev) => ({ ...prev, pulling: false }));
+    }
+  }, [workspaceId, refreshGitStatus, setStatusMessage]);
+
+  const handleFetch = useCallback(async () => {
+    if (!workspaceId) return;
+
+    try {
+      await fetchChanges(workspaceId);
+      setStatusMessage('Fetched from remote');
+      await refreshGitStatus();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to fetch';
+      setStatusMessage(message);
+    }
+  }, [workspaceId, refreshGitStatus, setStatusMessage]);
+
   return {
     gitState,
     refreshGitStatus,
@@ -210,6 +289,9 @@ export const useGitState = (
     handleCommit,
     handleDiscardFile,
     handleShowDiff,
-    handleCloseDiff
+    handleCloseDiff,
+    handlePush,
+    handlePull,
+    handleFetch
   };
 };

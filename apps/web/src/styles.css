@@ -5,9 +5,11 @@
   --bg: #f5f5f5;
   --bg-soft: #ebebeb;
   --panel: #ffffff;
-  --border: #202020;
+  --border: #e0e0e0;
   --ink: #111111;
+  --ink-muted: #6e6e6e;
   --muted: #5c5c5c;
+  --accent: #007acc;
   --shadow: 0 8px 18px rgba(0, 0, 0, 0.06);
   --radius-lg: 14px;
   --radius-md: 10px;
@@ -18,12 +20,14 @@
 
 :root[data-theme='dark'] {
   color-scheme: dark;
-  --bg: #0e0e0e;
-  --bg-soft: #1a1a1a;
-  --panel: #151515;
-  --border: #2d2d2d;
-  --ink: #f5f5f5;
+  --bg: #1e1e1e;
+  --bg-soft: #252526;
+  --panel: #1e1e1e;
+  --border: #3c3c3c;
+  --ink: #cccccc;
+  --ink-muted: #858585;
   --muted: #b5b5b5;
+  --accent: #0078d4;
   --shadow: 0 10px 24px rgba(0, 0, 0, 0.6);
 }
 
@@ -251,6 +255,89 @@ textarea {
   grid-template-columns: 260px minmax(0, 1fr);
   gap: 12px;
   min-height: 0;
+}
+
+.sidebar-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.sidebar-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-soft);
+  flex-shrink: 0;
+}
+
+.sidebar-tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 10px 16px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  color: var(--ink-muted);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+
+.sidebar-tab svg {
+  width: 16px;
+  height: 16px;
+}
+
+.sidebar-tab:hover {
+  color: var(--ink);
+  background: var(--bg);
+}
+
+.sidebar-tab.active {
+  color: var(--ink);
+  background: var(--panel);
+  border-bottom: 2px solid var(--ink);
+  margin-bottom: -1px;
+}
+
+.sidebar-tab-badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+  background: var(--ink);
+  color: var(--bg);
+  border-radius: 8px;
+}
+
+.sidebar-content {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.sidebar-content .panel {
+  border: none;
+  border-radius: 0;
+}
+
+.sidebar-content .panel-header {
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  z-index: 1;
 }
 
 .field {
@@ -534,50 +621,264 @@ textarea {
   padding: 6px 8px;
 }
 
-.editor-pane .panel-body {
+/* ========================================
+   VS Code-like Editor Styles
+   ======================================== */
+
+.editor-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
   border-radius: var(--radius-md);
   overflow: hidden;
 }
 
-.editor-body {
+.editor-container.editor-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Welcome Screen */
+.editor-welcome {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  color: var(--ink-muted);
+  text-align: center;
+  padding: 40px;
+}
+
+.editor-welcome-icon {
+  width: 64px;
+  height: 64px;
+  opacity: 0.3;
+}
+
+.editor-welcome-icon svg {
+  width: 100%;
   height: 100%;
 }
 
-.tab-strip {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
+.editor-welcome-text {
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--ink);
 }
 
-.editor-actions {
+.editor-welcome-hint {
+  font-size: 13px;
+  opacity: 0.7;
+}
+
+/* Tab Bar */
+.editor-tabs {
   display: flex;
-  gap: 12px;
+  align-items: stretch;
+  background: var(--bg-soft);
+  border-bottom: 1px solid var(--border);
+  min-height: 36px;
+  flex-shrink: 0;
+}
+
+.editor-tabs-list {
+  display: flex;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.editor-tabs-list::-webkit-scrollbar {
+  display: none;
+}
+
+.editor-tab {
+  display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-
-.tab {
-  border: 1px solid var(--border);
-  background: var(--panel);
-  color: var(--muted);
-  padding: 4px 10px;
-  border-radius: var(--radius-xs);
+  gap: 6px;
+  padding: 0 12px;
+  min-width: 120px;
+  max-width: 200px;
+  height: 36px;
+  background: transparent;
+  border: none;
+  border-right: 1px solid var(--border);
+  color: var(--ink-muted);
   font-size: 12px;
   cursor: pointer;
-  transition: background 150ms ease, color 150ms ease;
+  transition: background 0.15s, color 0.15s;
+  position: relative;
 }
 
-.tab:hover,
-.tab:focus-visible {
+.editor-tab:hover {
+  background: var(--panel);
   color: var(--ink);
-  background: var(--bg-soft);
 }
 
-.tab.is-active {
+.editor-tab.active {
+  background: var(--panel);
   color: var(--ink);
+}
+
+.editor-tab.active::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent, #007acc);
+}
+
+.editor-tab-icon {
+  font-size: 10px;
+  font-weight: 700;
+  font-family: 'JetBrains Mono', monospace;
+  flex-shrink: 0;
+}
+
+.editor-tab-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.editor-tab-dirty {
+  color: var(--ink);
+  font-size: 10px;
+  flex-shrink: 0;
+}
+
+.editor-tab-saving {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+.editor-tab-saving svg {
+  width: 100%;
+  height: 100%;
+}
+
+.editor-tab-close {
+  width: 18px;
+  height: 18px;
+  padding: 2px;
+  border: none;
+  background: transparent;
+  border-radius: 4px;
+  color: var(--ink-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s;
+  flex-shrink: 0;
+}
+
+.editor-tab-close svg {
+  width: 100%;
+  height: 100%;
+}
+
+.editor-tab:hover .editor-tab-close,
+.editor-tab.active .editor-tab-close {
+  opacity: 1;
+}
+
+.editor-tab-close:hover {
   background: var(--bg-soft);
+  color: var(--ink);
+}
+
+.editor-tab.dirty .editor-tab-close {
+  opacity: 0;
+}
+
+.editor-tab.dirty:hover .editor-tab-close {
+  opacity: 1;
+}
+
+.editor-tab.dirty:hover .editor-tab-dirty {
+  display: none;
+}
+
+/* Breadcrumb */
+.editor-breadcrumb {
+  display: flex;
+  align-items: center;
+  padding: 4px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--ink-muted);
+  min-height: 24px;
+  flex-shrink: 0;
+}
+
+.editor-breadcrumb-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Editor Content */
+.editor-content {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+
+.editor-no-file {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--ink-muted);
+}
+
+/* Status Bar */
+.editor-statusbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  height: 24px;
+  background: var(--accent, #007acc);
+  color: white;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.editor-statusbar-left,
+.editor-statusbar-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.editor-status-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: default;
+}
+
+.editor-status-item svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* Spin animation for saving indicator */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.spin {
+  animation: spin 1s linear infinite;
 }
 
 .terminal-layout {
@@ -1112,6 +1413,46 @@ input:focus-visible {
   width: 16px;
   height: 16px;
   fill: currentColor;
+}
+
+/* Sync section */
+.sync-section {
+  display: flex;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.sync-button {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 12px;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 150ms ease, opacity 150ms ease;
+}
+
+.sync-button:hover:not(:disabled) {
+  background: var(--panel);
+}
+
+.sync-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.sync-button svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
 }
 
 /* Diff viewer */

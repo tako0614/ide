@@ -1,4 +1,4 @@
-type AppView = 'workspace' | 'terminal' | 'git';
+type AppView = 'workspace' | 'terminal';
 type ThemeMode = 'light' | 'dark';
 
 interface SideNavProps {
@@ -6,12 +6,10 @@ interface SideNavProps {
   onSelect: (view: AppView) => void;
   theme: ThemeMode;
   onToggleTheme: () => void;
-  gitChangeCount?: number;
 }
 
 const LABEL_PROJECT = '\u30ef\u30fc\u30af\u30b9\u30da\u30fc\u30b9';
 const LABEL_TERMINAL = '\u30bf\u30fc\u30df\u30ca\u30eb';
-const LABEL_GIT = '\u30bd\u30fc\u30b9\u30b3\u30f3\u30c8\u30ed\u30fc\u30eb';
 const LABEL_THEME = '\u30c6\u30fc\u30de\u5207\u66ff';
 const LABEL_TO_LIGHT = '\u30e9\u30a4\u30c8\u306b\u5207\u66ff';
 const LABEL_TO_DARK = '\u30c0\u30fc\u30af\u306b\u5207\u66ff';
@@ -20,8 +18,7 @@ export function SideNav({
   activeView,
   onSelect,
   theme,
-  onToggleTheme,
-  gitChangeCount
+  onToggleTheme
 }: SideNavProps) {
   return (
     <nav className="side-nav">
@@ -36,29 +33,6 @@ export function SideNav({
           <rect x="3" y="4" width="18" height="4" rx="1.5" />
           <rect x="3" y="10" width="18" height="10" rx="2" />
         </svg>
-      </button>
-      <button
-        type="button"
-        className={activeView === 'git' ? 'is-active' : ''}
-        onClick={() => onSelect('git')}
-        aria-label={LABEL_GIT}
-        title={LABEL_GIT}
-      >
-        <svg viewBox="0 0 24 24" aria-hidden="true" className="git-nav-icon">
-          <circle cx="7" cy="7" r="2.5" fill="none" stroke="currentColor" strokeWidth="1.6" />
-          <circle cx="17" cy="12" r="2.5" fill="none" stroke="currentColor" strokeWidth="1.6" />
-          <circle cx="7" cy="17" r="2.5" fill="none" stroke="currentColor" strokeWidth="1.6" />
-          <path
-            d="M7 9.5v5M9.5 7h5c1.5 0 2.5 1 2.5 2.5"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.6"
-            strokeLinecap="round"
-          />
-        </svg>
-        {gitChangeCount && gitChangeCount > 0 ? (
-          <span className="git-badge">{gitChangeCount > 99 ? '99+' : gitChangeCount}</span>
-        ) : null}
       </button>
       <button
         type="button"

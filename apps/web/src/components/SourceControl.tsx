@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
 import type { GitStatus, GitFileStatus } from '../types';
 import { GitFileRow } from './GitFileRow';
+import type { BranchStatus } from '../hooks/useGitState';
 
 const LABEL_SOURCE_CONTROL = 'ソースコントロール';
 const LABEL_NOT_GIT_REPO = 'Gitリポジトリではありません';
@@ -14,12 +15,20 @@ const LABEL_COMMIT_PLACEHOLDER = 'コミットメッセージを入力...';
 const LABEL_NO_CHANGES = '変更はありません';
 const LABEL_STAGE_ALL = 'すべてステージ';
 const LABEL_UNSTAGE_ALL = 'すべてアンステージ';
+const LABEL_PUSH = 'Push';
+const LABEL_PULL = 'Pull';
+const LABEL_PUSHING = 'Pushing...';
+const LABEL_PULLING = 'Pulling...';
 
 interface SourceControlProps {
   status: GitStatus | null;
   loading: boolean;
   error: string | null;
   workspaceId: string | null;
+  branchStatus: BranchStatus | null;
+  hasRemote: boolean;
+  pushing: boolean;
+  pulling: boolean;
   onRefresh: () => void;
   onStageFile: (path: string) => void;
   onUnstageFile: (path: string) => void;
@@ -28,6 +37,8 @@ interface SourceControlProps {
   onCommit: (message: string) => void;
   onDiscardFile: (path: string) => void;
   onShowDiff: (file: GitFileStatus) => void;
+  onPush: () => void;
+  onPull: () => void;
 }
 
 export function SourceControl({
@@ -35,6 +46,10 @@ export function SourceControl({
   loading,
   error,
   workspaceId,
+  branchStatus,
+  hasRemote,
+  pushing,
+  pulling,
   onRefresh,
   onStageFile,
   onUnstageFile,
@@ -42,7 +57,9 @@ export function SourceControl({
   onUnstageAll,
   onCommit,
   onDiscardFile,
-  onShowDiff
+  onShowDiff,
+  onPush,
+  onPull
 }: SourceControlProps) {
   const [commitMessage, setCommitMessage] = useState('');
 
@@ -174,6 +191,38 @@ export function SourceControl({
             {LABEL_COMMIT}
           </button>
         </div>
+
+        {/* Sync buttons */}
+        {hasRemote && (
+          <div className="sync-section">
+            <button
+              type="button"
+              className="sync-button"
+              onClick={onPull}
+              disabled={pulling || pushing}
+              title={branchStatus?.behind ? `${branchStatus.behind} commits behind` : LABEL_PULL}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 4v12m0 0l-4-4m4 4l4-4M4 20h16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              {pulling ? LABEL_PULLING : LABEL_PULL}
+              {branchStatus?.behind ? ` (${branchStatus.behind})` : ''}
+            </button>
+            <button
+              type="button"
+              className="sync-button"
+              onClick={onPush}
+              disabled={pushing || pulling}
+              title={branchStatus?.ahead ? `${branchStatus.ahead} commits ahead` : LABEL_PUSH}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 20V8m0 0l4 4m-4-4l-4 4M4 4h16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              {pushing ? LABEL_PUSHING : LABEL_PUSH}
+              {branchStatus?.ahead ? ` (${branchStatus.ahead})` : ''}
+            </button>
+          </div>
+        )}
 
         {!hasChanges ? (
           <div className="empty-state">{LABEL_NO_CHANGES}</div>

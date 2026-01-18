@@ -427,5 +427,156 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
     }
   });
 
+  // POST /api/git/push
+  router.post('/push', async (c) => {
+    try {
+      const body = await readJson<{ workspaceId: string }>(c);
+      if (!body?.workspaceId) {
+        throw createHttpError('workspaceId is required', 400);
+      }
+
+      const workspace = requireWorkspace(workspaces, body.workspaceId);
+      const git = simpleGit(workspace.path);
+
+      // Check if we have a remote
+      const remotes = await git.getRemotes(true);
+      if (remotes.length === 0) {
+        throw createHttpError('No remote configured', 400);
+      }
+
+      // Get current branch
+      const status = await git.status();
+      const branch = status.current;
+      if (!branch) {
+        throw createHttpError('No branch checked out', 400);
+      }
+
+      // Push to origin
+      const result = await git.push('origin', branch);
+
+      return c.json({
+        success: true,
+        pushed: result.pushed || [],
+        branch
+      });
+    } catch (error) {
+      return handleError(c, error);
+    }
+  });
+
+  // POST /api/git/pull
+  router.post('/pull', async (c) => {
+    try {
+      const body = await readJson<{ workspaceId: string }>(c);
+      if (!body?.workspaceId) {
+        throw createHttpError('workspaceId is required', 400);
+      }
+
+      const workspace = requireWorkspace(workspaces, body.workspaceId);
+      const git = simpleGit(workspace.path);
+
+      // Check if we have a remote
+      const remotes = await git.getRemotes(true);
+      if (remotes.length === 0) {
+        throw createHttpError('No remote configured', 400);
+      }
+
+      const result = await git.pull();
+
+      return c.json({
+        success: true,
+        summary: {
+          changes: result.summary.changes,
+          insertions: result.summary.insertions,
+          deletions: result.summary.deletions
+        }
+      });
+    } catch (error) {
+      return handleError(c, error);
+    }
+  });
+
+  // POST /api/git/fetch
+  router.post('/fetch', async (c) => {
+    try {
+      const body = await readJson<{ workspaceId: string }>(c);
+      if (!body?.workspaceId) {
+        throw createHttpError('workspaceId is required', 400);
+      }
+
+      const workspace = requireWorkspace(workspaces, body.workspaceId);
+      const git = simpleGit(workspace.path);
+
+      await git.fetch();
+
+      return c.json({ success: true });
+    } catch (error) {
+      return handleError(c, error);
+    }
+  });
+
+  // GET /api/git/remotes?workspaceId=xxx
+  router.get('/remotes', async (c) => {
+    try {
+      const workspaceId = c.req.query('workspaceId');
+      if (!workspaceId) {
+        throw createHttpError('workspaceId is required', 400);
+      }
+
+      const workspace = requireWorkspace(workspaces, workspaceId);
+      const git = simpleGit(workspace.path);
+
+      const isRepo = await isGitRepository(git);
+      if (!isRepo) {
+        return c.json({ remotes: [], hasRemote: false });
+      }
+
+      const remotes = await git.getRemotes(true);
+
+      return c.json({
+        remotes: remotes.map((r) => ({
+          name: r.name,
+          fetchUrl: r.refs.fetch,
+          pushUrl: r.refs.push
+        })),
+        hasRemote: remotes.length > 0
+      });
+    } catch (error) {
+      return handleError(c, error);
+    }
+  });
+
+  // GET /api/git/branch-status?workspaceId=xxx
+  router.get('/branch-status', async (c) => {
+    try {
+      const workspaceId = c.req.query('workspaceId');
+      if (!workspaceId) {
+        throw createHttpError('workspaceId is required', 400);
+      }
+
+      const workspace = requireWorkspace(workspaces, workspaceId);
+      const git = simpleGit(workspace.path);
+
+      const isRepo = await isGitRepository(git);
+      if (!isRepo) {
+        return c.json({
+          ahead: 0,
+          behind: 0,
+          hasUpstream: false
+        });
+      }
+
+      const status = await git.status();
+
+      return c.json({
+        ahead: status.ahead,
+        behind: status.behind,
+        hasUpstream: status.tracking !== null
+      });
+    } catch (error) {
+      return handleError(c, error);
+    }
+  });
+
   return router;
 }
