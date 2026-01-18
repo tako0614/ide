@@ -19,7 +19,8 @@
       "Bash(git commit -m \"$\\(cat <<''EOF''\nfix\\(api\\): add credentials include for Basic Auth support\n\n- Add credentials: ''include'' to fetch requests\n- Enables browser to send cached Basic Auth credentials\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n\\)\")",
       "Bash(git commit:*)",
       "Bash(gh release view:*)",
-      "Bash(gh release edit v0.1 --notes \"$\\(cat <<''EOF''\n## Deck IDE v0.1\n\nInitial release with desktop app support.\n\n### Features\n- VS Code-like IDE with terminal support\n- Git integration \\(status, stage, commit, push, pull, branches\\)\n- File explorer with git status colors\n- Monaco Editor with syntax highlighting\n- Desktop app with system tray support\n- Configurable port and Basic Authentication\n- Port kill functionality for startup issues\n- **Auto-updater** - automatically checks for updates on GitHub Releases\n\n### Security\n- HTTP API: Protected with Basic Auth\n- WebSocket: Protected with one-time token authentication\n\n### Downloads\n- **Windows**: Deck IDE Setup 0.1.0.exe\nEOF\n\\)\")"
+      "Bash(gh release edit v0.1 --notes \"$\\(cat <<''EOF''\n## Deck IDE v0.1\n\nInitial release with desktop app support.\n\n### Features\n- VS Code-like IDE with terminal support\n- Git integration \\(status, stage, commit, push, pull, branches\\)\n- File explorer with git status colors\n- Monaco Editor with syntax highlighting\n- Desktop app with system tray support\n- Configurable port and Basic Authentication\n- Port kill functionality for startup issues\n- **Auto-updater** - automatically checks for updates on GitHub Releases\n\n### Security\n- HTTP API: Protected with Basic Auth\n- WebSocket: Protected with one-time token authentication\n\n### Downloads\n- **Windows**: Deck IDE Setup 0.1.0.exe\nEOF\n\\)\")",
+      "Bash(npm version:*)"
     ],
     "deny": [],
     "ask": []

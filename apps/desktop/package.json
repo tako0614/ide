@@ -3,7 +3,7 @@
   "description": "Deck IDE server manager for Windows",
   "author": "Deck IDE",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "main": "src/main.cjs",
   "scripts": {
     "dev": "electron .",
@@ -46,7 +46,9 @@
       {
         "from": "node_modules/@deck-ide",
         "to": "app.asar.unpacked/node_modules/@deck-ide",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "publish": {
