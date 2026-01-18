@@ -139,6 +139,63 @@ export function writeFile(
 }
 
 /**
+ * Creates a new file
+ */
+export function createFile(
+  workspaceId: string,
+  path: string,
+  contents = ''
+): Promise<{ path: string; created: boolean }> {
+  return request<{ path: string; created: boolean }>('/api/file', {
+    method: HTTP_METHOD_POST,
+    headers: { 'Content-Type': CONTENT_TYPE_JSON },
+    body: JSON.stringify({ workspaceId, path, contents })
+  });
+}
+
+/**
+ * Deletes a file
+ */
+export function deleteFile(
+  workspaceId: string,
+  path: string
+): Promise<{ path: string; deleted: boolean }> {
+  const query = new URLSearchParams({ workspaceId, path });
+  return request<{ path: string; deleted: boolean }>(
+    `/api/file?${query.toString()}`,
+    { method: HTTP_METHOD_DELETE }
+  );
+}
+
+/**
+ * Creates a new directory
+ */
+export function createDirectory(
+  workspaceId: string,
+  path: string
+): Promise<{ path: string; created: boolean }> {
+  return request<{ path: string; created: boolean }>('/api/dir', {
+    method: HTTP_METHOD_POST,
+    headers: { 'Content-Type': CONTENT_TYPE_JSON },
+    body: JSON.stringify({ workspaceId, path })
+  });
+}
+
+/**
+ * Deletes a directory
+ */
+export function deleteDirectory(
+  workspaceId: string,
+  path: string
+): Promise<{ path: string; deleted: boolean }> {
+  const query = new URLSearchParams({ workspaceId, path });
+  return request<{ path: string; deleted: boolean }>(
+    `/api/dir?${query.toString()}`,
+    { method: HTTP_METHOD_DELETE }
+  );
+}
+
+/**
  * Creates a new terminal session
  */
 export function createTerminal(

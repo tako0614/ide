@@ -80,13 +80,24 @@ export default function App() {
     ? deckStates[activeDeckId] || defaultDeckState
     : defaultDeckState;
 
-  const { savingFileId, handleRefreshTree, handleToggleDir, handleOpenFile, handleFileChange, handleSaveFile, handleCloseFile } =
-    useFileOperations({
-      editorWorkspaceId,
-      activeWorkspaceState,
-      updateWorkspaceState,
-      setStatusMessage
-    });
+  const {
+    savingFileId,
+    handleRefreshTree,
+    handleToggleDir,
+    handleOpenFile,
+    handleFileChange,
+    handleSaveFile,
+    handleCloseFile,
+    handleCreateFile,
+    handleCreateDirectory,
+    handleDeleteFile,
+    handleDeleteDirectory
+  } = useFileOperations({
+    editorWorkspaceId,
+    activeWorkspaceState,
+    updateWorkspaceState,
+    setStatusMessage
+  });
 
   const {
     gitState,
@@ -389,6 +400,10 @@ export default function App() {
                 onToggleDir={handleToggleDir}
                 onOpenFile={handleOpenFile}
                 onRefresh={handleRefreshTree}
+                onCreateFile={handleCreateFile}
+                onCreateDirectory={handleCreateDirectory}
+                onDeleteFile={handleDeleteFile}
+                onDeleteDirectory={handleDeleteDirectory}
                 gitFiles={gitState.status?.files}
               />
             ) : (

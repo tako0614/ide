@@ -218,5 +218,128 @@ export function createFileRouter(workspaces: Map<string, Workspace>) {
     }
   });
 
+  // Create new file
+  router.post('/file', fileUploadRateLimitMiddleware, async (c) => {
+    try {
+      const body = await readJson<{
+        workspaceId?: string;
+        path?: string;
+        contents?: string;
+      }>(c);
+      const workspaceId = body?.workspaceId;
+      if (!workspaceId) {
+        throw createHttpError('workspaceId is required', 400);
+      }
+      if (!body?.path) {
+        throw createHttpError('path is required', 400);
+      }
+      const workspace = requireWorkspace(workspaces, workspaceId);
+      const target = await resolveSafePath(workspace.path, body.path);
+
+      // Check if file already exists
+      try {
+        await fs.access(target);
+        throw createHttpError('File already exists', 409);
+      } catch (err: unknown) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+          throw err;
+        }
+      }
+
+      const contents = body?.contents ?? '';
+      await fs.mkdir(path.dirname(target), { recursive: true });
+      await fs.writeFile(target, contents, 'utf8');
+      return c.json({ path: body.path, created: true });
+    } catch (error) {
+      return handleError(c, error);
+    }
+  });
+
+  // Delete file
+  router.delete('/file', async (c) => {
+    try {
+      const workspaceId = c.req.query('workspaceId');
+      if (!workspaceId) {
+        throw createHttpError('workspaceId is required', 400);
+      }
+      const filePath = c.req.query('path');
+      if (!filePath) {
+        throw createHttpError('path is required', 400);
+      }
+      const workspace = requireWorkspace(workspaces, workspaceId);
+      const target = await resolveSafePath(workspace.path, filePath);
+
+      const stats = await fs.stat(target);
+      if (stats.isDirectory()) {
+        throw createHttpError('Path is a directory, use DELETE /dir instead', 400);
+      }
+
+      await fs.unlink(target);
+      return c.json({ path: filePath, deleted: true });
+    } catch (error) {
+      return handleError(c, error);
+    }
+  });
+
+  // Create directory
+  router.post('/dir', async (c) => {
+    try {
+      const body = await readJson<{
+        workspaceId?: string;
+        path?: string;
+      }>(c);
+      const workspaceId = body?.workspaceId;
+      if (!workspaceId) {
+        throw createHttpError('workspaceId is required', 400);
+      }
+      if (!body?.path) {
+        throw createHttpError('path is required', 400);
+      }
+      const workspace = requireWorkspace(workspaces, workspaceId);
+      const target = await resolveSafePath(workspace.path, body.path);
+
+      // Check if already exists
+      try {
+        await fs.access(target);
+        throw createHttpError('Directory already exists', 409);
+      } catch (err: unknown) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+          throw err;
+        }
+      }
+
+      await fs.mkdir(target, { recursive: true });
+      return c.json({ path: body.path, created: true });
+    } catch (error) {
+      return handleError(c, error);
+    }
+  });
+
+  // Delete directory
+  router.delete('/dir', async (c) => {
+    try {
+      const workspaceId = c.req.query('workspaceId');
+      if (!workspaceId) {
+        throw createHttpError('workspaceId is required', 400);
+      }
+      const dirPath = c.req.query('path');
+      if (!dirPath) {
+        throw createHttpError('path is required', 400);
+      }
+      const workspace = requireWorkspace(workspaces, workspaceId);
+      const target = await resolveSafePath(workspace.path, dirPath);
+
+      const stats = await fs.stat(target);
+      if (!stats.isDirectory()) {
+        throw createHttpError('Path is not a directory', 400);
+      }
+
+      await fs.rm(target, { recursive: true });
+      return c.json({ path: dirPath, deleted: true });
+    } catch (error) {
+      return handleError(c, error);
+    }
+  });
+
   return router;
 }

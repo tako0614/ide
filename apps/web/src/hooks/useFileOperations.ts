@@ -1,6 +1,6 @@
 import { useCallback, useState, useRef } from 'react';
 import type { EditorFile, FileTreeNode, WorkspaceState } from '../types';
-import { listFiles, readFile, writeFile } from '../api';
+import { listFiles, readFile, writeFile, createFile, deleteFile, createDirectory, deleteDirectory } from '../api';
 import { getErrorMessage, getLanguageFromPath, toTreeNodes, SAVED_MESSAGE } from '../utils';
 
 // API timeout wrapper
@@ -254,6 +254,157 @@ export const useFileOperations = ({
     [editorWorkspaceId, updateWorkspaceState]
   );
 
+  // Helper to remove a node from tree
+  const removeTreeNode = useCallback(
+    (nodes: FileTreeNode[], targetPath: string): FileTreeNode[] =>
+      nodes.filter((node) => {
+        if (node.path === targetPath) {
+          return false;
+        }
+        if (node.children) {
+          node.children = removeTreeNode(node.children, targetPath);
+        }
+        return true;
+      }),
+    []
+  );
+
+  // Helper to add a node to tree
+  const addTreeNode = useCallback(
+    (nodes: FileTreeNode[], parentPath: string, newNode: FileTreeNode): FileTreeNode[] => {
+      // If parent is root (empty string), add to root level
+      if (!parentPath) {
+        const updated = [...nodes, newNode];
+        return updated.sort((a, b) => {
+          if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+          return a.name.localeCompare(b.name);
+        });
+      }
+      return nodes.map((node) => {
+        if (node.path === parentPath && node.type === 'dir') {
+          const children = node.children || [];
+          const updated = [...children, newNode].sort((a, b) => {
+            if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+            return a.name.localeCompare(b.name);
+          });
+          return { ...node, children: updated, expanded: true };
+        }
+        if (node.children) {
+          return { ...node, children: addTreeNode(node.children, parentPath, newNode) };
+        }
+        return node;
+      });
+    },
+    []
+  );
+
+  const handleCreateFile = useCallback(
+    async (parentPath: string, fileName: string) => {
+      if (!editorWorkspaceId) return;
+      const filePath = parentPath ? `${parentPath}/${fileName}` : fileName;
+      try {
+        await withTimeout(createFile(editorWorkspaceId, filePath));
+        const newNode: FileTreeNode = {
+          name: fileName,
+          path: filePath,
+          type: 'file',
+          expanded: false,
+          loading: false
+        };
+        updateWorkspaceState(editorWorkspaceId, (state) => ({
+          ...state,
+          tree: addTreeNode(state.tree, parentPath, newNode)
+        }));
+        setStatusMessage(`ファイルを作成しました: ${fileName}`);
+      } catch (error: unknown) {
+        setStatusMessage(`ファイル作成に失敗しました: ${getErrorMessage(error)}`);
+      }
+    },
+    [editorWorkspaceId, updateWorkspaceState, setStatusMessage, addTreeNode]
+  );
+
+  const handleCreateDirectory = useCallback(
+    async (parentPath: string, dirName: string) => {
+      if (!editorWorkspaceId) return;
+      const dirPath = parentPath ? `${parentPath}/${dirName}` : dirName;
+      try {
+        await withTimeout(createDirectory(editorWorkspaceId, dirPath));
+        const newNode: FileTreeNode = {
+          name: dirName,
+          path: dirPath,
+          type: 'dir',
+          expanded: false,
+          loading: false,
+          children: []
+        };
+        updateWorkspaceState(editorWorkspaceId, (state) => ({
+          ...state,
+          tree: addTreeNode(state.tree, parentPath, newNode)
+        }));
+        setStatusMessage(`フォルダを作成しました: ${dirName}`);
+      } catch (error: unknown) {
+        setStatusMessage(`フォルダ作成に失敗しました: ${getErrorMessage(error)}`);
+      }
+    },
+    [editorWorkspaceId, updateWorkspaceState, setStatusMessage, addTreeNode]
+  );
+
+  const handleDeleteFile = useCallback(
+    async (filePath: string) => {
+      if (!editorWorkspaceId) return;
+      try {
+        await withTimeout(deleteFile(editorWorkspaceId, filePath));
+        updateWorkspaceState(editorWorkspaceId, (state) => {
+          // Close the file if it's open
+          const newFiles = state.files.filter((f) => f.path !== filePath);
+          let newActiveFileId = state.activeFileId;
+          const deletedFile = state.files.find((f) => f.path === filePath);
+          if (deletedFile && state.activeFileId === deletedFile.id) {
+            newActiveFileId = newFiles.length > 0 ? newFiles[0].id : null;
+          }
+          return {
+            ...state,
+            files: newFiles,
+            activeFileId: newActiveFileId,
+            tree: removeTreeNode(state.tree, filePath)
+          };
+        });
+        setStatusMessage(`ファイルを削除しました`);
+      } catch (error: unknown) {
+        setStatusMessage(`ファイル削除に失敗しました: ${getErrorMessage(error)}`);
+      }
+    },
+    [editorWorkspaceId, updateWorkspaceState, setStatusMessage, removeTreeNode]
+  );
+
+  const handleDeleteDirectory = useCallback(
+    async (dirPath: string) => {
+      if (!editorWorkspaceId) return;
+      try {
+        await withTimeout(deleteDirectory(editorWorkspaceId, dirPath));
+        updateWorkspaceState(editorWorkspaceId, (state) => {
+          // Close any files that were in this directory
+          const newFiles = state.files.filter((f) => !f.path.startsWith(dirPath + '/') && f.path !== dirPath);
+          let newActiveFileId = state.activeFileId;
+          const activeFile = state.files.find((f) => f.id === state.activeFileId);
+          if (activeFile && (activeFile.path.startsWith(dirPath + '/') || activeFile.path === dirPath)) {
+            newActiveFileId = newFiles.length > 0 ? newFiles[0].id : null;
+          }
+          return {
+            ...state,
+            files: newFiles,
+            activeFileId: newActiveFileId,
+            tree: removeTreeNode(state.tree, dirPath)
+          };
+        });
+        setStatusMessage(`フォルダを削除しました`);
+      } catch (error: unknown) {
+        setStatusMessage(`フォルダ削除に失敗しました: ${getErrorMessage(error)}`);
+      }
+    },
+    [editorWorkspaceId, updateWorkspaceState, setStatusMessage, removeTreeNode]
+  );
+
   return {
     savingFileId,
     handleRefreshTree,
@@ -261,6 +412,10 @@ export const useFileOperations = ({
     handleOpenFile,
     handleFileChange,
     handleSaveFile,
-    handleCloseFile
+    handleCloseFile,
+    handleCreateFile,
+    handleCreateDirectory,
+    handleDeleteFile,
+    handleDeleteDirectory
   };
 };
