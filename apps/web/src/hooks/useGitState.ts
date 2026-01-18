@@ -54,7 +54,7 @@ export interface GitState {
   logsLoading: boolean;
 }
 
-const createEmptyGitState = (): GitState => ({
+export const createEmptyGitState = (): GitState => ({
   status: null,
   loading: false,
   error: null,
@@ -81,87 +81,116 @@ const withTimeout = <T>(promise: Promise<T>, timeoutMs = 10000): Promise<T> => {
   ]);
 };
 
+/**
+ * Multi-workspace git state management hook
+ * Maintains separate git states for each workspace
+ */
 export const useGitState = (
-  workspaceId: string | null,
+  activeWorkspaceId: string | null,
   setStatusMessage: (message: string) => void
 ) => {
-  const [gitState, setGitState] = useState<GitState>(createEmptyGitState());
-  const loadingRef = useRef(false);
+  // Map of workspaceId -> GitState
+  const [gitStates, setGitStates] = useState<Record<string, GitState>>({});
+  const loadingRefs = useRef<Record<string, boolean>>({});
 
-  const refreshGitStatus = useCallback(async () => {
-    if (!workspaceId) {
-      setGitState(createEmptyGitState());
-      return;
-    }
+  // Get git state for active workspace
+  const gitState = activeWorkspaceId
+    ? gitStates[activeWorkspaceId] || createEmptyGitState()
+    : createEmptyGitState();
 
-    // Prevent concurrent calls
-    if (loadingRef.current) {
-      return;
-    }
-    loadingRef.current = true;
-
-    setGitState((prev) => ({ ...prev, loading: true, error: null }));
-
-    try {
-      const [status, branchStatus, remotes] = await Promise.all([
-        withTimeout(getGitStatus(workspaceId)),
-        withTimeout(getBranchStatus(workspaceId)).catch(() => ({ ahead: 0, behind: 0, hasUpstream: false })),
-        withTimeout(getGitRemotes(workspaceId)).catch(() => ({ hasRemote: false, remotes: [] }))
-      ]);
-
-      setGitState((prev) => ({
+  // Update git state for a specific workspace
+  const updateGitState = useCallback(
+    (workspaceId: string, updater: (prev: GitState) => GitState) => {
+      setGitStates((prev) => ({
         ...prev,
-        status,
-        branchStatus,
-        hasRemote: remotes.hasRemote,
-        loading: false,
-        error: null
+        [workspaceId]: updater(prev[workspaceId] || createEmptyGitState())
       }));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to get git status';
-      setGitState((prev) => ({
-        ...prev,
-        status: null,
-        loading: false,
-        error: message
-      }));
-    } finally {
-      loadingRef.current = false;
-    }
-  }, [workspaceId]);
+    },
+    []
+  );
+
+  // Refresh git status for a specific workspace (or active workspace if not specified)
+  const refreshGitStatus = useCallback(
+    async (targetWorkspaceId?: string) => {
+      const workspaceId = targetWorkspaceId || activeWorkspaceId;
+      if (!workspaceId) return;
+
+      // Prevent concurrent calls for the same workspace
+      if (loadingRefs.current[workspaceId]) {
+        return;
+      }
+      loadingRefs.current[workspaceId] = true;
+
+      updateGitState(workspaceId, (prev) => ({ ...prev, loading: true, error: null }));
+
+      try {
+        const [status, branchStatus, remotes] = await Promise.all([
+          withTimeout(getGitStatus(workspaceId)),
+          withTimeout(getBranchStatus(workspaceId)).catch(() => ({ ahead: 0, behind: 0, hasUpstream: false })),
+          withTimeout(getGitRemotes(workspaceId)).catch(() => ({ hasRemote: false, remotes: [] }))
+        ]);
+
+        updateGitState(workspaceId, (prev) => ({
+          ...prev,
+          status,
+          branchStatus,
+          hasRemote: remotes.hasRemote,
+          loading: false,
+          error: null
+        }));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Failed to get git status';
+        updateGitState(workspaceId, (prev) => ({
+          ...prev,
+          status: null,
+          loading: false,
+          error: message
+        }));
+      } finally {
+        loadingRefs.current[workspaceId] = false;
+      }
+    },
+    [activeWorkspaceId, updateGitState]
+  );
+
+  // Refresh all known workspaces
+  const refreshAllGitStatuses = useCallback(async () => {
+    const workspaceIds = Object.keys(gitStates);
+    await Promise.all(workspaceIds.map((id) => refreshGitStatus(id)));
+  }, [gitStates, refreshGitStatus]);
 
   const handleStageFile = useCallback(
     async (path: string) => {
-      if (!workspaceId) return;
+      if (!activeWorkspaceId) return;
 
       try {
-        await stageFiles(workspaceId, [path]);
+        await stageFiles(activeWorkspaceId, [path]);
         await refreshGitStatus();
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Failed to stage file';
         setStatusMessage(message);
       }
     },
-    [workspaceId, refreshGitStatus, setStatusMessage]
+    [activeWorkspaceId, refreshGitStatus, setStatusMessage]
   );
 
   const handleUnstageFile = useCallback(
     async (path: string) => {
-      if (!workspaceId) return;
+      if (!activeWorkspaceId) return;
 
       try {
-        await unstageFiles(workspaceId, [path]);
+        await unstageFiles(activeWorkspaceId, [path]);
         await refreshGitStatus();
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Failed to unstage file';
         setStatusMessage(message);
       }
     },
-    [workspaceId, refreshGitStatus, setStatusMessage]
+    [activeWorkspaceId, refreshGitStatus, setStatusMessage]
   );
 
   const handleStageAll = useCallback(async () => {
-    if (!workspaceId || !gitState.status) return;
+    if (!activeWorkspaceId || !gitState.status) return;
 
     const unstagedFiles = gitState.status.files
       .filter((f) => !f.staged)
@@ -170,16 +199,16 @@ export const useGitState = (
     if (unstagedFiles.length === 0) return;
 
     try {
-      await stageFiles(workspaceId, unstagedFiles);
+      await stageFiles(activeWorkspaceId, unstagedFiles);
       await refreshGitStatus();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to stage files';
       setStatusMessage(message);
     }
-  }, [workspaceId, gitState.status, refreshGitStatus, setStatusMessage]);
+  }, [activeWorkspaceId, gitState.status, refreshGitStatus, setStatusMessage]);
 
   const handleUnstageAll = useCallback(async () => {
-    if (!workspaceId || !gitState.status) return;
+    if (!activeWorkspaceId || !gitState.status) return;
 
     const stagedFiles = gitState.status.files
       .filter((f) => f.staged)
@@ -188,20 +217,20 @@ export const useGitState = (
     if (stagedFiles.length === 0) return;
 
     try {
-      await unstageFiles(workspaceId, stagedFiles);
+      await unstageFiles(activeWorkspaceId, stagedFiles);
       await refreshGitStatus();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to unstage files';
       setStatusMessage(message);
     }
-  }, [workspaceId, gitState.status, refreshGitStatus, setStatusMessage]);
+  }, [activeWorkspaceId, gitState.status, refreshGitStatus, setStatusMessage]);
 
   const handleCommit = useCallback(
     async (message: string) => {
-      if (!workspaceId || !message.trim()) return;
+      if (!activeWorkspaceId || !message.trim()) return;
 
       try {
-        const result = await commitChanges(workspaceId, message.trim());
+        const result = await commitChanges(activeWorkspaceId, message.trim());
         setStatusMessage(
           `Committed: ${result.summary.changes} changes, +${result.summary.insertions} -${result.summary.deletions}`
         );
@@ -211,29 +240,29 @@ export const useGitState = (
         setStatusMessage(errMessage);
       }
     },
-    [workspaceId, refreshGitStatus, setStatusMessage]
+    [activeWorkspaceId, refreshGitStatus, setStatusMessage]
   );
 
   const handleDiscardFile = useCallback(
     async (path: string) => {
-      if (!workspaceId) return;
+      if (!activeWorkspaceId) return;
 
       try {
-        await discardChanges(workspaceId, [path]);
+        await discardChanges(activeWorkspaceId, [path]);
         await refreshGitStatus();
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Failed to discard changes';
         setStatusMessage(message);
       }
     },
-    [workspaceId, refreshGitStatus, setStatusMessage]
+    [activeWorkspaceId, refreshGitStatus, setStatusMessage]
   );
 
   const handleShowDiff = useCallback(
     async (file: GitFileStatus) => {
-      if (!workspaceId) return;
+      if (!activeWorkspaceId) return;
 
-      setGitState((prev) => ({
+      updateGitState(activeWorkspaceId, (prev) => ({
         ...prev,
         diffPath: file.path,
         diffLoading: true,
@@ -241,8 +270,8 @@ export const useGitState = (
       }));
 
       try {
-        const diff = await getGitDiff(workspaceId, file.path, file.staged);
-        setGitState((prev) => ({
+        const diff = await getGitDiff(activeWorkspaceId, file.path, file.staged);
+        updateGitState(activeWorkspaceId, (prev) => ({
           ...prev,
           diff,
           diffLoading: false
@@ -250,7 +279,7 @@ export const useGitState = (
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Failed to get diff';
         setStatusMessage(message);
-        setGitState((prev) => ({
+        updateGitState(activeWorkspaceId, (prev) => ({
           ...prev,
           diffPath: null,
           diff: null,
@@ -258,42 +287,43 @@ export const useGitState = (
         }));
       }
     },
-    [workspaceId, setStatusMessage]
+    [activeWorkspaceId, updateGitState, setStatusMessage]
   );
 
   const handleCloseDiff = useCallback(() => {
-    setGitState((prev) => ({
+    if (!activeWorkspaceId) return;
+    updateGitState(activeWorkspaceId, (prev) => ({
       ...prev,
       diffPath: null,
       diff: null,
       diffLoading: false
     }));
-  }, []);
+  }, [activeWorkspaceId, updateGitState]);
 
   const handlePush = useCallback(async () => {
-    if (!workspaceId) return;
+    if (!activeWorkspaceId) return;
 
-    setGitState((prev) => ({ ...prev, pushing: true }));
+    updateGitState(activeWorkspaceId, (prev) => ({ ...prev, pushing: true }));
 
     try {
-      const result = await pushChanges(workspaceId);
+      const result = await pushChanges(activeWorkspaceId);
       setStatusMessage(`Pushed to ${result.branch}`);
       await refreshGitStatus();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to push';
       setStatusMessage(message);
     } finally {
-      setGitState((prev) => ({ ...prev, pushing: false }));
+      updateGitState(activeWorkspaceId, (prev) => ({ ...prev, pushing: false }));
     }
-  }, [workspaceId, refreshGitStatus, setStatusMessage]);
+  }, [activeWorkspaceId, updateGitState, refreshGitStatus, setStatusMessage]);
 
   const handlePull = useCallback(async () => {
-    if (!workspaceId) return;
+    if (!activeWorkspaceId) return;
 
-    setGitState((prev) => ({ ...prev, pulling: true }));
+    updateGitState(activeWorkspaceId, (prev) => ({ ...prev, pulling: true }));
 
     try {
-      const result = await pullChanges(workspaceId);
+      const result = await pullChanges(activeWorkspaceId);
       if (result.summary.changes > 0) {
         setStatusMessage(
           `Pulled: ${result.summary.changes} changes, +${result.summary.insertions} -${result.summary.deletions}`
@@ -306,31 +336,31 @@ export const useGitState = (
       const message = error instanceof Error ? error.message : 'Failed to pull';
       setStatusMessage(message);
     } finally {
-      setGitState((prev) => ({ ...prev, pulling: false }));
+      updateGitState(activeWorkspaceId, (prev) => ({ ...prev, pulling: false }));
     }
-  }, [workspaceId, refreshGitStatus, setStatusMessage]);
+  }, [activeWorkspaceId, updateGitState, refreshGitStatus, setStatusMessage]);
 
   const handleFetch = useCallback(async () => {
-    if (!workspaceId) return;
+    if (!activeWorkspaceId) return;
 
     try {
-      await fetchChanges(workspaceId);
+      await fetchChanges(activeWorkspaceId);
       setStatusMessage('Fetched from remote');
       await refreshGitStatus();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to fetch';
       setStatusMessage(message);
     }
-  }, [workspaceId, refreshGitStatus, setStatusMessage]);
+  }, [activeWorkspaceId, refreshGitStatus, setStatusMessage]);
 
   const handleLoadBranches = useCallback(async () => {
-    if (!workspaceId) return;
+    if (!activeWorkspaceId) return;
 
-    setGitState((prev) => ({ ...prev, branchesLoading: true }));
+    updateGitState(activeWorkspaceId, (prev) => ({ ...prev, branchesLoading: true }));
 
     try {
-      const result = await withTimeout(listBranches(workspaceId));
-      setGitState((prev) => ({
+      const result = await withTimeout(listBranches(activeWorkspaceId));
+      updateGitState(activeWorkspaceId, (prev) => ({
         ...prev,
         branches: result.branches,
         branchesLoading: false
@@ -338,16 +368,16 @@ export const useGitState = (
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to load branches';
       setStatusMessage(message);
-      setGitState((prev) => ({ ...prev, branchesLoading: false }));
+      updateGitState(activeWorkspaceId, (prev) => ({ ...prev, branchesLoading: false }));
     }
-  }, [workspaceId, setStatusMessage]);
+  }, [activeWorkspaceId, updateGitState, setStatusMessage]);
 
   const handleCheckoutBranch = useCallback(
     async (branchName: string) => {
-      if (!workspaceId) return;
+      if (!activeWorkspaceId) return;
 
       try {
-        await checkoutBranch(workspaceId, branchName);
+        await checkoutBranch(activeWorkspaceId, branchName);
         setStatusMessage(`Switched to branch '${branchName}'`);
         await refreshGitStatus();
         await handleLoadBranches();
@@ -356,15 +386,15 @@ export const useGitState = (
         setStatusMessage(message);
       }
     },
-    [workspaceId, refreshGitStatus, handleLoadBranches, setStatusMessage]
+    [activeWorkspaceId, refreshGitStatus, handleLoadBranches, setStatusMessage]
   );
 
   const handleCreateBranch = useCallback(
     async (branchName: string, checkout = true) => {
-      if (!workspaceId) return;
+      if (!activeWorkspaceId) return;
 
       try {
-        await createBranch(workspaceId, branchName, checkout);
+        await createBranch(activeWorkspaceId, branchName, checkout);
         setStatusMessage(`Created branch '${branchName}'${checkout ? ' and switched to it' : ''}`);
         await refreshGitStatus();
         await handleLoadBranches();
@@ -373,17 +403,17 @@ export const useGitState = (
         setStatusMessage(message);
       }
     },
-    [workspaceId, refreshGitStatus, handleLoadBranches, setStatusMessage]
+    [activeWorkspaceId, refreshGitStatus, handleLoadBranches, setStatusMessage]
   );
 
   const handleLoadLogs = useCallback(async (limit = 50) => {
-    if (!workspaceId) return;
+    if (!activeWorkspaceId) return;
 
-    setGitState((prev) => ({ ...prev, logsLoading: true }));
+    updateGitState(activeWorkspaceId, (prev) => ({ ...prev, logsLoading: true }));
 
     try {
-      const result = await withTimeout(getGitLog(workspaceId, limit));
-      setGitState((prev) => ({
+      const result = await withTimeout(getGitLog(activeWorkspaceId, limit));
+      updateGitState(activeWorkspaceId, (prev) => ({
         ...prev,
         logs: result.logs,
         logsLoading: false
@@ -391,13 +421,24 @@ export const useGitState = (
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to load git log';
       setStatusMessage(message);
-      setGitState((prev) => ({ ...prev, logsLoading: false }));
+      updateGitState(activeWorkspaceId, (prev) => ({ ...prev, logsLoading: false }));
     }
-  }, [workspaceId, setStatusMessage]);
+  }, [activeWorkspaceId, updateGitState, setStatusMessage]);
+
+  // Get git state for any workspace (for displaying badges, etc.)
+  const getGitStateForWorkspace = useCallback(
+    (workspaceId: string): GitState => {
+      return gitStates[workspaceId] || createEmptyGitState();
+    },
+    [gitStates]
+  );
 
   return {
     gitState,
+    gitStates,
     refreshGitStatus,
+    refreshAllGitStatuses,
+    getGitStateForWorkspace,
     handleStageFile,
     handleUnstageFile,
     handleStageAll,
