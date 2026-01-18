@@ -578,5 +578,145 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
     }
   });
 
+  // GET /api/git/branches?workspaceId=xxx
+  router.get('/branches', async (c) => {
+    try {
+      const workspaceId = c.req.query('workspaceId');
+      if (!workspaceId) {
+        throw createHttpError('workspaceId is required', 400);
+      }
+
+      const workspace = requireWorkspace(workspaces, workspaceId);
+      const git = simpleGit(workspace.path);
+
+      const isRepo = await isGitRepository(git);
+      if (!isRepo) {
+        return c.json({ branches: [], currentBranch: '' });
+      }
+
+      const branchSummary = await git.branchLocal();
+      const branches = branchSummary.all.map((name) => ({
+        name,
+        current: name === branchSummary.current
+      }));
+
+      return c.json({
+        branches,
+        currentBranch: branchSummary.current
+      });
+    } catch (error) {
+      return handleError(c, error);
+    }
+  });
+
+  // POST /api/git/checkout
+  router.post('/checkout', async (c) => {
+    try {
+      const body = await readJson<{ workspaceId: string; branchName: string }>(c);
+      if (!body?.workspaceId) {
+        throw createHttpError('workspaceId is required', 400);
+      }
+      if (!body?.branchName) {
+        throw createHttpError('branchName is required', 400);
+      }
+
+      // Validate branch name
+      const branchName = body.branchName.trim();
+      if (!branchName || branchName.length > 250) {
+        throw createHttpError('Invalid branch name', 400);
+      }
+      // Prevent injection via branch names
+      if (/[;&|`$<>\\]/.test(branchName)) {
+        throw createHttpError('Invalid characters in branch name', 400);
+      }
+
+      const workspace = requireWorkspace(workspaces, body.workspaceId);
+      const git = simpleGit(workspace.path);
+
+      await git.checkout(branchName);
+
+      return c.json({ success: true });
+    } catch (error) {
+      return handleError(c, error);
+    }
+  });
+
+  // POST /api/git/create-branch
+  router.post('/create-branch', async (c) => {
+    try {
+      const body = await readJson<{ workspaceId: string; branchName: string; checkout?: boolean }>(c);
+      if (!body?.workspaceId) {
+        throw createHttpError('workspaceId is required', 400);
+      }
+      if (!body?.branchName) {
+        throw createHttpError('branchName is required', 400);
+      }
+
+      // Validate branch name
+      const branchName = body.branchName.trim();
+      if (!branchName || branchName.length > 250) {
+        throw createHttpError('Invalid branch name', 400);
+      }
+      // Prevent injection via branch names and validate format
+      if (/[;&|`$<>\\~^:?*\[\]@{}\s]/.test(branchName)) {
+        throw createHttpError('Invalid characters in branch name', 400);
+      }
+      if (branchName.startsWith('-') || branchName.startsWith('.') || branchName.endsWith('.') || branchName.endsWith('/')) {
+        throw createHttpError('Invalid branch name format', 400);
+      }
+
+      const workspace = requireWorkspace(workspaces, body.workspaceId);
+      const git = simpleGit(workspace.path);
+
+      const checkout = body.checkout !== false;
+
+      if (checkout) {
+        await git.checkoutLocalBranch(branchName);
+      } else {
+        await git.branch([branchName]);
+      }
+
+      return c.json({ success: true });
+    } catch (error) {
+      return handleError(c, error);
+    }
+  });
+
+  // GET /api/git/log?workspaceId=xxx&limit=50
+  router.get('/log', async (c) => {
+    try {
+      const workspaceId = c.req.query('workspaceId');
+      const limitStr = c.req.query('limit') || '50';
+
+      if (!workspaceId) {
+        throw createHttpError('workspaceId is required', 400);
+      }
+
+      const limit = Math.min(Math.max(1, parseInt(limitStr, 10) || 50), 500);
+
+      const workspace = requireWorkspace(workspaces, workspaceId);
+      const git = simpleGit(workspace.path);
+
+      const isRepo = await isGitRepository(git);
+      if (!isRepo) {
+        return c.json({ logs: [] });
+      }
+
+      const logResult = await git.log({ maxCount: limit });
+
+      const logs = logResult.all.map((entry) => ({
+        hash: entry.hash,
+        hashShort: entry.hash.slice(0, 7),
+        message: entry.message,
+        author: entry.author_name,
+        date: entry.date
+      }));
+
+      return c.json({ logs });
+    } catch (error) {
+      return handleError(c, error);
+    }
+  });
+
   return router;
 }

@@ -311,3 +311,64 @@ export function getGitRemotes(
   const query = new URLSearchParams({ workspaceId });
   return request(`/api/git/remotes?${query.toString()}`);
 }
+
+/**
+ * Lists all branches
+ */
+export function listBranches(
+  workspaceId: string
+): Promise<{
+  branches: { name: string; current: boolean }[];
+  currentBranch: string;
+}> {
+  const query = new URLSearchParams({ workspaceId });
+  return request(`/api/git/branches?${query.toString()}`);
+}
+
+/**
+ * Checkout a branch
+ */
+export function checkoutBranch(
+  workspaceId: string,
+  branchName: string
+): Promise<{ success: boolean }> {
+  return request('/api/git/checkout', {
+    method: HTTP_METHOD_POST,
+    headers: { 'Content-Type': CONTENT_TYPE_JSON },
+    body: JSON.stringify({ workspaceId, branchName })
+  });
+}
+
+/**
+ * Create a new branch
+ */
+export function createBranch(
+  workspaceId: string,
+  branchName: string,
+  checkout = true
+): Promise<{ success: boolean }> {
+  return request('/api/git/create-branch', {
+    method: HTTP_METHOD_POST,
+    headers: { 'Content-Type': CONTENT_TYPE_JSON },
+    body: JSON.stringify({ workspaceId, branchName, checkout })
+  });
+}
+
+/**
+ * Get git log
+ */
+export function getGitLog(
+  workspaceId: string,
+  limit = 50
+): Promise<{
+  logs: {
+    hash: string;
+    hashShort: string;
+    message: string;
+    author: string;
+    date: string;
+  }[];
+}> {
+  const query = new URLSearchParams({ workspaceId, limit: String(limit) });
+  return request(`/api/git/log?${query.toString()}`);
+}

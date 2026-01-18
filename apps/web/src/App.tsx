@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DeckList } from './components/DeckList';
 import { DeckModal } from './components/DeckModal';
 import { DiffViewer } from './components/DiffViewer';
@@ -98,7 +98,11 @@ export default function App() {
     handleShowDiff,
     handleCloseDiff,
     handlePush,
-    handlePull
+    handlePull,
+    handleLoadBranches,
+    handleCheckoutBranch,
+    handleCreateBranch,
+    handleLoadLogs
   } = useGitState(editorWorkspaceId, setStatusMessage);
 
   const wsBase = getWsBase();
@@ -180,12 +184,25 @@ export default function App() {
     }
   }, [workspaceMode, editorWorkspaceId]);
 
-  // Refresh git status when opening workspace editor
+  // Track if we've loaded tree for current workspace
+  const treeLoadedRef = useRef<string | null>(null);
+
+  // Refresh file tree when opening workspace editor
   useEffect(() => {
-    if (workspaceMode === 'editor' && editorWorkspaceId) {
+    console.log('[App] useEffect triggered:', { workspaceMode, editorWorkspaceId, treeLoadedRef: treeLoadedRef.current });
+    if (workspaceMode !== 'editor' || !editorWorkspaceId) {
+      treeLoadedRef.current = null;
+      return;
+    }
+
+    // Only load if we haven't loaded for this workspace yet
+    if (treeLoadedRef.current !== editorWorkspaceId) {
+      console.log('[App] Loading tree for workspace:', editorWorkspaceId);
+      treeLoadedRef.current = editorWorkspaceId;
+      handleRefreshTree();
       refreshGitStatus();
     }
-  }, [workspaceMode, editorWorkspaceId, refreshGitStatus]);
+  }, [workspaceMode, editorWorkspaceId, handleRefreshTree, refreshGitStatus]);
 
   const handleOpenDeckModal = useCallback(() => {
     if (workspaces.length === 0) {
@@ -342,6 +359,10 @@ export default function App() {
                 hasRemote={gitState.hasRemote}
                 pushing={gitState.pushing}
                 pulling={gitState.pulling}
+                branches={gitState.branches}
+                branchesLoading={gitState.branchesLoading}
+                logs={gitState.logs}
+                logsLoading={gitState.logsLoading}
                 onRefresh={refreshGitStatus}
                 onStageFile={handleStageFile}
                 onUnstageFile={handleUnstageFile}
@@ -352,6 +373,10 @@ export default function App() {
                 onShowDiff={handleShowDiff}
                 onPush={handlePush}
                 onPull={handlePull}
+                onLoadBranches={handleLoadBranches}
+                onCheckoutBranch={handleCheckoutBranch}
+                onCreateBranch={handleCreateBranch}
+                onLoadLogs={handleLoadLogs}
               />
             )}
           </div>

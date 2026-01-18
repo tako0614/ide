@@ -1,4 +1,4 @@
-import { useCallback, useState, useEffect } from 'react';
+import { useCallback, useState, useRef } from 'react';
 import type { GitStatus, GitFileStatus, GitDiff } from '../types';
 import {
   getGitStatus,
@@ -11,13 +11,30 @@ import {
   pullChanges,
   fetchChanges,
   getBranchStatus,
-  getGitRemotes
+  getGitRemotes,
+  listBranches,
+  checkoutBranch,
+  createBranch,
+  getGitLog
 } from '../api';
 
 export interface BranchStatus {
   ahead: number;
   behind: number;
   hasUpstream: boolean;
+}
+
+export interface GitBranch {
+  name: string;
+  current: boolean;
+}
+
+export interface GitLogEntry {
+  hash: string;
+  hashShort: string;
+  message: string;
+  author: string;
+  date: string;
 }
 
 export interface GitState {
@@ -31,6 +48,10 @@ export interface GitState {
   hasRemote: boolean;
   pushing: boolean;
   pulling: boolean;
+  branches: GitBranch[];
+  branchesLoading: boolean;
+  logs: GitLogEntry[];
+  logsLoading: boolean;
 }
 
 const createEmptyGitState = (): GitState => ({
@@ -43,14 +64,29 @@ const createEmptyGitState = (): GitState => ({
   branchStatus: null,
   hasRemote: false,
   pushing: false,
-  pulling: false
+  pulling: false,
+  branches: [],
+  branchesLoading: false,
+  logs: [],
+  logsLoading: false
 });
+
+// API timeout wrapper
+const withTimeout = <T>(promise: Promise<T>, timeoutMs = 10000): Promise<T> => {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error('Request timeout')), timeoutMs)
+    )
+  ]);
+};
 
 export const useGitState = (
   workspaceId: string | null,
   setStatusMessage: (message: string) => void
 ) => {
   const [gitState, setGitState] = useState<GitState>(createEmptyGitState());
+  const loadingRef = useRef(false);
 
   const refreshGitStatus = useCallback(async () => {
     if (!workspaceId) {
@@ -58,13 +94,19 @@ export const useGitState = (
       return;
     }
 
+    // Prevent concurrent calls
+    if (loadingRef.current) {
+      return;
+    }
+    loadingRef.current = true;
+
     setGitState((prev) => ({ ...prev, loading: true, error: null }));
 
     try {
       const [status, branchStatus, remotes] = await Promise.all([
-        getGitStatus(workspaceId),
-        getBranchStatus(workspaceId).catch(() => ({ ahead: 0, behind: 0, hasUpstream: false })),
-        getGitRemotes(workspaceId).catch(() => ({ hasRemote: false, remotes: [] }))
+        withTimeout(getGitStatus(workspaceId)),
+        withTimeout(getBranchStatus(workspaceId)).catch(() => ({ ahead: 0, behind: 0, hasUpstream: false })),
+        withTimeout(getGitRemotes(workspaceId)).catch(() => ({ hasRemote: false, remotes: [] }))
       ]);
 
       setGitState((prev) => ({
@@ -83,6 +125,8 @@ export const useGitState = (
         loading: false,
         error: message
       }));
+    } finally {
+      loadingRef.current = false;
     }
   }, [workspaceId]);
 
@@ -279,6 +323,78 @@ export const useGitState = (
     }
   }, [workspaceId, refreshGitStatus, setStatusMessage]);
 
+  const handleLoadBranches = useCallback(async () => {
+    if (!workspaceId) return;
+
+    setGitState((prev) => ({ ...prev, branchesLoading: true }));
+
+    try {
+      const result = await withTimeout(listBranches(workspaceId));
+      setGitState((prev) => ({
+        ...prev,
+        branches: result.branches,
+        branchesLoading: false
+      }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to load branches';
+      setStatusMessage(message);
+      setGitState((prev) => ({ ...prev, branchesLoading: false }));
+    }
+  }, [workspaceId, setStatusMessage]);
+
+  const handleCheckoutBranch = useCallback(
+    async (branchName: string) => {
+      if (!workspaceId) return;
+
+      try {
+        await checkoutBranch(workspaceId, branchName);
+        setStatusMessage(`Switched to branch '${branchName}'`);
+        await refreshGitStatus();
+        await handleLoadBranches();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Failed to checkout branch';
+        setStatusMessage(message);
+      }
+    },
+    [workspaceId, refreshGitStatus, handleLoadBranches, setStatusMessage]
+  );
+
+  const handleCreateBranch = useCallback(
+    async (branchName: string, checkout = true) => {
+      if (!workspaceId) return;
+
+      try {
+        await createBranch(workspaceId, branchName, checkout);
+        setStatusMessage(`Created branch '${branchName}'${checkout ? ' and switched to it' : ''}`);
+        await refreshGitStatus();
+        await handleLoadBranches();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Failed to create branch';
+        setStatusMessage(message);
+      }
+    },
+    [workspaceId, refreshGitStatus, handleLoadBranches, setStatusMessage]
+  );
+
+  const handleLoadLogs = useCallback(async (limit = 50) => {
+    if (!workspaceId) return;
+
+    setGitState((prev) => ({ ...prev, logsLoading: true }));
+
+    try {
+      const result = await withTimeout(getGitLog(workspaceId, limit));
+      setGitState((prev) => ({
+        ...prev,
+        logs: result.logs,
+        logsLoading: false
+      }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to load git log';
+      setStatusMessage(message);
+      setGitState((prev) => ({ ...prev, logsLoading: false }));
+    }
+  }, [workspaceId, setStatusMessage]);
+
   return {
     gitState,
     refreshGitStatus,
@@ -292,6 +408,10 @@ export const useGitState = (
     handleCloseDiff,
     handlePush,
     handlePull,
-    handleFetch
+    handleFetch,
+    handleLoadBranches,
+    handleCheckoutBranch,
+    handleCreateBranch,
+    handleLoadLogs
   };
 };

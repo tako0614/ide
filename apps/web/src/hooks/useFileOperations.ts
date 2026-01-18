@@ -1,7 +1,17 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useState, useRef } from 'react';
 import type { EditorFile, FileTreeNode, WorkspaceState } from '../types';
 import { listFiles, readFile, writeFile } from '../api';
 import { getErrorMessage, getLanguageFromPath, toTreeNodes, SAVED_MESSAGE } from '../utils';
+
+// API timeout wrapper
+const withTimeout = <T>(promise: Promise<T>, timeoutMs = 15000): Promise<T> => {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error('Request timeout')), timeoutMs)
+    )
+  ]);
+};
 
 interface UseFileOperationsProps {
   editorWorkspaceId: string | null;
@@ -40,14 +50,19 @@ export const useFileOperations = ({
   );
 
   const handleRefreshTree = useCallback(() => {
-    if (!editorWorkspaceId) return;
+    if (!editorWorkspaceId) {
+      console.log('[FileTree] No workspace ID');
+      return;
+    }
+    console.log('[FileTree] Starting refresh for:', editorWorkspaceId);
     updateWorkspaceState(editorWorkspaceId, (state) => ({
       ...state,
       treeLoading: true,
       treeError: null
     }));
-    listFiles(editorWorkspaceId, '')
+    withTimeout(listFiles(editorWorkspaceId, ''))
       .then((entries) => {
+        console.log('[FileTree] Got entries:', entries.length);
         updateWorkspaceState(editorWorkspaceId, (state) => ({
           ...state,
           tree: toTreeNodes(entries),
@@ -55,6 +70,7 @@ export const useFileOperations = ({
         }));
       })
       .catch((error: unknown) => {
+        console.error('[FileTree] Error:', error);
         updateWorkspaceState(editorWorkspaceId, (state) => ({
           ...state,
           treeLoading: false,
@@ -94,7 +110,7 @@ export const useFileOperations = ({
           loading: true
         }))
       }));
-      listFiles(editorWorkspaceId, node.path)
+      withTimeout(listFiles(editorWorkspaceId, node.path))
         .then((entries) => {
           updateWorkspaceState(editorWorkspaceId, (state) => ({
             ...state,
@@ -133,25 +149,43 @@ export const useFileOperations = ({
         }));
         return;
       }
-      readFile(editorWorkspaceId, entry.path)
+
+      // Show loading state by setting a temporary file
+      const tempFileId = crypto.randomUUID();
+      const tempFile: EditorFile = {
+        id: tempFileId,
+        name: entry.name,
+        path: entry.path,
+        language: getLanguageFromPath(entry.path),
+        contents: '',
+        dirty: false
+      };
+      updateWorkspaceState(editorWorkspaceId, (state) => ({
+        ...state,
+        files: [...state.files, { ...tempFile, contents: '読み込み中...' }],
+        activeFileId: tempFileId
+      }));
+
+      withTimeout(readFile(editorWorkspaceId, entry.path))
         .then((data) => {
-          const file: EditorFile = {
-            id: crypto.randomUUID(),
-            name: entry.name,
-            path: entry.path,
-            language: getLanguageFromPath(entry.path),
-            contents: data.contents,
-            dirty: false
-          };
           updateWorkspaceState(editorWorkspaceId, (state) => ({
             ...state,
-            files: [...state.files, file],
-            activeFileId: file.id
+            files: state.files.map((f) =>
+              f.id === tempFileId
+                ? { ...f, contents: data.contents }
+                : f
+            )
           }));
         })
         .catch((error: unknown) => {
+          // Remove the temp file on error
+          updateWorkspaceState(editorWorkspaceId, (state) => ({
+            ...state,
+            files: state.files.filter((f) => f.id !== tempFileId),
+            activeFileId: state.files.length > 1 ? state.files[0].id : null
+          }));
           setStatusMessage(
-            `\u30d5\u30a1\u30a4\u30eb\u3092\u958b\u3051\u307e\u305b\u3093\u3067\u3057\u305f: ${getErrorMessage(error)}`
+            `ファイルを開けませんでした: ${getErrorMessage(error)}`
           );
         });
     },
@@ -178,7 +212,7 @@ export const useFileOperations = ({
       if (!file) return;
       setSavingFileId(fileId);
       try {
-        await writeFile(editorWorkspaceId, file.path, file.contents);
+        await withTimeout(writeFile(editorWorkspaceId, file.path, file.contents));
         updateWorkspaceState(editorWorkspaceId, (state) => ({
           ...state,
           files: state.files.map((item) =>
@@ -188,7 +222,7 @@ export const useFileOperations = ({
         setStatusMessage(SAVED_MESSAGE);
       } catch (error: unknown) {
         setStatusMessage(
-          `\u4fdd\u5b58\u306b\u5931\u6557\u3057\u307e\u3057\u305f: ${getErrorMessage(error)}`
+          `保存に失敗しました: ${getErrorMessage(error)}`
         );
       } finally {
         setSavingFileId(null);

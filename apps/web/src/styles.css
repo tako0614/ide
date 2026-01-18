@@ -1466,6 +1466,204 @@ textarea {
   fill: currentColor;
 }
 
+/* Git Tabs */
+.git-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  background: var(--sidebar);
+  flex-shrink: 0;
+}
+
+.git-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: transparent;
+  border: none;
+  color: var(--ink-muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 0.1s, background 0.1s;
+  position: relative;
+}
+
+.git-tab:hover {
+  color: var(--ink);
+  background: var(--list-hover);
+}
+
+.git-tab.active {
+  color: var(--ink);
+}
+
+.git-tab.active::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--accent);
+}
+
+.git-tab-count {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+  background: var(--accent);
+  color: white;
+  border-radius: 9px;
+}
+
+/* Branches Section */
+.branches-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.branch-actions {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.new-branch-form {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.new-branch-input {
+  flex: 1;
+  padding: 4px 8px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: var(--panel);
+  color: var(--ink);
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.new-branch-input:focus {
+  outline: none;
+  border-color: var(--focus-border);
+}
+
+.branch-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.branch-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: transparent;
+  border: none;
+  color: var(--ink);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.1s;
+}
+
+.branch-item:hover:not(:disabled) {
+  background: var(--list-hover);
+}
+
+.branch-item.current {
+  background: var(--list-active);
+  cursor: default;
+}
+
+.branch-item:disabled {
+  cursor: default;
+}
+
+.branch-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: var(--ink-muted);
+}
+
+.branch-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.branch-current-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  background: var(--accent);
+  color: white;
+  border-radius: 3px;
+}
+
+/* History Section */
+.history-section {
+  display: flex;
+  flex-direction: column;
+}
+
+.log-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.log-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.log-item:hover {
+  background: var(--list-hover);
+}
+
+.log-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.log-hash {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.log-author {
+  font-size: 12px;
+  color: var(--ink-muted);
+}
+
+.log-message {
+  font-size: 13px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-date {
+  font-size: 11px;
+  color: var(--muted);
+}
+
 /* ========================================
    Diff Viewer
    ======================================== */

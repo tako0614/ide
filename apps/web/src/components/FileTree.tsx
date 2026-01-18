@@ -132,6 +132,7 @@ export function FileTree({
   onRefresh,
   gitFiles
 }: FileTreeProps) {
+  console.log('[FileTree] Render:', { root, entriesCount: entries?.length, loading, error });
   const safeEntries = entries ?? [];
   return (
     <section className="panel file-tree">
