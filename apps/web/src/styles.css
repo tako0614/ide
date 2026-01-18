@@ -1149,6 +1149,7 @@ textarea {
   display: grid;
   gap: 4px;
   transition: background 0.1s;
+  flex: 0 0 auto;
 }
 
 .deck-item:hover,
@@ -1178,9 +1179,15 @@ textarea {
 }
 
 .deck-list .panel-body {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 8px;
   padding: 12px;
+}
+
+.deck-drawer .deck-list .panel-body {
+  overflow-y: auto;
+  align-content: flex-start;
 }
 
 /* ========================================
@@ -1304,9 +1311,11 @@ textarea {
 }
 
 .deck-drawer .deck-list {
-  max-height: 100%;
+  height: calc(100% - 24px);
   border-radius: 4px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  display: flex;
+  flex-direction: column;
 }
 
 @keyframes slideIn {
