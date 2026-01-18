@@ -39,6 +39,13 @@ export function getWsBase(): string {
 }
 
 /**
+ * Fetches a one-time WebSocket authentication token
+ */
+export function getWsToken(): Promise<{ token: string; authEnabled: boolean }> {
+  return request<{ token: string; authEnabled: boolean }>('/api/ws-token');
+}
+
+/**
  * Fetches all workspaces
  */
 export function listWorkspaces(): Promise<Workspace[]> {

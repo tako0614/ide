@@ -16,7 +16,8 @@
       "Bash(git push:*)",
       "Bash(gh release create:*)",
       "Bash(git add:*)",
-      "Bash(git commit -m \"$\\(cat <<''EOF''\nfix\\(api\\): add credentials include for Basic Auth support\n\n- Add credentials: ''include'' to fetch requests\n- Enables browser to send cached Basic Auth credentials\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n\\)\")"
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nfix\\(api\\): add credentials include for Basic Auth support\n\n- Add credentials: ''include'' to fetch requests\n- Enables browser to send cached Basic Auth credentials\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git commit:*)"
     ],
     "deny": [],
     "ask": []

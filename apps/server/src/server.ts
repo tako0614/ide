@@ -24,7 +24,7 @@ import {
 } from './config.js';
 import { securityHeaders } from './middleware/security.js';
 import { corsMiddleware } from './middleware/cors.js';
-import { basicAuthMiddleware } from './middleware/auth.js';
+import { basicAuthMiddleware, generateWsToken, isBasicAuthEnabled } from './middleware/auth.js';
 import { apiRateLimitMiddleware } from './middleware/rateLimit.js';
 import { checkDatabaseIntegrity, handleDatabaseCorruption, initializeDatabase, loadPersistedState } from './utils/database.js';
 import { createWorkspaceRouter, getConfigHandler } from './routes/workspaces.js';
@@ -117,6 +117,14 @@ export function createServer() {
 
   // Config endpoint
   app.get('/api/config', getConfigHandler());
+
+  // WebSocket token endpoint (for authenticated WebSocket connections)
+  app.get('/api/ws-token', (c) => {
+    return c.json({
+      token: generateWsToken(),
+      authEnabled: isBasicAuthEnabled()
+    });
+  });
 
   // File routes - mount at /api to handle /api/files, /api/preview, /api/file
   const fileRouter = createFileRouter(workspaces);

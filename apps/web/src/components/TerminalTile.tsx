@@ -6,6 +6,7 @@ import { WebLinksAddon } from 'xterm-addon-web-links';
 import { WebglAddon } from 'xterm-addon-webgl';
 import 'xterm/css/xterm.css';
 import type { TerminalSession } from '../types';
+import { getWsToken } from '../api';
 import {
   TERMINAL_FONT_FAMILY,
   TERMINAL_FONT_SIZE,
@@ -420,34 +421,57 @@ export function TerminalTile({
     });
     resizeObserver.observe(containerRef.current);
 
-    const socket = new WebSocket(wsUrl);
-    socketRef.current = socket;
+    let socket: WebSocket | null = null;
+    let dataDisposable: IDisposable | null = null;
+    let cancelled = false;
 
-    socket.addEventListener('open', () => {
-      sendResize();
-      term.write(`\r\n${TEXT_CONNECTED}\r\n\r\n`);
-    });
-    socket.addEventListener('message', (event) => {
-      // All messages are strings (UTF-8 encoded)
-      // DSR/CPR is now handled by the CSI handler registered above
-      if (typeof event.data === 'string') {
-        term.write(event.data);
-      }
-    });
-    socket.addEventListener('close', () => {
-      term.write(`\r\n${TEXT_CLOSED}\r\n\r\n`);
-    });
+    // Fetch WebSocket token and connect
+    const connect = async () => {
+      try {
+        // Get a one-time token for WebSocket authentication
+        const { token, authEnabled } = await getWsToken();
+        if (cancelled) return;
 
-    const dataDisposable: IDisposable = term.onData((data) => {
-      if (socket.readyState === WebSocket.OPEN) {
-        socket.send(data);
+        // Append token to URL if auth is enabled
+        const finalUrl = authEnabled ? `${wsUrl}?token=${token}` : wsUrl;
+        socket = new WebSocket(finalUrl);
+        socketRef.current = socket;
+
+        socket.addEventListener('open', () => {
+          sendResize();
+          term.write(`\r\n${TEXT_CONNECTED}\r\n\r\n`);
+        });
+        socket.addEventListener('message', (event) => {
+          if (typeof event.data === 'string') {
+            term.write(event.data);
+          }
+        });
+        socket.addEventListener('close', () => {
+          term.write(`\r\n${TEXT_CLOSED}\r\n\r\n`);
+        });
+
+        dataDisposable = term.onData((data) => {
+          if (socket && socket.readyState === WebSocket.OPEN) {
+            socket.send(data);
+          }
+        });
+      } catch (err) {
+        console.error('[Terminal] Failed to connect:', err);
+        term.write(`\r\n\x1b[31m接続エラー: ${err instanceof Error ? err.message : 'Unknown error'}\x1b[0m\r\n`);
       }
-    });
+    };
+
+    connect();
 
     return () => {
+      cancelled = true;
       resizeObserver.disconnect();
-      dataDisposable.dispose();
-      socket.close();
+      if (dataDisposable) {
+        dataDisposable.dispose();
+      }
+      if (socket) {
+        socket.close();
+      }
       socketRef.current = null;
 
       // Dispose WebGL addon first to avoid disposal errors
