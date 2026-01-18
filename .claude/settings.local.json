@@ -4,7 +4,8 @@
       "Bash(npm run build:server:*)",
       "Bash(npm run build:*)",
       "Bash(npx tsc:*)",
-      "WebSearch"
+      "WebSearch",
+      "WebFetch(domain:xtermjs.org)"
     ],
     "deny": [],
     "ask": []

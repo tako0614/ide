@@ -50,6 +50,12 @@ export function TerminalTile({
       theme: {
         background: TERMINAL_BACKGROUND_COLOR,
         foreground: TERMINAL_FOREGROUND_COLOR
+      },
+      // CRITICAL: Enable window operations for rich TUI mode
+      windowOptions: {
+        getWinSizePixels: true,    // CSI 14t - pixel dimensions
+        getCellSizePixels: true,   // CSI 16t - cell size for box drawing
+        getWinSizeChars: true,     // CSI 18t - character grid size
       }
     });
 
@@ -128,17 +134,20 @@ export function TerminalTile({
 
       // Modes we support (report as "set" = 1)
       const supportedModes = [
-        1, // DECCKM - Cursor keys mode
-        25, // DECTCEM - Text cursor enable
+        1,    // DECCKM - Cursor keys mode
+        25,   // DECTCEM - Text cursor enable
         1049, // Alternate screen + save cursor
+        2004, // Bracketed paste mode - REPORT AS SET for rich TUI
+        1004, // Focus in/out events - REPORT AS SET
+        1006, // SGR mouse mode - REPORT AS SET
+        1002, // Button event mouse tracking - REPORT AS SET
       ];
 
       // Modes we recognize but report as "reset" (2)
       const recognizedModes = [
-        1004, // Focus in/out events
-        2004, // Bracketed paste mode
         2026, // Synchronized output (not fully supported)
-        1000, 1002, 1003, 1006, // Mouse tracking modes
+        1000, // X10 mouse mode
+        1003, // Any-event mouse tracking
       ];
 
       if (supportedModes.includes(mode)) {
@@ -251,33 +260,23 @@ export function TerminalTile({
       const param = params.params[0];
       if (param === 4) {
         console.log('[XTQMODKEYS] Responding to modifyOtherKeys query');
-        // Report as disabled (0)
-        sendResponse('\x1b[?4;0m');
+        // Report as level 1 enabled (enhanced keyboard mode)
+        sendResponse('\x1b[?4;1m');
         return true;
       }
       return false;
     });
 
-    // XTWINOPS - Window size queries (CSI Ps t)
+    // XTWINOPS - Window operations (CSI Ps t)
+    // Note: CSI 14t, 16t, 18t are handled automatically by xterm.js with windowOptions enabled
     term.parser.registerCsiHandler({ final: 't' }, (params) => {
       const operation = params.params[0];
 
-      if (operation === 18) {
-        // Report text area size in characters
-        console.log('[XTWINOPS] Window size query (18t)');
-        sendResponse(`\x1b[8;${term.rows};${term.cols}t`);
-        return true;
-      } else if (operation === 19) {
+      // Only handle operations NOT covered by windowOptions
+      if (operation === 19) {
         // Report screen size (same as window for web terminal)
         console.log('[XTWINOPS] Screen size query (19t)');
         sendResponse(`\x1b[9;${term.rows};${term.cols}t`);
-        return true;
-      } else if (operation === 14) {
-        // Report window size in pixels
-        console.log('[XTWINOPS] Window pixel size query (14t)');
-        const cellWidth = 9; // Approximate
-        const cellHeight = 17; // Approximate
-        sendResponse(`\x1b[4;${term.rows * cellHeight};${term.cols * cellWidth}t`);
         return true;
       } else if (operation === 20) {
         // Report icon label
@@ -289,6 +288,10 @@ export function TerminalTile({
         console.log('[XTWINOPS] Window title query (21t)');
         sendResponse('\x1b]lTerminal\x1b\\');
         return true;
+      } else if (operation === 14 || operation === 16 || operation === 18) {
+        // These are handled by xterm.js windowOptions, just log
+        console.log(`[XTWINOPS] Operation ${operation}t handled by xterm.js`);
+        return false; // Let xterm.js handle it
       }
       return false;
     });
