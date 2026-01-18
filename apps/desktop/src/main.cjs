@@ -18,6 +18,23 @@ const {
 } = require('./config-manager.cjs');
 
 /**
+ * 単一インスタンスのロックを取得
+ * 既にアプリが起動している場合は、既存のウィンドウをフォーカス
+ */
+const gotTheLock = app.requestSingleInstanceLock();
+
+if (!gotTheLock) {
+  // 既に別のインスタンスが起動中なので終了
+  app.quit();
+} else {
+  // 2つ目のインスタンスが起動しようとした時
+  app.on('second-instance', () => {
+    // 既存のウィンドウを表示してフォーカス
+    windowManager.showWindow();
+  });
+}
+
+/**
  * アプリケーション起動時の初期化
  */
 app.whenReady().then(() => {
