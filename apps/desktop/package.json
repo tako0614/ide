@@ -3,7 +3,7 @@
   "description": "Deck IDE server manager for Windows",
   "author": "Deck IDE",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "main": "src/main.cjs",
   "scripts": {
     "dev": "electron .",
@@ -58,6 +58,9 @@
     },
     "win": {
       "target": "nsis"
+    },
+    "nsis": {
+      "artifactName": "Deck-IDE-Setup-${version}.${ext}"
     }
   }
 }
