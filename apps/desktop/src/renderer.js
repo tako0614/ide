@@ -15,6 +15,13 @@ const basicAuthPasswordInput = document.getElementById('basicauth-password');
 const basicAuthFieldsEl = document.getElementById('basicauth-fields');
 const saveConfigBtn = document.getElementById('save-config');
 
+// Update elements
+const updateStatusEl = document.getElementById('update-status');
+const updateProgressEl = document.getElementById('update-progress');
+const updateProgressFillEl = document.getElementById('update-progress-fill');
+const checkUpdateBtn = document.getElementById('check-update');
+const installUpdateBtn = document.getElementById('install-update');
+
 const renderStatus = (status) => {
   if (!status) return;
   statusEl.textContent = status.running
@@ -131,4 +138,68 @@ window.api.onLog((text) => {
   logsEl.scrollTop = logsEl.scrollHeight;
 });
 
+// Update handling
+const renderUpdateStatus = (status) => {
+  if (!status) return;
+
+  updateStatusEl.classList.remove('available');
+
+  if (status.checking) {
+    updateStatusEl.textContent = 'Checking for updates...';
+    updateProgressEl.style.display = 'none';
+    installUpdateBtn.style.display = 'none';
+    checkUpdateBtn.disabled = true;
+  } else if (status.error) {
+    updateStatusEl.textContent = `Error: ${status.error}`;
+    updateProgressEl.style.display = 'none';
+    installUpdateBtn.style.display = 'none';
+    checkUpdateBtn.disabled = false;
+  } else if (status.downloaded) {
+    updateStatusEl.textContent = `Update v${status.version} ready to install`;
+    updateStatusEl.classList.add('available');
+    updateProgressEl.style.display = 'none';
+    installUpdateBtn.style.display = 'block';
+    checkUpdateBtn.disabled = false;
+  } else if (status.available) {
+    if (status.progress) {
+      updateStatusEl.textContent = `Downloading v${status.version}... ${status.progress.percent}%`;
+      updateProgressEl.style.display = 'block';
+      updateProgressFillEl.style.width = `${status.progress.percent}%`;
+    } else {
+      updateStatusEl.textContent = `Update v${status.version} available, downloading...`;
+      updateProgressEl.style.display = 'none';
+    }
+    installUpdateBtn.style.display = 'none';
+    checkUpdateBtn.disabled = true;
+  } else {
+    updateStatusEl.textContent = 'You are using the latest version';
+    updateProgressEl.style.display = 'none';
+    installUpdateBtn.style.display = 'none';
+    checkUpdateBtn.disabled = false;
+  }
+};
+
+checkUpdateBtn.addEventListener('click', async () => {
+  checkUpdateBtn.disabled = true;
+  const status = await window.api.checkForUpdates();
+  renderUpdateStatus(status);
+});
+
+installUpdateBtn.addEventListener('click', async () => {
+  if (confirm('Install update and restart the application?')) {
+    await window.api.installUpdate();
+  }
+});
+
+window.api.onUpdateStatus((status) => {
+  renderUpdateStatus(status);
+});
+
+// Initial load
+const loadUpdateStatus = async () => {
+  const status = await window.api.getUpdateStatus();
+  renderUpdateStatus(status);
+};
+
 refresh();
+loadUpdateStatus();

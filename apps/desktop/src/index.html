@@ -112,6 +112,25 @@
         overflow: auto;
         white-space: pre-wrap;
       }
+      .update-status {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .update-status.available {
+        color: #0a7d00;
+        font-weight: 500;
+      }
+      .progress-bar {
+        height: 6px;
+        background: #e0e0e0;
+        border-radius: 3px;
+        overflow: hidden;
+      }
+      .progress-bar-fill {
+        height: 100%;
+        background: var(--ink);
+        transition: width 0.2s;
+      }
     </style>
   </head>
   <body>
@@ -155,6 +174,17 @@
           <input type="checkbox" id="autostart" />
           Start on login
         </label>
+      </div>
+      <div class="panel">
+        <div class="row" style="justify-content: space-between; align-items: center;">
+          <div class="title">Updates</div>
+          <button id="check-update">Check</button>
+        </div>
+        <div class="update-status" id="update-status">Checking for updates...</div>
+        <div class="progress-bar" id="update-progress" style="display: none;">
+          <div class="progress-bar-fill" id="update-progress-fill" style="width: 0%;"></div>
+        </div>
+        <button class="primary" id="install-update" style="display: none;">Install Update & Restart</button>
       </div>
       <div class="panel">
         <div class="row">

@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@hono/node-server": "^1.12.2",
+    "electron-updater": "^6.1.7",
     "hono": "^4.5.10",
     "node-pty": "^1.0.0",
     "simple-git": "^3.27.0",
@@ -48,6 +49,11 @@
         "filter": ["**/*"]
       }
     ],
+    "publish": {
+      "provider": "github",
+      "owner": "tako0614",
+      "repo": "ide"
+    },
     "win": {
       "target": "nsis"
     }

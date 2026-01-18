@@ -9,6 +9,7 @@ const path = require('path');
 const serverManager = require('./server-manager.cjs');
 const logManager = require('./log-manager.cjs');
 const windowManager = require('./window-manager.cjs');
+const autoUpdater = require('./auto-updater.cjs');
 const {
   setAutoStartEnabled,
   loadConfig,
@@ -31,9 +32,15 @@ app.whenReady().then(() => {
   // 各マネージャーにウィンドウ参照を設定
   logManager.setMainWindow(mainWindow);
   serverManager.setMainWindow(mainWindow);
+  autoUpdater.setMainWindow(mainWindow);
 
   // サーバーを起動
   serverManager.start();
+
+  // アップデートをチェック（起動後5秒待機）
+  setTimeout(() => {
+    autoUpdater.checkForUpdates();
+  }, 5000);
 });
 
 /**
@@ -117,4 +124,20 @@ ipcMain.handle('config-save', (_, config) => {
 // ポートを使用しているプロセスをkill
 ipcMain.handle('port-kill', async (_, port) => {
   return await killProcessOnPort(port);
+});
+
+// アップデートステータスを取得
+ipcMain.handle('update-status', () => {
+  return autoUpdater.getStatus();
+});
+
+// アップデートをチェック
+ipcMain.handle('update-check', () => {
+  autoUpdater.checkForUpdates();
+  return autoUpdater.getStatus();
+});
+
+// アップデートをインストールして再起動
+ipcMain.handle('update-install', () => {
+  autoUpdater.quitAndInstall();
 });
