@@ -117,9 +117,33 @@ export function TerminalTile({
     term.parser.registerCsiHandler({ prefix: '?', final: 'p', intermediates: '$' }, (params) => {
       const mode = params.params[0] || 0;
       console.log(`[DECRQM] Mode query for ${mode}`);
-      // Respond with "not recognized" (0) for most modes
-      // Common modes: 1049 (alt screen), 2004 (bracketed paste), 1004 (focus events)
-      sendResponse(`\x1b[?${mode};0$y`);
+
+      // Respond appropriately for common modes
+      // 0 = not recognized, 1 = set, 2 = reset, 3 = permanently set, 4 = permanently reset
+      let response = 0; // Default: not recognized
+
+      // Modes we support (report as "set" = 1)
+      const supportedModes = [
+        1, // DECCKM - Cursor keys mode
+        25, // DECTCEM - Text cursor enable
+        1049, // Alternate screen + save cursor
+      ];
+
+      // Modes we recognize but report as "reset" (2)
+      const recognizedModes = [
+        1004, // Focus in/out events
+        2004, // Bracketed paste mode
+        2026, // Synchronized output (not fully supported)
+        1000, 1002, 1003, 1006, // Mouse tracking modes
+      ];
+
+      if (supportedModes.includes(mode)) {
+        response = 1; // Set
+      } else if (recognizedModes.includes(mode)) {
+        response = 2; // Reset (recognized but not enabled)
+      }
+
+      sendResponse(`\x1b[?${mode};${response}$y`);
       return true;
     });
 
@@ -166,6 +190,137 @@ export function TerminalTile({
         sendResponse(`\x1b]12;rgb:ffff/ffff/ffff\x07`);
         return true;
       }
+      return false;
+    });
+
+    // OSC 4 - Color palette query (individual ANSI colors)
+    term.parser.registerOscHandler(4, (data) => {
+      const match = data.match(/^(\d+);?\?$/);
+      if (match) {
+        const colorIndex = parseInt(match[1]);
+        console.log(`[OSC 4] Color palette query for index ${colorIndex}`);
+        // Return basic ANSI colors
+        const ansiColors = [
+          '0000/0000/0000', // 0: black
+          'cdcb/0000/0000', // 1: red
+          '0000/cdcb/0000', // 2: green
+          'cdcb/cdcb/0000', // 3: yellow
+          '1e1e/9090/ffff', // 4: blue
+          'cdcb/0000/cdcb', // 5: magenta
+          '0000/cdcb/cdcb', // 6: cyan
+          'e5e5/e5e5/e5e5', // 7: white
+        ];
+        const color = colorIndex < 8 ? ansiColors[colorIndex] : '0000/0000/0000';
+        sendResponse(`\x1b]4;${colorIndex};rgb:${color}\x07`);
+        return true;
+      }
+      return false;
+    });
+
+    // OSC 52 - Clipboard query (SECURITY: blocked for safety)
+    term.parser.registerOscHandler(52, (data) => {
+      if (data.includes('?')) {
+        console.log('[OSC 52] Clipboard query blocked for security');
+        // Don't respond to clipboard queries for security
+        return true; // Consume but don't respond
+      }
+      return false;
+    });
+
+    // XTVERSION - Terminal version query (CSI > q or CSI > 0 q)
+    term.parser.registerCsiHandler({ prefix: '>', final: 'q' }, (params) => {
+      console.log('[XTVERSION] Responding to terminal version query');
+      // DCS > | xterm.js(version) ST
+      sendResponse('\x1bP>|xterm.js(5.0.0)\x1b\\');
+      return true;
+    });
+
+    // CSI u - Kitty keyboard protocol query (CRITICAL for Neovim/Helix)
+    term.parser.registerCsiHandler({ prefix: '?', final: 'u' }, (params) => {
+      console.log('[CSI u] Keyboard protocol query - not supported');
+      // Don't respond = not supported, apps will fall back to modifyOtherKeys
+      return true; // Consume the query
+    });
+
+    // XTQMODKEYS - modifyOtherKeys query (CSI ? 4 m)
+    term.parser.registerCsiHandler({ prefix: '?', final: 'm' }, (params) => {
+      const param = params.params[0];
+      if (param === 4) {
+        console.log('[XTQMODKEYS] Responding to modifyOtherKeys query');
+        // Report as disabled (0)
+        sendResponse('\x1b[?4;0m');
+        return true;
+      }
+      return false;
+    });
+
+    // XTWINOPS - Window size queries (CSI Ps t)
+    term.parser.registerCsiHandler({ final: 't' }, (params) => {
+      const operation = params.params[0];
+
+      if (operation === 18) {
+        // Report text area size in characters
+        console.log('[XTWINOPS] Window size query (18t)');
+        sendResponse(`\x1b[8;${term.rows};${term.cols}t`);
+        return true;
+      } else if (operation === 19) {
+        // Report screen size (same as window for web terminal)
+        console.log('[XTWINOPS] Screen size query (19t)');
+        sendResponse(`\x1b[9;${term.rows};${term.cols}t`);
+        return true;
+      } else if (operation === 14) {
+        // Report window size in pixels
+        console.log('[XTWINOPS] Window pixel size query (14t)');
+        const cellWidth = 9; // Approximate
+        const cellHeight = 17; // Approximate
+        sendResponse(`\x1b[4;${term.rows * cellHeight};${term.cols * cellWidth}t`);
+        return true;
+      } else if (operation === 20) {
+        // Report icon label
+        console.log('[XTWINOPS] Icon label query (20t)');
+        sendResponse('\x1b]LTerminal\x1b\\');
+        return true;
+      } else if (operation === 21) {
+        // Report window title
+        console.log('[XTWINOPS] Window title query (21t)');
+        sendResponse('\x1b]lTerminal\x1b\\');
+        return true;
+      }
+      return false;
+    });
+
+    // XTSMGRAPHICS - Sixel capability query (CSI ? Pi ; Pa ; Pv S)
+    term.parser.registerCsiHandler({ prefix: '?', final: 'S' }, (params) => {
+      console.log('[XTSMGRAPHICS] Sixel graphics query - not supported');
+      // Don't respond = not supported
+      return true; // Consume the sequence
+    });
+
+    // DECRQSS - Request Status String (DCS $ q Pt ST)
+    term.parser.registerDcsHandler({ intermediates: '$', final: 'q' }, (data, params) => {
+      console.log(`[DECRQSS] Status string query: ${data}`);
+      // Report as invalid request for most queries
+      sendResponse('\x1bP0$r\x1b\\');
+      return true;
+    });
+
+    // XTGETTCAP - Termcap/terminfo query (DCS + q <hex> ST)
+    term.parser.registerDcsHandler({ intermediates: '+', final: 'q' }, (data, params) => {
+      console.log(`[XTGETTCAP] Termcap query: ${data}`);
+      // Report as not available (DCS 0 $ r ST)
+      sendResponse('\x1bP0$r\x1b\\');
+      return true;
+    });
+
+    // REP - Repeat character (CSI Ps b) - SECURITY: Clamp to prevent DoS
+    term.parser.registerCsiHandler({ final: 'b' }, (params) => {
+      const repeatCount = params.params[0] || 1;
+      if (repeatCount > 65535) {
+        console.warn(`[REP] Large repeat count ${repeatCount} clamped to 65535 for security`);
+        // Don't execute, just consume
+        return true;
+      }
+      // Let xterm.js handle normal REP
       return false;
     });
 

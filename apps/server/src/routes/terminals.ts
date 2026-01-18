@@ -117,11 +117,14 @@ export function createTerminalRouter(
           if (strData.match(/\x1b\[(\?)?(\d*)n/)) {
             console.log(`[QUERY] DSR request from terminal ${id}`);
           }
-          if (strData.match(/\x1b\[(\?)?c/)) {
-            console.log(`[QUERY] DA (Device Attributes) request from terminal ${id}`);
+          if (strData.match(/\x1b\[(\?)?c/) && !strData.match(/\x1b\[>/)) {
+            console.log(`[QUERY] DA1 request from terminal ${id}`);
           }
-          if (strData.match(/\x1b\[>c/)) {
+          if (strData.match(/\x1b\[>c/) || strData.match(/\x1b\[>0?c/)) {
             console.log(`[QUERY] DA2 request from terminal ${id}`);
+          }
+          if (strData.match(/\x1b\[>\s*q/)) {
+            console.log(`[QUERY] XTVERSION request from terminal ${id}`);
           }
           if (strData.match(/\x1b\[\?\d+\$p/)) {
             console.log(`[QUERY] DECRQM (mode query) from terminal ${id}`);
@@ -129,7 +132,33 @@ export function createTerminalRouter(
           if (strData.match(/\x1b\]1[012];?\?/)) {
             const match = strData.match(/\x1b\]1([012]);?\?/);
             const type = match ? ['FG', 'BG', 'Cursor'][parseInt(match[1])] : 'unknown';
-            console.log(`[QUERY] OSC color query (${type}) from terminal ${id}`);
+            console.log(`[QUERY] OSC ${10 + parseInt(match?.[1] || '0')} color query (${type}) from terminal ${id}`);
+          }
+          if (strData.match(/\x1b\]4;\d+;?\?/)) {
+            console.log(`[QUERY] OSC 4 color palette query from terminal ${id}`);
+          }
+          if (strData.match(/\x1b\]52;/)) {
+            console.log(`[QUERY] OSC 52 clipboard query from terminal ${id}`);
+          }
+          if (strData.match(/\x1b\[\d+t/)) {
+            const match = strData.match(/\x1b\[(\d+)t/);
+            const op = match ? match[1] : '?';
+            console.log(`[QUERY] XTWINOPS (${op}t) from terminal ${id}`);
+          }
+          if (strData.match(/\x1b\[\?[^S]+S/)) {
+            console.log(`[QUERY] XTSMGRAPHICS (sixel) from terminal ${id}`);
+          }
+          if (strData.match(/\x1b\[\?u/)) {
+            console.log(`[QUERY] CSI u keyboard protocol query from terminal ${id}`);
+          }
+          if (strData.match(/\x1b\[\?\d+m/)) {
+            console.log(`[QUERY] XTQMODKEYS (modifyOtherKeys) from terminal ${id}`);
+          }
+          if (strData.match(/\x1bP\$q/)) {
+            console.log(`[QUERY] DECRQSS (status string) from terminal ${id}`);
+          }
+          if (strData.match(/\x1bP\+q/)) {
+            console.log(`[QUERY] XTGETTCAP (termcap) from terminal ${id}`);
           }
 
           if (process.env.DEBUG_TERMINAL) {

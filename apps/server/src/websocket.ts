@@ -161,16 +161,34 @@ export function setupWebSocketServer(
           console.log(`[RESPONSE] CPR (cursor position) from client to terminal ${id}`);
         }
         if (message.match(/\x1b\[\?[^;]+;[0-4]\$y/)) {
-          console.log(`[RESPONSE] DECRQM (mode status) from client to terminal ${id}`);
+          const match = message.match(/\x1b\[\?(\d+);([0-4])\$y/);
+          const mode = match ? match[1] : '?';
+          const status = match ? match[2] : '?';
+          console.log(`[RESPONSE] DECRQM mode ${mode} status ${status} from client to terminal ${id}`);
         }
         if (message.match(/\x1b\[\?[\d;]+c/)) {
-          console.log(`[RESPONSE] DA1 (device attributes) from client to terminal ${id}`);
+          console.log(`[RESPONSE] DA1 from client to terminal ${id}`);
         }
         if (message.match(/\x1b\[>[^c]*c/)) {
           console.log(`[RESPONSE] DA2 from client to terminal ${id}`);
         }
+        if (message.match(/\x1bP>[\|]/)) {
+          console.log(`[RESPONSE] XTVERSION from client to terminal ${id}`);
+        }
         if (message.match(/\x1b\]1[012];rgb:/)) {
-          console.log(`[RESPONSE] OSC color response from client to terminal ${id}`);
+          console.log(`[RESPONSE] OSC color from client to terminal ${id}`);
+        }
+        if (message.match(/\x1b\]4;\d+;rgb:/)) {
+          console.log(`[RESPONSE] OSC 4 color palette from client to terminal ${id}`);
+        }
+        if (message.match(/\x1b\[8;\d+;\d+t/)) {
+          console.log(`[RESPONSE] XTWINOPS window size from client to terminal ${id}`);
+        }
+        if (message.match(/\x1b\[\?\d+m/)) {
+          console.log(`[RESPONSE] XTQMODKEYS from client to terminal ${id}`);
+        }
+        if (message.match(/\x1bP[01]\$r/)) {
+          console.log(`[RESPONSE] DECRQSS/XTGETTCAP from client to terminal ${id}`);
         }
 
         // Check for resize message
