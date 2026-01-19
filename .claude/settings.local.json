@@ -23,7 +23,8 @@
       "Bash(npm version:*)",
       "Bash(gh release upload:*)",
       "Bash(gh release:*)",
-      "Bash(npm view:*)"
+      "Bash(npm view:*)",
+      "WebFetch(domain:github.com)"
     ],
     "deny": [],
     "ask": []

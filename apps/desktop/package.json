@@ -3,7 +3,7 @@
   "description": "Deck IDE server manager for Windows",
   "author": "Deck IDE",
   "private": true,
-  "version": "0.1.7",
+  "version": "0.1.8",
   "main": "src/main.cjs",
   "scripts": {
     "dev": "electron .",
@@ -14,7 +14,7 @@
     "@hono/node-server": "^1.12.2",
     "electron-updater": "^6.1.7",
     "hono": "^4.5.10",
-    "node-pty": "^1.0.0",
+    "node-pty": "1.2.0-beta.7",
     "simple-git": "^3.27.0",
     "ws": "^8.17.0"
   },
