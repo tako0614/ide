@@ -96,18 +96,20 @@ export function createTerminalRouter(
         env
       };
 
+      // Set encoding for proper text handling
+      spawnOptions.encoding = 'utf8';
+
       // Use ConPTY on Windows for better TUI support
       // Note: AttachConsole errors are suppressed in server.ts
       if (isWindows) {
         spawnOptions.useConpty = true;
-      } else {
-        spawnOptions.encoding = 'utf8';
       }
 
       const spawnStart = Date.now();
       term = spawn(shell, shellArgs, spawnOptions);
       const spawnTime = Date.now() - spawnStart;
 
+      console.log(`[TERMINAL] Spawned terminal ${id}: shell=${shell}, pid=${term.pid}, cwd=${deck.root}`);
       if (command) {
         console.log(`[TERMINAL] Created terminal ${id} with command="${command}" using shell=${shell} args=${JSON.stringify(shellArgs)}`);
       } else {
@@ -244,8 +246,8 @@ export function createTerminalRouter(
     }
 
     // Set up exit handler
-    term.onExit(({ exitCode }) => {
-      console.log(`Terminal ${id} exited with code ${exitCode}`);
+    term.onExit(({ exitCode, signal }) => {
+      console.log(`[TERMINAL] Terminal ${id} exited: code=${exitCode}, signal=${signal}`);
 
       // Check if already cleaned up (by cleanup interval or delete endpoint)
       if (!terminals.has(id)) {

@@ -217,7 +217,8 @@ export function setupWebSocketServer(
       }
     });
 
-    socket.on('close', () => {
+    socket.on('close', (code, reason) => {
+      console.log(`[WS] Socket ${socketId} closed for terminal ${id}: code=${code}, reason=${reason?.toString() || 'none'}`);
       session.sockets.delete(socket);
       session.lastActive = Date.now();
       wsMessageRateLimits.delete(socketId);
