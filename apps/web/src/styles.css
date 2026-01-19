@@ -1297,12 +1297,40 @@ textarea {
 
 .terminal-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
-  gap: 12px;
-  align-content: start;
+  gap: 8px;
   min-height: 0;
   overflow: auto;
   flex: 1;
+  padding: 4px;
+}
+
+/* 1 terminal: full width and height */
+.terminal-grid.terminal-count-1 {
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr;
+}
+
+/* 2 terminals: side by side */
+.terminal-grid.terminal-count-2 {
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr;
+}
+
+/* 3 terminals: 2 on top, 1 spanning bottom */
+.terminal-grid.terminal-count-3 {
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+}
+
+.terminal-grid.terminal-count-3 .terminal-tile:nth-child(3) {
+  grid-column: 1 / -1;
+}
+
+/* 4+ terminals: 2x2 grid, scrollable */
+.terminal-grid.terminal-count-4 {
+  grid-template-columns: repeat(2, 1fr);
+  grid-auto-rows: minmax(250px, 1fr);
+  align-content: start;
 }
 
 .terminal-tile {
@@ -1310,8 +1338,8 @@ textarea {
   border-radius: 4px;
   background: #1e1e1e;
   color: #d4d4d4;
-  min-width: 300px;
-  min-height: 200px;
+  min-width: 0;
+  min-height: 180px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -2151,7 +2179,17 @@ input:focus-visible {
     grid-row: 1;
   }
 
-  .terminal-grid {
+  /* On small screens, stack terminals vertically */
+  .terminal-grid,
+  .terminal-grid.terminal-count-2,
+  .terminal-grid.terminal-count-3,
+  .terminal-grid.terminal-count-4 {
     grid-template-columns: 1fr;
+    grid-template-rows: auto;
+    grid-auto-rows: minmax(200px, 1fr);
+  }
+
+  .terminal-grid.terminal-count-3 .terminal-tile:nth-child(3) {
+    grid-column: auto;
   }
 }

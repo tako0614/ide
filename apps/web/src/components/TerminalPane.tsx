@@ -47,7 +47,7 @@ export function TerminalPane({
       {terminals.length === 0 ? (
         <div className="empty-state">{LABEL_EMPTY}</div>
       ) : (
-        <div className="terminal-grid">
+        <div className={`terminal-grid terminal-count-${Math.min(terminals.length, 4)}`}>
           {terminals.map((terminal) => (
             <TerminalTile
               key={terminal.id}
