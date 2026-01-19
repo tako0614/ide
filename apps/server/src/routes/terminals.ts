@@ -96,9 +96,10 @@ export function createTerminalRouter(
         env
       };
 
-      // Use winpty on Windows (ConPTY has AttachConsole issues)
+      // Use ConPTY on Windows for better TUI support
+      // Note: AttachConsole errors are suppressed in server.ts
       if (isWindows) {
-        spawnOptions.useConpty = false;
+        spawnOptions.useConpty = true;
       } else {
         spawnOptions.encoding = 'utf8';
       }

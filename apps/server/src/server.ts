@@ -8,6 +8,19 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import { bodyLimit } from 'hono/body-limit';
 import { DatabaseSync } from 'node:sqlite';
 import type { Workspace, Deck, TerminalSession } from './types.js';
+
+// Handle uncaught exceptions from node-pty's ConPTY (AttachConsole errors)
+process.on('uncaughtException', (error: Error) => {
+  // Suppress known node-pty ConPTY errors that don't affect functionality
+  if (error.message?.includes('AttachConsole failed')) {
+    console.log('[node-pty] AttachConsole error suppressed (terminal already exited)');
+    return;
+  }
+  // Re-throw other uncaught exceptions
+  console.error('Uncaught exception:', error);
+  throw error;
+});
+
 import {
   PORT,
   HOST,
