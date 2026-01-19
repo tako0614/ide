@@ -1,7 +1,8 @@
 import { useCallback, useState, useRef } from 'react';
-import type { GitStatus, GitFileStatus, GitDiff } from '../types';
+import type { GitStatus, GitFileStatus, GitDiff, GitRepoInfo } from '../types';
 import {
   getGitStatus,
+  getGitRepos,
   stageFiles,
   unstageFiles,
   commitChanges,
@@ -52,6 +53,10 @@ export interface GitState {
   branchesLoading: boolean;
   logs: GitLogEntry[];
   logsLoading: boolean;
+  // Multi-repo support
+  repos: GitRepoInfo[];
+  reposLoading: boolean;
+  selectedRepoPath: string | null; // null = auto-select first repo
 }
 
 export const createEmptyGitState = (): GitState => ({
@@ -68,7 +73,11 @@ export const createEmptyGitState = (): GitState => ({
   branches: [],
   branchesLoading: false,
   logs: [],
-  logsLoading: false
+  logsLoading: false,
+  // Multi-repo support
+  repos: [],
+  reposLoading: false,
+  selectedRepoPath: null
 });
 
 // API timeout wrapper
@@ -121,13 +130,30 @@ export const useGitState = (
       }
       loadingRefs.current[workspaceId] = true;
 
-      updateGitState(workspaceId, (prev) => ({ ...prev, loading: true, error: null }));
+      updateGitState(workspaceId, (prev) => ({ ...prev, loading: true, reposLoading: true, error: null }));
 
       try {
+        // First, fetch all repos in the workspace
+        const reposResult = await withTimeout(getGitRepos(workspaceId)).catch(() => ({ repos: [] }));
+        const repos = reposResult.repos;
+
+        updateGitState(workspaceId, (prev) => ({
+          ...prev,
+          repos,
+          reposLoading: false,
+          // Auto-select first repo if none selected
+          selectedRepoPath: prev.selectedRepoPath ?? (repos.length > 0 ? repos[0].path : null)
+        }));
+
+        // Get the selected repo path (use first repo if none selected)
+        const currentState = gitStates[workspaceId] || createEmptyGitState();
+        const repoPath = currentState.selectedRepoPath ?? (repos.length > 0 ? repos[0].path : undefined);
+
+        // Fetch status for the selected repo
         const [status, branchStatus, remotes] = await Promise.all([
-          withTimeout(getGitStatus(workspaceId)),
-          withTimeout(getBranchStatus(workspaceId)).catch(() => ({ ahead: 0, behind: 0, hasUpstream: false })),
-          withTimeout(getGitRemotes(workspaceId)).catch(() => ({ hasRemote: false, remotes: [] }))
+          withTimeout(getGitStatus(workspaceId, repoPath || undefined)),
+          withTimeout(getBranchStatus(workspaceId, repoPath || undefined)).catch(() => ({ ahead: 0, behind: 0, hasUpstream: false })),
+          withTimeout(getGitRemotes(workspaceId, repoPath || undefined)).catch(() => ({ hasRemote: false, remotes: [] }))
         ]);
 
         updateGitState(workspaceId, (prev) => ({
@@ -144,13 +170,54 @@ export const useGitState = (
           ...prev,
           status: null,
           loading: false,
+          reposLoading: false,
           error: message
         }));
       } finally {
         loadingRefs.current[workspaceId] = false;
       }
     },
-    [activeWorkspaceId, updateGitState]
+    [activeWorkspaceId, updateGitState, gitStates]
+  );
+
+  // Select a specific repository within the workspace
+  const handleSelectRepo = useCallback(
+    async (repoPath: string) => {
+      if (!activeWorkspaceId) return;
+
+      updateGitState(activeWorkspaceId, (prev) => ({
+        ...prev,
+        selectedRepoPath: repoPath,
+        loading: true
+      }));
+
+      try {
+        const [status, branchStatus, remotes] = await Promise.all([
+          withTimeout(getGitStatus(activeWorkspaceId, repoPath || undefined)),
+          withTimeout(getBranchStatus(activeWorkspaceId, repoPath || undefined)).catch(() => ({ ahead: 0, behind: 0, hasUpstream: false })),
+          withTimeout(getGitRemotes(activeWorkspaceId, repoPath || undefined)).catch(() => ({ hasRemote: false, remotes: [] }))
+        ]);
+
+        updateGitState(activeWorkspaceId, (prev) => ({
+          ...prev,
+          status,
+          branchStatus,
+          hasRemote: remotes.hasRemote,
+          loading: false,
+          // Reset branches and logs when switching repos
+          branches: [],
+          logs: []
+        }));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Failed to get git status';
+        setStatusMessage(message);
+        updateGitState(activeWorkspaceId, (prev) => ({
+          ...prev,
+          loading: false
+        }));
+      }
+    },
+    [activeWorkspaceId, updateGitState, setStatusMessage]
   );
 
   // Refresh all known workspaces
@@ -159,38 +226,48 @@ export const useGitState = (
     await Promise.all(workspaceIds.map((id) => refreshGitStatus(id)));
   }, [gitStates, refreshGitStatus]);
 
+  // Helper to get current repo path
+  const getCurrentRepoPath = useCallback(() => {
+    if (!activeWorkspaceId) return undefined;
+    const state = gitStates[activeWorkspaceId];
+    return state?.selectedRepoPath || undefined;
+  }, [activeWorkspaceId, gitStates]);
+
   const handleStageFile = useCallback(
     async (path: string) => {
       if (!activeWorkspaceId) return;
+      const repoPath = getCurrentRepoPath();
 
       try {
-        await stageFiles(activeWorkspaceId, [path]);
+        await stageFiles(activeWorkspaceId, [path], repoPath);
         await refreshGitStatus();
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Failed to stage file';
         setStatusMessage(message);
       }
     },
-    [activeWorkspaceId, refreshGitStatus, setStatusMessage]
+    [activeWorkspaceId, getCurrentRepoPath, refreshGitStatus, setStatusMessage]
   );
 
   const handleUnstageFile = useCallback(
     async (path: string) => {
       if (!activeWorkspaceId) return;
+      const repoPath = getCurrentRepoPath();
 
       try {
-        await unstageFiles(activeWorkspaceId, [path]);
+        await unstageFiles(activeWorkspaceId, [path], repoPath);
         await refreshGitStatus();
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Failed to unstage file';
         setStatusMessage(message);
       }
     },
-    [activeWorkspaceId, refreshGitStatus, setStatusMessage]
+    [activeWorkspaceId, getCurrentRepoPath, refreshGitStatus, setStatusMessage]
   );
 
   const handleStageAll = useCallback(async () => {
     if (!activeWorkspaceId || !gitState.status) return;
+    const repoPath = getCurrentRepoPath();
 
     const unstagedFiles = gitState.status.files
       .filter((f) => !f.staged)
@@ -199,16 +276,17 @@ export const useGitState = (
     if (unstagedFiles.length === 0) return;
 
     try {
-      await stageFiles(activeWorkspaceId, unstagedFiles);
+      await stageFiles(activeWorkspaceId, unstagedFiles, repoPath);
       await refreshGitStatus();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to stage files';
       setStatusMessage(message);
     }
-  }, [activeWorkspaceId, gitState.status, refreshGitStatus, setStatusMessage]);
+  }, [activeWorkspaceId, gitState.status, getCurrentRepoPath, refreshGitStatus, setStatusMessage]);
 
   const handleUnstageAll = useCallback(async () => {
     if (!activeWorkspaceId || !gitState.status) return;
+    const repoPath = getCurrentRepoPath();
 
     const stagedFiles = gitState.status.files
       .filter((f) => f.staged)
@@ -217,20 +295,21 @@ export const useGitState = (
     if (stagedFiles.length === 0) return;
 
     try {
-      await unstageFiles(activeWorkspaceId, stagedFiles);
+      await unstageFiles(activeWorkspaceId, stagedFiles, repoPath);
       await refreshGitStatus();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to unstage files';
       setStatusMessage(message);
     }
-  }, [activeWorkspaceId, gitState.status, refreshGitStatus, setStatusMessage]);
+  }, [activeWorkspaceId, gitState.status, getCurrentRepoPath, refreshGitStatus, setStatusMessage]);
 
   const handleCommit = useCallback(
     async (message: string) => {
       if (!activeWorkspaceId || !message.trim()) return;
+      const repoPath = getCurrentRepoPath();
 
       try {
-        const result = await commitChanges(activeWorkspaceId, message.trim());
+        const result = await commitChanges(activeWorkspaceId, message.trim(), repoPath);
         setStatusMessage(
           `Committed: ${result.summary.changes} changes, +${result.summary.insertions} -${result.summary.deletions}`
         );
@@ -240,27 +319,29 @@ export const useGitState = (
         setStatusMessage(errMessage);
       }
     },
-    [activeWorkspaceId, refreshGitStatus, setStatusMessage]
+    [activeWorkspaceId, getCurrentRepoPath, refreshGitStatus, setStatusMessage]
   );
 
   const handleDiscardFile = useCallback(
     async (path: string) => {
       if (!activeWorkspaceId) return;
+      const repoPath = getCurrentRepoPath();
 
       try {
-        await discardChanges(activeWorkspaceId, [path]);
+        await discardChanges(activeWorkspaceId, [path], repoPath);
         await refreshGitStatus();
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Failed to discard changes';
         setStatusMessage(message);
       }
     },
-    [activeWorkspaceId, refreshGitStatus, setStatusMessage]
+    [activeWorkspaceId, getCurrentRepoPath, refreshGitStatus, setStatusMessage]
   );
 
   const handleShowDiff = useCallback(
     async (file: GitFileStatus) => {
       if (!activeWorkspaceId) return;
+      const repoPath = getCurrentRepoPath();
 
       updateGitState(activeWorkspaceId, (prev) => ({
         ...prev,
@@ -270,7 +351,7 @@ export const useGitState = (
       }));
 
       try {
-        const diff = await getGitDiff(activeWorkspaceId, file.path, file.staged);
+        const diff = await getGitDiff(activeWorkspaceId, file.path, file.staged, repoPath);
         updateGitState(activeWorkspaceId, (prev) => ({
           ...prev,
           diff,
@@ -287,7 +368,7 @@ export const useGitState = (
         }));
       }
     },
-    [activeWorkspaceId, updateGitState, setStatusMessage]
+    [activeWorkspaceId, getCurrentRepoPath, updateGitState, setStatusMessage]
   );
 
   const handleCloseDiff = useCallback(() => {
@@ -302,11 +383,12 @@ export const useGitState = (
 
   const handlePush = useCallback(async () => {
     if (!activeWorkspaceId) return;
+    const repoPath = getCurrentRepoPath();
 
     updateGitState(activeWorkspaceId, (prev) => ({ ...prev, pushing: true }));
 
     try {
-      const result = await pushChanges(activeWorkspaceId);
+      const result = await pushChanges(activeWorkspaceId, repoPath);
       setStatusMessage(`Pushed to ${result.branch}`);
       await refreshGitStatus();
     } catch (error) {
@@ -315,15 +397,16 @@ export const useGitState = (
     } finally {
       updateGitState(activeWorkspaceId, (prev) => ({ ...prev, pushing: false }));
     }
-  }, [activeWorkspaceId, updateGitState, refreshGitStatus, setStatusMessage]);
+  }, [activeWorkspaceId, getCurrentRepoPath, updateGitState, refreshGitStatus, setStatusMessage]);
 
   const handlePull = useCallback(async () => {
     if (!activeWorkspaceId) return;
+    const repoPath = getCurrentRepoPath();
 
     updateGitState(activeWorkspaceId, (prev) => ({ ...prev, pulling: true }));
 
     try {
-      const result = await pullChanges(activeWorkspaceId);
+      const result = await pullChanges(activeWorkspaceId, repoPath);
       if (result.summary.changes > 0) {
         setStatusMessage(
           `Pulled: ${result.summary.changes} changes, +${result.summary.insertions} -${result.summary.deletions}`
@@ -338,28 +421,30 @@ export const useGitState = (
     } finally {
       updateGitState(activeWorkspaceId, (prev) => ({ ...prev, pulling: false }));
     }
-  }, [activeWorkspaceId, updateGitState, refreshGitStatus, setStatusMessage]);
+  }, [activeWorkspaceId, getCurrentRepoPath, updateGitState, refreshGitStatus, setStatusMessage]);
 
   const handleFetch = useCallback(async () => {
     if (!activeWorkspaceId) return;
+    const repoPath = getCurrentRepoPath();
 
     try {
-      await fetchChanges(activeWorkspaceId);
+      await fetchChanges(activeWorkspaceId, repoPath);
       setStatusMessage('Fetched from remote');
       await refreshGitStatus();
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to fetch';
       setStatusMessage(message);
     }
-  }, [activeWorkspaceId, refreshGitStatus, setStatusMessage]);
+  }, [activeWorkspaceId, getCurrentRepoPath, refreshGitStatus, setStatusMessage]);
 
   const handleLoadBranches = useCallback(async () => {
     if (!activeWorkspaceId) return;
+    const repoPath = getCurrentRepoPath();
 
     updateGitState(activeWorkspaceId, (prev) => ({ ...prev, branchesLoading: true }));
 
     try {
-      const result = await withTimeout(listBranches(activeWorkspaceId));
+      const result = await withTimeout(listBranches(activeWorkspaceId, repoPath));
       updateGitState(activeWorkspaceId, (prev) => ({
         ...prev,
         branches: result.branches,
@@ -370,14 +455,15 @@ export const useGitState = (
       setStatusMessage(message);
       updateGitState(activeWorkspaceId, (prev) => ({ ...prev, branchesLoading: false }));
     }
-  }, [activeWorkspaceId, updateGitState, setStatusMessage]);
+  }, [activeWorkspaceId, getCurrentRepoPath, updateGitState, setStatusMessage]);
 
   const handleCheckoutBranch = useCallback(
     async (branchName: string) => {
       if (!activeWorkspaceId) return;
+      const repoPath = getCurrentRepoPath();
 
       try {
-        await checkoutBranch(activeWorkspaceId, branchName);
+        await checkoutBranch(activeWorkspaceId, branchName, repoPath);
         setStatusMessage(`Switched to branch '${branchName}'`);
         await refreshGitStatus();
         await handleLoadBranches();
@@ -386,15 +472,16 @@ export const useGitState = (
         setStatusMessage(message);
       }
     },
-    [activeWorkspaceId, refreshGitStatus, handleLoadBranches, setStatusMessage]
+    [activeWorkspaceId, getCurrentRepoPath, refreshGitStatus, handleLoadBranches, setStatusMessage]
   );
 
   const handleCreateBranch = useCallback(
     async (branchName: string, checkout = true) => {
       if (!activeWorkspaceId) return;
+      const repoPath = getCurrentRepoPath();
 
       try {
-        await createBranch(activeWorkspaceId, branchName, checkout);
+        await createBranch(activeWorkspaceId, branchName, checkout, repoPath);
         setStatusMessage(`Created branch '${branchName}'${checkout ? ' and switched to it' : ''}`);
         await refreshGitStatus();
         await handleLoadBranches();
@@ -403,16 +490,17 @@ export const useGitState = (
         setStatusMessage(message);
       }
     },
-    [activeWorkspaceId, refreshGitStatus, handleLoadBranches, setStatusMessage]
+    [activeWorkspaceId, getCurrentRepoPath, refreshGitStatus, handleLoadBranches, setStatusMessage]
   );
 
   const handleLoadLogs = useCallback(async (limit = 50) => {
     if (!activeWorkspaceId) return;
+    const repoPath = getCurrentRepoPath();
 
     updateGitState(activeWorkspaceId, (prev) => ({ ...prev, logsLoading: true }));
 
     try {
-      const result = await withTimeout(getGitLog(activeWorkspaceId, limit));
+      const result = await withTimeout(getGitLog(activeWorkspaceId, limit, repoPath));
       updateGitState(activeWorkspaceId, (prev) => ({
         ...prev,
         logs: result.logs,
@@ -423,7 +511,7 @@ export const useGitState = (
       setStatusMessage(message);
       updateGitState(activeWorkspaceId, (prev) => ({ ...prev, logsLoading: false }));
     }
-  }, [activeWorkspaceId, updateGitState, setStatusMessage]);
+  }, [activeWorkspaceId, getCurrentRepoPath, updateGitState, setStatusMessage]);
 
   // Get git state for any workspace (for displaying badges, etc.)
   const getGitStateForWorkspace = useCallback(
@@ -439,6 +527,7 @@ export const useGitState = (
     refreshGitStatus,
     refreshAllGitStatuses,
     getGitStateForWorkspace,
+    handleSelectRepo,
     handleStageFile,
     handleUnstageFile,
     handleStageAll,

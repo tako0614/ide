@@ -102,6 +102,7 @@ export default function App() {
   const {
     gitState,
     refreshGitStatus,
+    handleSelectRepo,
     handleStageFile,
     handleUnstageFile,
     handleStageAll,
@@ -420,6 +421,9 @@ export default function App() {
                 branchesLoading={gitState.branchesLoading}
                 logs={gitState.logs}
                 logsLoading={gitState.logsLoading}
+                repos={gitState.repos}
+                selectedRepoPath={gitState.selectedRepoPath}
+                onSelectRepo={handleSelectRepo}
                 onRefresh={refreshGitStatus}
                 onStageFile={handleStageFile}
                 onUnstageFile={handleUnstageFile}
