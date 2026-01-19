@@ -1703,6 +1703,54 @@ textarea {
   fill: currentColor;
 }
 
+/* Repository Selector (Multi-repo support) */
+.repo-selector {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--list-hover);
+  border-bottom: 1px solid var(--border);
+}
+
+.repo-icon {
+  width: 14px;
+  height: 14px;
+  color: var(--ink-muted);
+  flex-shrink: 0;
+}
+
+.repo-select {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--ink);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.repo-select:hover {
+  border-color: var(--accent);
+}
+
+.repo-select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(var(--accent-rgb), 0.2);
+}
+
+.repo-count {
+  font-size: 10px;
+  color: var(--ink-muted);
+  white-space: nowrap;
+  padding: 2px 6px;
+  background: var(--bg);
+  border-radius: 8px;
+}
+
 /* Git Tabs */
 .git-tabs {
   display: flex;

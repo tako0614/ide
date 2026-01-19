@@ -1,5 +1,5 @@
-import { useState, useCallback, useEffect } from 'react';
-import type { GitStatus, GitFileStatus } from '../types';
+import { useState, useCallback } from 'react';
+import type { GitStatus, GitFileStatus, GitRepoInfo } from '../types';
 import { GitFileRow } from './GitFileRow';
 import type { BranchStatus, GitBranch, GitLogEntry } from '../hooks/useGitState';
 
@@ -40,6 +40,11 @@ interface SourceControlProps {
   branchesLoading: boolean;
   logs: GitLogEntry[];
   logsLoading: boolean;
+  // Multi-repo support
+  repos: GitRepoInfo[];
+  selectedRepoPath: string | null;
+  onSelectRepo: (repoPath: string) => void;
+  // Actions
   onRefresh: () => void;
   onStageFile: (path: string) => void;
   onUnstageFile: (path: string) => void;
@@ -69,6 +74,9 @@ export function SourceControl({
   branchesLoading,
   logs,
   logsLoading,
+  repos,
+  selectedRepoPath,
+  onSelectRepo,
   onRefresh,
   onStageFile,
   onUnstageFile,
@@ -429,6 +437,10 @@ export function SourceControl({
     </div>
   );
 
+  // Get the selected repo info
+  const selectedRepo = repos.find((r) => r.path === selectedRepoPath) || repos[0];
+  const hasMultipleRepos = repos.length > 1;
+
   return (
     <section className="panel source-control">
       <div className="panel-header">
@@ -457,6 +469,34 @@ export function SourceControl({
           {LABEL_REFRESH}
         </button>
       </div>
+
+      {/* Repository selector - only show when multiple repos exist */}
+      {hasMultipleRepos && (
+        <div className="repo-selector">
+          <svg className="repo-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              d="M3 7v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-6l-2-2H5a2 2 0 0 0-2 2z"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+          <select
+            className="repo-select"
+            value={selectedRepoPath || ''}
+            onChange={(e) => onSelectRepo(e.target.value)}
+          >
+            {repos.map((repo) => (
+              <option key={repo.path} value={repo.path}>
+                {repo.name} ({repo.branch}) {repo.fileCount > 0 ? `• ${repo.fileCount}` : ''}
+              </option>
+            ))}
+          </select>
+          <span className="repo-count">{repos.length} repos</span>
+        </div>
+      )}
       <div className="git-tabs">
         <button
           type="button"
