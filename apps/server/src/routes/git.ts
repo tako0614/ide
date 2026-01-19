@@ -6,6 +6,11 @@ import type { Workspace } from '../types.js';
 import { createHttpError, handleError, readJson } from '../utils/error.js';
 import { resolveSafePath } from '../utils/path.js';
 
+// Maximum depth to search for git repos
+const MAX_SEARCH_DEPTH = 5;
+// Directories to skip when searching
+const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', 'coverage', '.next', '.nuxt', 'vendor', '__pycache__']);
+
 export type GitFileStatusCode =
   | 'modified'
   | 'staged'
@@ -30,6 +35,18 @@ export interface GitDiff {
   original: string;
   modified: string;
   path: string;
+}
+
+export interface GitRepoInfo {
+  path: string;        // Relative path from workspace root (empty string for root repo)
+  name: string;        // Display name (folder name or 'root')
+  branch: string;
+  fileCount: number;   // Number of changed files
+}
+
+export interface MultiRepoGitStatus {
+  repos: GitRepoInfo[];
+  files: (GitFileStatus & { repoPath: string })[];
 }
 
 // Security: Validate file paths to prevent command injection
@@ -191,6 +208,50 @@ async function isGitRepository(git: SimpleGit): Promise<boolean> {
   }
 }
 
+/**
+ * Recursively find all git repositories within a directory
+ * Returns relative paths from the workspace root (using forward slashes for cross-platform compatibility)
+ */
+async function findGitRepos(
+  basePath: string,
+  currentPath: string = '',
+  depth: number = 0
+): Promise<string[]> {
+  if (depth > MAX_SEARCH_DEPTH) {
+    return [];
+  }
+
+  const repos: string[] = [];
+  const fullPath = currentPath ? nodePath.join(basePath, currentPath) : basePath;
+
+  try {
+    const entries = await fs.readdir(fullPath, { withFileTypes: true });
+
+    // Check if this directory is a git repo
+    const hasGitDir = entries.some(e => e.isDirectory() && e.name === '.git');
+    if (hasGitDir) {
+      // Use forward slashes for consistency
+      repos.push(currentPath.replace(/\\/g, '/'));
+      // Don't recurse into nested git repos (submodules are handled separately by git)
+      return repos;
+    }
+
+    // Recurse into subdirectories
+    for (const entry of entries) {
+      if (entry.isDirectory() && !SKIP_DIRS.has(entry.name) && !entry.name.startsWith('.')) {
+        const subPath = currentPath ? nodePath.join(currentPath, entry.name) : entry.name;
+        const subRepos = await findGitRepos(basePath, subPath, depth + 1);
+        repos.push(...subRepos);
+      }
+    }
+  } catch (error) {
+    // Ignore permission errors or other issues
+    console.error('Error scanning directory:', fullPath, error);
+  }
+
+  return repos;
+}
+
 async function readFileContent(workspacePath: string, filePath: string): Promise<string> {
   try {
     // Use resolveSafePath for proper symlink validation
@@ -229,15 +290,43 @@ async function getOriginalContent(git: SimpleGit, filePath: string): Promise<str
 export function createGitRouter(workspaces: Map<string, Workspace>) {
   const router = new Hono();
 
-  // GET /api/git/status?workspaceId=xxx
+  // GET /api/git/status?workspaceId=xxx&repoPath=xxx (optional repoPath for specific repo)
   router.get('/status', async (c) => {
     try {
       const workspaceId = c.req.query('workspaceId');
+      const repoPath = c.req.query('repoPath'); // Optional: specific repo path
+
       if (!workspaceId) {
         throw createHttpError('workspaceId is required', 400);
       }
 
       const workspace = requireWorkspace(workspaces, workspaceId);
+
+      // If repoPath is specified, get status for that specific repo
+      if (repoPath !== undefined) {
+        const fullRepoPath = repoPath ? nodePath.join(workspace.path, repoPath) : workspace.path;
+        const git = simpleGit(fullRepoPath);
+
+        const isRepo = await isGitRepository(git);
+        if (!isRepo) {
+          return c.json({
+            isGitRepo: false,
+            branch: '',
+            files: []
+          } as GitStatus);
+        }
+
+        const status = await git.status();
+        const files = parseFileStatus(status);
+
+        return c.json({
+          isGitRepo: true,
+          branch: status.current ?? 'HEAD',
+          files
+        } as GitStatus);
+      }
+
+      // Default behavior: check root repo only (backwards compatible)
       const git = simpleGit(workspace.path);
 
       const isRepo = await isGitRepository(git);
@@ -262,17 +351,110 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
     }
   });
 
+  // GET /api/git/repos?workspaceId=xxx - Find all git repos in workspace
+  router.get('/repos', async (c) => {
+    try {
+      const workspaceId = c.req.query('workspaceId');
+      if (!workspaceId) {
+        throw createHttpError('workspaceId is required', 400);
+      }
+
+      const workspace = requireWorkspace(workspaces, workspaceId);
+      const repoPaths = await findGitRepos(workspace.path);
+
+      // Get info for each repo
+      const repos: GitRepoInfo[] = [];
+      for (const repoPath of repoPaths) {
+        const fullPath = repoPath ? nodePath.join(workspace.path, repoPath) : workspace.path;
+        const git = simpleGit(fullPath);
+
+        try {
+          const status = await git.status();
+          const files = parseFileStatus(status);
+
+          repos.push({
+            path: repoPath,
+            name: repoPath ? nodePath.basename(repoPath) : 'root',
+            branch: status.current ?? 'HEAD',
+            fileCount: files.length
+          });
+        } catch {
+          // Skip repos that fail to get status
+        }
+      }
+
+      return c.json({ repos });
+    } catch (error) {
+      return handleError(c, error);
+    }
+  });
+
+  // GET /api/git/multi-status?workspaceId=xxx - Get aggregated status from all repos
+  router.get('/multi-status', async (c) => {
+    try {
+      const workspaceId = c.req.query('workspaceId');
+      if (!workspaceId) {
+        throw createHttpError('workspaceId is required', 400);
+      }
+
+      const workspace = requireWorkspace(workspaces, workspaceId);
+      const repoPaths = await findGitRepos(workspace.path);
+
+      const repos: GitRepoInfo[] = [];
+      const allFiles: (GitFileStatus & { repoPath: string })[] = [];
+
+      for (const repoPath of repoPaths) {
+        const fullPath = repoPath ? nodePath.join(workspace.path, repoPath) : workspace.path;
+        const git = simpleGit(fullPath);
+
+        try {
+          const status = await git.status();
+          const files = parseFileStatus(status);
+
+          repos.push({
+            path: repoPath,
+            name: repoPath ? nodePath.basename(repoPath) : 'root',
+            branch: status.current ?? 'HEAD',
+            fileCount: files.length
+          });
+
+          // Add repo path to each file
+          for (const file of files) {
+            allFiles.push({
+              ...file,
+              // Prefix file path with repo path for non-root repos
+              path: repoPath ? nodePath.join(repoPath, file.path) : file.path,
+              repoPath
+            });
+          }
+        } catch {
+          // Skip repos that fail to get status
+        }
+      }
+
+      return c.json({
+        repos,
+        files: allFiles
+      } as MultiRepoGitStatus);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  });
+
   // POST /api/git/stage
   router.post('/stage', async (c) => {
     try {
-      const body = await readJson<{ workspaceId: string; paths: string[] }>(c);
+      const body = await readJson<{ workspaceId: string; paths: string[]; repoPath?: string }>(c);
       if (!body?.workspaceId) {
         throw createHttpError('workspaceId is required', 400);
       }
 
       const paths = validateGitPaths(body.paths);
       const workspace = requireWorkspace(workspaces, body.workspaceId);
-      const git = simpleGit(workspace.path);
+      const repoFullPath = body.repoPath
+        ? nodePath.join(workspace.path, body.repoPath)
+        : workspace.path;
+      const git = simpleGit(repoFullPath);
 
       await git.add(paths);
 
@@ -285,14 +467,17 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
   // POST /api/git/unstage
   router.post('/unstage', async (c) => {
     try {
-      const body = await readJson<{ workspaceId: string; paths: string[] }>(c);
+      const body = await readJson<{ workspaceId: string; paths: string[]; repoPath?: string }>(c);
       if (!body?.workspaceId) {
         throw createHttpError('workspaceId is required', 400);
       }
 
       const paths = validateGitPaths(body.paths);
       const workspace = requireWorkspace(workspaces, body.workspaceId);
-      const git = simpleGit(workspace.path);
+      const repoFullPath = body.repoPath
+        ? nodePath.join(workspace.path, body.repoPath)
+        : workspace.path;
+      const git = simpleGit(repoFullPath);
 
       await git.reset(['HEAD', '--', ...paths]);
 
@@ -305,14 +490,17 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
   // POST /api/git/commit
   router.post('/commit', async (c) => {
     try {
-      const body = await readJson<{ workspaceId: string; message: string }>(c);
+      const body = await readJson<{ workspaceId: string; message: string; repoPath?: string }>(c);
       if (!body?.workspaceId) {
         throw createHttpError('workspaceId is required', 400);
       }
 
       const message = validateCommitMessage(body.message);
       const workspace = requireWorkspace(workspaces, body.workspaceId);
-      const git = simpleGit(workspace.path);
+      const repoFullPath = body.repoPath
+        ? nodePath.join(workspace.path, body.repoPath)
+        : workspace.path;
+      const git = simpleGit(repoFullPath);
 
       const result = await git.commit(message);
 
@@ -333,14 +521,17 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
   // POST /api/git/discard
   router.post('/discard', async (c) => {
     try {
-      const body = await readJson<{ workspaceId: string; paths: string[] }>(c);
+      const body = await readJson<{ workspaceId: string; paths: string[]; repoPath?: string }>(c);
       if (!body?.workspaceId) {
         throw createHttpError('workspaceId is required', 400);
       }
 
       const paths = validateGitPaths(body.paths);
       const workspace = requireWorkspace(workspaces, body.workspaceId);
-      const git = simpleGit(workspace.path);
+      const repoFullPath = body.repoPath
+        ? nodePath.join(workspace.path, body.repoPath)
+        : workspace.path;
+      const git = simpleGit(repoFullPath);
 
       // First, check if any of these are untracked files
       const status = await git.status();
@@ -359,8 +550,8 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
       // For untracked files, verify each path exists and is within workspace before deleting
       for (const untrackedPath of untrackedPaths) {
         try {
-          // Use resolveSafePath for proper symlink validation
-          const resolved = await resolveSafePath(workspace.path, untrackedPath);
+          // Use resolveSafePath for proper symlink validation (relative to repo path)
+          const resolved = await resolveSafePath(repoFullPath, untrackedPath);
           await fs.unlink(resolved);
         } catch (error) {
           // File might already be deleted or path validation failed
@@ -377,12 +568,13 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
     }
   });
 
-  // GET /api/git/diff?workspaceId=xxx&path=xxx&staged=bool
+  // GET /api/git/diff?workspaceId=xxx&path=xxx&staged=bool&repoPath=xxx
   router.get('/diff', async (c) => {
     try {
       const workspaceId = c.req.query('workspaceId');
       const filePath = c.req.query('path');
       const staged = c.req.query('staged') === 'true';
+      const repoPath = c.req.query('repoPath');
 
       if (!workspaceId) {
         throw createHttpError('workspaceId is required', 400);
@@ -395,7 +587,10 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
       }
 
       const workspace = requireWorkspace(workspaces, workspaceId);
-      const git = simpleGit(workspace.path);
+      const repoFullPath = repoPath
+        ? nodePath.join(workspace.path, repoPath)
+        : workspace.path;
+      const git = simpleGit(repoFullPath);
 
       let original = '';
       let modified = '';
@@ -406,15 +601,15 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
       if (isUntracked) {
         // For untracked files, original is empty
         original = '';
-        modified = await readFileContent(workspace.path, filePath);
+        modified = await readFileContent(repoFullPath, filePath);
       } else if (staged) {
         // For staged changes, compare HEAD to working tree
         original = await getOriginalContent(git, filePath);
-        modified = await readFileContent(workspace.path, filePath);
+        modified = await readFileContent(repoFullPath, filePath);
       } else {
         // For unstaged changes, compare HEAD to working tree
         original = await getOriginalContent(git, filePath);
-        modified = await readFileContent(workspace.path, filePath);
+        modified = await readFileContent(repoFullPath, filePath);
       }
 
       return c.json({
@@ -430,13 +625,16 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
   // POST /api/git/push
   router.post('/push', async (c) => {
     try {
-      const body = await readJson<{ workspaceId: string }>(c);
+      const body = await readJson<{ workspaceId: string; repoPath?: string }>(c);
       if (!body?.workspaceId) {
         throw createHttpError('workspaceId is required', 400);
       }
 
       const workspace = requireWorkspace(workspaces, body.workspaceId);
-      const git = simpleGit(workspace.path);
+      const repoFullPath = body.repoPath
+        ? nodePath.join(workspace.path, body.repoPath)
+        : workspace.path;
+      const git = simpleGit(repoFullPath);
 
       // Check if we have a remote
       const remotes = await git.getRemotes(true);
@@ -467,13 +665,16 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
   // POST /api/git/pull
   router.post('/pull', async (c) => {
     try {
-      const body = await readJson<{ workspaceId: string }>(c);
+      const body = await readJson<{ workspaceId: string; repoPath?: string }>(c);
       if (!body?.workspaceId) {
         throw createHttpError('workspaceId is required', 400);
       }
 
       const workspace = requireWorkspace(workspaces, body.workspaceId);
-      const git = simpleGit(workspace.path);
+      const repoFullPath = body.repoPath
+        ? nodePath.join(workspace.path, body.repoPath)
+        : workspace.path;
+      const git = simpleGit(repoFullPath);
 
       // Check if we have a remote
       const remotes = await git.getRemotes(true);
@@ -499,13 +700,16 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
   // POST /api/git/fetch
   router.post('/fetch', async (c) => {
     try {
-      const body = await readJson<{ workspaceId: string }>(c);
+      const body = await readJson<{ workspaceId: string; repoPath?: string }>(c);
       if (!body?.workspaceId) {
         throw createHttpError('workspaceId is required', 400);
       }
 
       const workspace = requireWorkspace(workspaces, body.workspaceId);
-      const git = simpleGit(workspace.path);
+      const repoFullPath = body.repoPath
+        ? nodePath.join(workspace.path, body.repoPath)
+        : workspace.path;
+      const git = simpleGit(repoFullPath);
 
       await git.fetch();
 
@@ -515,16 +719,20 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
     }
   });
 
-  // GET /api/git/remotes?workspaceId=xxx
+  // GET /api/git/remotes?workspaceId=xxx&repoPath=xxx
   router.get('/remotes', async (c) => {
     try {
       const workspaceId = c.req.query('workspaceId');
+      const repoPath = c.req.query('repoPath');
       if (!workspaceId) {
         throw createHttpError('workspaceId is required', 400);
       }
 
       const workspace = requireWorkspace(workspaces, workspaceId);
-      const git = simpleGit(workspace.path);
+      const repoFullPath = repoPath
+        ? nodePath.join(workspace.path, repoPath)
+        : workspace.path;
+      const git = simpleGit(repoFullPath);
 
       const isRepo = await isGitRepository(git);
       if (!isRepo) {
@@ -546,16 +754,20 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
     }
   });
 
-  // GET /api/git/branch-status?workspaceId=xxx
+  // GET /api/git/branch-status?workspaceId=xxx&repoPath=xxx
   router.get('/branch-status', async (c) => {
     try {
       const workspaceId = c.req.query('workspaceId');
+      const repoPath = c.req.query('repoPath');
       if (!workspaceId) {
         throw createHttpError('workspaceId is required', 400);
       }
 
       const workspace = requireWorkspace(workspaces, workspaceId);
-      const git = simpleGit(workspace.path);
+      const repoFullPath = repoPath
+        ? nodePath.join(workspace.path, repoPath)
+        : workspace.path;
+      const git = simpleGit(repoFullPath);
 
       const isRepo = await isGitRepository(git);
       if (!isRepo) {
@@ -578,16 +790,20 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
     }
   });
 
-  // GET /api/git/branches?workspaceId=xxx
+  // GET /api/git/branches?workspaceId=xxx&repoPath=xxx
   router.get('/branches', async (c) => {
     try {
       const workspaceId = c.req.query('workspaceId');
+      const repoPath = c.req.query('repoPath');
       if (!workspaceId) {
         throw createHttpError('workspaceId is required', 400);
       }
 
       const workspace = requireWorkspace(workspaces, workspaceId);
-      const git = simpleGit(workspace.path);
+      const repoFullPath = repoPath
+        ? nodePath.join(workspace.path, repoPath)
+        : workspace.path;
+      const git = simpleGit(repoFullPath);
 
       const isRepo = await isGitRepository(git);
       if (!isRepo) {
@@ -612,7 +828,7 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
   // POST /api/git/checkout
   router.post('/checkout', async (c) => {
     try {
-      const body = await readJson<{ workspaceId: string; branchName: string }>(c);
+      const body = await readJson<{ workspaceId: string; branchName: string; repoPath?: string }>(c);
       if (!body?.workspaceId) {
         throw createHttpError('workspaceId is required', 400);
       }
@@ -631,7 +847,10 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
       }
 
       const workspace = requireWorkspace(workspaces, body.workspaceId);
-      const git = simpleGit(workspace.path);
+      const repoFullPath = body.repoPath
+        ? nodePath.join(workspace.path, body.repoPath)
+        : workspace.path;
+      const git = simpleGit(repoFullPath);
 
       await git.checkout(branchName);
 
@@ -644,7 +863,7 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
   // POST /api/git/create-branch
   router.post('/create-branch', async (c) => {
     try {
-      const body = await readJson<{ workspaceId: string; branchName: string; checkout?: boolean }>(c);
+      const body = await readJson<{ workspaceId: string; branchName: string; checkout?: boolean; repoPath?: string }>(c);
       if (!body?.workspaceId) {
         throw createHttpError('workspaceId is required', 400);
       }
@@ -666,7 +885,10 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
       }
 
       const workspace = requireWorkspace(workspaces, body.workspaceId);
-      const git = simpleGit(workspace.path);
+      const repoFullPath = body.repoPath
+        ? nodePath.join(workspace.path, body.repoPath)
+        : workspace.path;
+      const git = simpleGit(repoFullPath);
 
       const checkout = body.checkout !== false;
 
@@ -682,11 +904,12 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
     }
   });
 
-  // GET /api/git/log?workspaceId=xxx&limit=50
+  // GET /api/git/log?workspaceId=xxx&limit=50&repoPath=xxx
   router.get('/log', async (c) => {
     try {
       const workspaceId = c.req.query('workspaceId');
       const limitStr = c.req.query('limit') || '50';
+      const repoPath = c.req.query('repoPath');
 
       if (!workspaceId) {
         throw createHttpError('workspaceId is required', 400);
@@ -695,7 +918,10 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
       const limit = Math.min(Math.max(1, parseInt(limitStr, 10) || 50), 500);
 
       const workspace = requireWorkspace(workspaces, workspaceId);
-      const git = simpleGit(workspace.path);
+      const repoFullPath = repoPath
+        ? nodePath.join(workspace.path, repoPath)
+        : workspace.path;
+      const git = simpleGit(repoFullPath);
 
       const isRepo = await isGitRepository(git);
       if (!isRepo) {

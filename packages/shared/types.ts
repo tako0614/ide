@@ -155,3 +155,21 @@ export interface GitDiff {
   modified: string;
   path: string;
 }
+
+// Multi-repo support types
+
+export interface GitRepoInfo {
+  path: string;        // Relative path from workspace root (empty string for root repo)
+  name: string;        // Display name (folder name or 'root')
+  branch: string;
+  fileCount: number;   // Number of changed files
+}
+
+export interface GitFileStatusWithRepo extends GitFileStatus {
+  repoPath: string;    // Which repo this file belongs to
+}
+
+export interface MultiRepoGitStatus {
+  repos: GitRepoInfo[];
+  files: GitFileStatusWithRepo[];
+}

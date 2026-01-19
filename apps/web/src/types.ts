@@ -24,7 +24,10 @@ export type {
   GitFileStatusCode,
   GitFileStatus,
   GitStatus,
-  GitDiff
+  GitDiff,
+  GitRepoInfo,
+  GitFileStatusWithRepo,
+  MultiRepoGitStatus
 } from '@deck-ide/shared/types';
 
 export type AppView = 'workspace' | 'terminal';

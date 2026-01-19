@@ -246,14 +246,34 @@ export function createTerminalRouter(
     // Set up exit handler
     term.onExit(({ exitCode }) => {
       console.log(`Terminal ${id} exited with code ${exitCode}`);
+
+      // Check if already cleaned up (by cleanup interval or delete endpoint)
+      if (!terminals.has(id)) {
+        return;
+      }
+
+      // Remove from map first
+      terminals.delete(id);
+
+      // Close all WebSocket connections
       session.sockets.forEach((socket) => {
         try {
-          socket.close();
+          socket.close(1000, 'Terminal exited');
         } catch {
           // Ignore close errors
         }
       });
-      terminals.delete(id);
+      session.sockets.clear();
+
+      // Dispose the data listener
+      if (session.dispose) {
+        try {
+          session.dispose.dispose();
+          session.dispose = null;
+        } catch {
+          // Ignore dispose errors
+        }
+      }
     });
 
     terminals.set(id, session);
@@ -305,19 +325,24 @@ export function createTerminalRouter(
         throw createHttpError('Terminal not found', 404);
       }
 
+      // Remove from map first to prevent race conditions
+      terminals.delete(terminalId);
+
       // Close all WebSocket connections
       session.sockets.forEach((socket) => {
         try {
-          socket.close();
-        } catch (closeError) {
-          console.error(`Failed to close socket for terminal ${terminalId}:`, closeError);
+          socket.close(1000, 'Terminal deleted');
+        } catch {
+          // Ignore close errors
         }
       });
+      session.sockets.clear();
 
       // Dispose the data listener
       if (session.dispose) {
         try {
           session.dispose.dispose();
+          session.dispose = null;
         } catch (disposeError) {
           console.error(`Failed to dispose terminal ${terminalId}:`, disposeError);
         }
@@ -325,13 +350,13 @@ export function createTerminalRouter(
 
       // Kill the terminal process
       try {
-        session.term.kill();
+        if (session.term) {
+          session.term.kill();
+        }
       } catch (killError) {
         console.error(`Failed to kill terminal ${terminalId}:`, killError);
       }
 
-      // Remove from map
-      terminals.delete(terminalId);
       return c.body(null, 204);
     } catch (error) {
       return handleError(c, error);

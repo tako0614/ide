@@ -1,4 +1,4 @@
-import type { Deck, FileSystemEntry, Workspace, GitStatus, GitDiff } from './types';
+import type { Deck, FileSystemEntry, Workspace, GitStatus, GitDiff, GitRepoInfo, MultiRepoGitStatus } from './types';
 import { API_BASE } from './constants';
 
 const HTTP_STATUS_NO_CONTENT = 204;
@@ -232,11 +232,31 @@ export function deleteTerminal(terminalId: string): Promise<void> {
 }
 
 /**
- * Fetches Git status for a workspace
+ * Fetches Git status for a workspace or specific repo within workspace
  */
-export function getGitStatus(workspaceId: string): Promise<GitStatus> {
-  const query = new URLSearchParams({ workspaceId });
+export function getGitStatus(workspaceId: string, repoPath?: string): Promise<GitStatus> {
+  const params: Record<string, string> = { workspaceId };
+  if (repoPath !== undefined) {
+    params.repoPath = repoPath;
+  }
+  const query = new URLSearchParams(params);
   return request<GitStatus>(`/api/git/status?${query.toString()}`);
+}
+
+/**
+ * Lists all git repositories within a workspace
+ */
+export function getGitRepos(workspaceId: string): Promise<{ repos: GitRepoInfo[] }> {
+  const query = new URLSearchParams({ workspaceId });
+  return request<{ repos: GitRepoInfo[] }>(`/api/git/repos?${query.toString()}`);
+}
+
+/**
+ * Gets aggregated status from all git repos in a workspace
+ */
+export function getMultiRepoStatus(workspaceId: string): Promise<MultiRepoGitStatus> {
+  const query = new URLSearchParams({ workspaceId });
+  return request<MultiRepoGitStatus>(`/api/git/multi-status?${query.toString()}`);
 }
 
 /**
@@ -244,12 +264,13 @@ export function getGitStatus(workspaceId: string): Promise<GitStatus> {
  */
 export function stageFiles(
   workspaceId: string,
-  paths: string[]
+  paths: string[],
+  repoPath?: string
 ): Promise<{ success: boolean }> {
   return request<{ success: boolean }>('/api/git/stage', {
     method: HTTP_METHOD_POST,
     headers: { 'Content-Type': CONTENT_TYPE_JSON },
-    body: JSON.stringify({ workspaceId, paths })
+    body: JSON.stringify({ workspaceId, paths, repoPath })
   });
 }
 
@@ -258,12 +279,13 @@ export function stageFiles(
  */
 export function unstageFiles(
   workspaceId: string,
-  paths: string[]
+  paths: string[],
+  repoPath?: string
 ): Promise<{ success: boolean }> {
   return request<{ success: boolean }>('/api/git/unstage', {
     method: HTTP_METHOD_POST,
     headers: { 'Content-Type': CONTENT_TYPE_JSON },
-    body: JSON.stringify({ workspaceId, paths })
+    body: JSON.stringify({ workspaceId, paths, repoPath })
   });
 }
 
@@ -272,7 +294,8 @@ export function unstageFiles(
  */
 export function commitChanges(
   workspaceId: string,
-  message: string
+  message: string,
+  repoPath?: string
 ): Promise<{
   success: boolean;
   commit: string;
@@ -281,7 +304,7 @@ export function commitChanges(
   return request('/api/git/commit', {
     method: HTTP_METHOD_POST,
     headers: { 'Content-Type': CONTENT_TYPE_JSON },
-    body: JSON.stringify({ workspaceId, message })
+    body: JSON.stringify({ workspaceId, message, repoPath })
   });
 }
 
@@ -290,12 +313,13 @@ export function commitChanges(
  */
 export function discardChanges(
   workspaceId: string,
-  paths: string[]
+  paths: string[],
+  repoPath?: string
 ): Promise<{ success: boolean }> {
   return request<{ success: boolean }>('/api/git/discard', {
     method: HTTP_METHOD_POST,
     headers: { 'Content-Type': CONTENT_TYPE_JSON },
-    body: JSON.stringify({ workspaceId, paths })
+    body: JSON.stringify({ workspaceId, paths, repoPath })
   });
 }
 
@@ -305,13 +329,18 @@ export function discardChanges(
 export function getGitDiff(
   workspaceId: string,
   path: string,
-  staged: boolean
+  staged: boolean,
+  repoPath?: string
 ): Promise<GitDiff> {
-  const query = new URLSearchParams({
+  const params: Record<string, string> = {
     workspaceId,
     path,
     staged: staged.toString()
-  });
+  };
+  if (repoPath !== undefined) {
+    params.repoPath = repoPath;
+  }
+  const query = new URLSearchParams(params);
   return request<GitDiff>(`/api/git/diff?${query.toString()}`);
 }
 
@@ -319,12 +348,13 @@ export function getGitDiff(
  * Pushes commits to remote
  */
 export function pushChanges(
-  workspaceId: string
+  workspaceId: string,
+  repoPath?: string
 ): Promise<{ success: boolean; branch: string }> {
   return request('/api/git/push', {
     method: HTTP_METHOD_POST,
     headers: { 'Content-Type': CONTENT_TYPE_JSON },
-    body: JSON.stringify({ workspaceId })
+    body: JSON.stringify({ workspaceId, repoPath })
   });
 }
 
@@ -332,7 +362,8 @@ export function pushChanges(
  * Pulls changes from remote
  */
 export function pullChanges(
-  workspaceId: string
+  workspaceId: string,
+  repoPath?: string
 ): Promise<{
   success: boolean;
   summary: { changes: number; insertions: number; deletions: number };
@@ -340,7 +371,7 @@ export function pullChanges(
   return request('/api/git/pull', {
     method: HTTP_METHOD_POST,
     headers: { 'Content-Type': CONTENT_TYPE_JSON },
-    body: JSON.stringify({ workspaceId })
+    body: JSON.stringify({ workspaceId, repoPath })
   });
 }
 
@@ -348,12 +379,13 @@ export function pullChanges(
  * Fetches from remote
  */
 export function fetchChanges(
-  workspaceId: string
+  workspaceId: string,
+  repoPath?: string
 ): Promise<{ success: boolean }> {
   return request('/api/git/fetch', {
     method: HTTP_METHOD_POST,
     headers: { 'Content-Type': CONTENT_TYPE_JSON },
-    body: JSON.stringify({ workspaceId })
+    body: JSON.stringify({ workspaceId, repoPath })
   });
 }
 
@@ -361,9 +393,14 @@ export function fetchChanges(
  * Gets branch status (ahead/behind)
  */
 export function getBranchStatus(
-  workspaceId: string
+  workspaceId: string,
+  repoPath?: string
 ): Promise<{ ahead: number; behind: number; hasUpstream: boolean }> {
-  const query = new URLSearchParams({ workspaceId });
+  const params: Record<string, string> = { workspaceId };
+  if (repoPath !== undefined) {
+    params.repoPath = repoPath;
+  }
+  const query = new URLSearchParams(params);
   return request(`/api/git/branch-status?${query.toString()}`);
 }
 
@@ -371,12 +408,17 @@ export function getBranchStatus(
  * Gets remote configuration
  */
 export function getGitRemotes(
-  workspaceId: string
+  workspaceId: string,
+  repoPath?: string
 ): Promise<{
   remotes: { name: string; fetchUrl: string; pushUrl: string }[];
   hasRemote: boolean;
 }> {
-  const query = new URLSearchParams({ workspaceId });
+  const params: Record<string, string> = { workspaceId };
+  if (repoPath !== undefined) {
+    params.repoPath = repoPath;
+  }
+  const query = new URLSearchParams(params);
   return request(`/api/git/remotes?${query.toString()}`);
 }
 
@@ -384,12 +426,17 @@ export function getGitRemotes(
  * Lists all branches
  */
 export function listBranches(
-  workspaceId: string
+  workspaceId: string,
+  repoPath?: string
 ): Promise<{
   branches: { name: string; current: boolean }[];
   currentBranch: string;
 }> {
-  const query = new URLSearchParams({ workspaceId });
+  const params: Record<string, string> = { workspaceId };
+  if (repoPath !== undefined) {
+    params.repoPath = repoPath;
+  }
+  const query = new URLSearchParams(params);
   return request(`/api/git/branches?${query.toString()}`);
 }
 
@@ -398,12 +445,13 @@ export function listBranches(
  */
 export function checkoutBranch(
   workspaceId: string,
-  branchName: string
+  branchName: string,
+  repoPath?: string
 ): Promise<{ success: boolean }> {
   return request('/api/git/checkout', {
     method: HTTP_METHOD_POST,
     headers: { 'Content-Type': CONTENT_TYPE_JSON },
-    body: JSON.stringify({ workspaceId, branchName })
+    body: JSON.stringify({ workspaceId, branchName, repoPath })
   });
 }
 
@@ -413,12 +461,13 @@ export function checkoutBranch(
 export function createBranch(
   workspaceId: string,
   branchName: string,
-  checkout = true
+  checkout = true,
+  repoPath?: string
 ): Promise<{ success: boolean }> {
   return request('/api/git/create-branch', {
     method: HTTP_METHOD_POST,
     headers: { 'Content-Type': CONTENT_TYPE_JSON },
-    body: JSON.stringify({ workspaceId, branchName, checkout })
+    body: JSON.stringify({ workspaceId, branchName, checkout, repoPath })
   });
 }
 
@@ -427,7 +476,8 @@ export function createBranch(
  */
 export function getGitLog(
   workspaceId: string,
-  limit = 50
+  limit = 50,
+  repoPath?: string
 ): Promise<{
   logs: {
     hash: string;
@@ -437,6 +487,10 @@ export function getGitLog(
     date: string;
   }[];
 }> {
-  const query = new URLSearchParams({ workspaceId, limit: String(limit) });
+  const params: Record<string, string> = { workspaceId, limit: String(limit) };
+  if (repoPath !== undefined) {
+    params.repoPath = repoPath;
+  }
+  const query = new URLSearchParams(params);
   return request(`/api/git/log?${query.toString()}`);
 }

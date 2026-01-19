@@ -235,27 +235,56 @@ export function setupWebSocketServer(
 export function setupTerminalCleanup(terminals: Map<string, TerminalSession>): void {
   setInterval(() => {
     const now = Date.now();
+    const toCleanup: string[] = [];
+
+    // First pass: identify terminals to clean up
     terminals.forEach((session, id) => {
       if (
         session.sockets.size === 0 &&
         now - session.lastActive > TERMINAL_IDLE_TIMEOUT_MS
       ) {
-        try {
-          if (session.dispose) {
-            session.dispose.dispose();
-          }
-        } catch (error) {
-          console.error(`Failed to dispose terminal ${id}:`, error);
-        }
-
-        try {
-          session.term.kill();
-        } catch (error) {
-          console.error(`Failed to kill terminal ${id}:`, error);
-        }
-
-        terminals.delete(id);
+        toCleanup.push(id);
       }
     });
+
+    // Second pass: clean up terminals (avoid modifying map while iterating)
+    for (const id of toCleanup) {
+      const session = terminals.get(id);
+      if (!session) continue; // Already cleaned up by onExit handler
+
+      console.log(`[CLEANUP] Cleaning up idle terminal ${id}`);
+
+      // Remove from map first to prevent race conditions
+      terminals.delete(id);
+
+      // Close all sockets
+      session.sockets.forEach((socket) => {
+        try {
+          socket.close(1000, 'Terminal idle timeout');
+        } catch {
+          // Ignore close errors
+        }
+      });
+      session.sockets.clear();
+
+      // Dispose the data listener
+      try {
+        if (session.dispose) {
+          session.dispose.dispose();
+          session.dispose = null;
+        }
+      } catch (error) {
+        console.error(`[CLEANUP] Failed to dispose terminal ${id}:`, error);
+      }
+
+      // Kill the terminal process (wrap in try-catch for native module safety)
+      try {
+        if (session.term) {
+          session.term.kill();
+        }
+      } catch (error) {
+        console.error(`[CLEANUP] Failed to kill terminal ${id}:`, error);
+      }
+    }
   }, 60_000).unref();
 }
