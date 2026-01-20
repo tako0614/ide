@@ -38,7 +38,6 @@ import {
 import { securityHeaders } from './middleware/security.js';
 import { corsMiddleware } from './middleware/cors.js';
 import { basicAuthMiddleware, generateWsToken, isBasicAuthEnabled } from './middleware/auth.js';
-import { apiRateLimitMiddleware } from './middleware/rateLimit.js';
 import { checkDatabaseIntegrity, handleDatabaseCorruption, initializeDatabase, loadPersistedState } from './utils/database.js';
 import { createWorkspaceRouter, getConfigHandler } from './routes/workspaces.js';
 import { createDeckRouter } from './routes/decks.js';
@@ -46,7 +45,7 @@ import { createFileRouter } from './routes/files.js';
 import { createTerminalRouter } from './routes/terminals.js';
 import { createGitRouter } from './routes/git.js';
 import { createSettingsRouter } from './routes/settings.js';
-import { setupWebSocketServer, setupTerminalCleanup } from './websocket.js';
+import { setupWebSocketServer } from './websocket.js';
 
 // Request ID and logging middleware
 const requestIdMiddleware: MiddlewareHandler = async (c, next) => {
@@ -97,15 +96,13 @@ export function createServer() {
   app.use('*', corsMiddleware);
   app.use('*', requestIdMiddleware);
 
-  // Body size limit for API routes (except file uploads which have their own limit)
+  // Body size limit for API routes
   app.use('/api/*', bodyLimit({
     maxSize: MAX_REQUEST_BODY_SIZE,
     onError: (c) => {
       return c.json({ error: 'Request body too large' }, 413);
     }
   }));
-
-  app.use('/api/*', apiRateLimitMiddleware);
 
   // Basic auth middleware
   if (basicAuthMiddleware) {
@@ -159,9 +156,8 @@ export function createServer() {
   // Start server
   const server = serve({ fetch: app.fetch, port: PORT, hostname: HOST }) as Server;
 
-  // Setup WebSocket and terminal cleanup
+  // Setup WebSocket
   setupWebSocketServer(server, terminals);
-  setupTerminalCleanup(terminals);
 
   // Server startup
   server.on('listening', () => {
@@ -173,7 +169,6 @@ export function createServer() {
     console.log('');
     console.log('Security Status:');
     console.log(`  - Basic Auth: ${BASIC_AUTH_USER && BASIC_AUTH_PASSWORD ? 'enabled (user: ' + BASIC_AUTH_USER + ')' : 'DISABLED (WARNING: API is publicly accessible!)'}`);
-    console.log(`  - Rate Limiting: ${NODE_ENV === 'development' && !process.env.ENABLE_RATE_LIMIT ? 'disabled (development mode)' : 'enabled'}`);
     console.log(`  - Max File Size: ${Math.round(MAX_FILE_SIZE / 1024 / 1024)}MB`);
     console.log(`  - Max Request Body: ${Math.round(MAX_REQUEST_BODY_SIZE / 1024)}KB`);
     console.log(`  - Trust Proxy: ${TRUST_PROXY ? 'enabled' : 'disabled'}`);

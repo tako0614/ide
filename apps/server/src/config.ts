@@ -32,9 +32,6 @@ export const CORS_ORIGIN = process.env.CORS_ORIGIN;
 export const NODE_ENV = process.env.NODE_ENV || 'development';
 export const MAX_FILE_SIZE = Number(process.env.MAX_FILE_SIZE || 10 * 1024 * 1024);
 export const TERMINAL_BUFFER_LIMIT = Number(process.env.TERMINAL_BUFFER_LIMIT || 50000);
-export const TERMINAL_IDLE_TIMEOUT_MS = Number(process.env.TERMINAL_IDLE_TIMEOUT_MS || 30 * 60 * 1000);
-export const WS_RATE_LIMIT_WINDOW_MS = 1000;
-export const WS_RATE_LIMIT_MAX_MESSAGES = 100;
 export const MAX_REQUEST_BODY_SIZE = Number(process.env.MAX_REQUEST_BODY_SIZE || 1024 * 1024); // 1MB default
 export const TRUST_PROXY = process.env.TRUST_PROXY === 'true'; // Only trust proxy headers if explicitly enabled
 
