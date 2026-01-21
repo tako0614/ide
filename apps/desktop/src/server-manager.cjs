@@ -118,16 +118,37 @@ class ServerManager {
 
   /**
    * サーバープロセスを停止
+   * SIGINTを送って graceful shutdown を試み、タイムアウト後に強制終了
    */
   stop() {
     if (!this.serverProcess) {
       return;
     }
 
-    this.serverProcess.kill();
+    const proc = this.serverProcess;
     this.serverProcess = null;
-    logManager.appendLog('\nStop requested.\n');
+    logManager.appendLog('\nStop requested, saving state...\n');
     this.broadcastStatus();
+
+    // Try graceful shutdown with SIGINT first
+    try {
+      proc.kill('SIGINT');
+    } catch (e) {
+      // Ignore error, will force kill below
+    }
+
+    // Force kill after timeout if still running
+    const forceKillTimeout = setTimeout(() => {
+      try {
+        proc.kill('SIGKILL');
+      } catch (e) {
+        // Process already dead
+      }
+    }, 3000);
+
+    proc.once('exit', () => {
+      clearTimeout(forceKillTimeout);
+    });
   }
 
   /**

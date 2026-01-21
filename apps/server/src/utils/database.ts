@@ -3,6 +3,15 @@ import { DatabaseSync } from 'node:sqlite';
 import type { Workspace, Deck } from '../types.js';
 import { getWorkspaceKey } from './path.js';
 
+export type PersistedTerminal = {
+  id: string;
+  deckId: string;
+  title: string;
+  command: string | null;
+  buffer: string;
+  createdAt: string;
+};
+
 export function checkDatabaseIntegrity(dbPath: string): boolean {
   try {
     const tempDb = new DatabaseSync(dbPath);
@@ -50,8 +59,20 @@ export function initializeDatabase(db: DatabaseSync): void {
     );
   `);
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS terminals (
+      id TEXT PRIMARY KEY,
+      deck_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      command TEXT,
+      buffer TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL
+    );
+  `);
+
   // Create indexes for better query performance
   db.exec(`CREATE INDEX IF NOT EXISTS idx_decks_workspace_id ON decks(workspace_id);`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_terminals_deck_id ON terminals(deck_id);`);
 }
 
 export function loadPersistedState(
@@ -96,5 +117,69 @@ export function loadPersistedState(
       createdAt: String(row.created_at)
     };
     decks.set(deck.id, deck);
+  });
+}
+
+// Terminal persistence functions
+export function loadPersistedTerminals(db: DatabaseSync, decks: Map<string, Deck>): PersistedTerminal[] {
+  const rows = db
+    .prepare(
+      'SELECT id, deck_id, title, command, buffer, created_at FROM terminals ORDER BY created_at ASC'
+    )
+    .all();
+
+  const terminals: PersistedTerminal[] = [];
+  rows.forEach((row) => {
+    const deckId = String(row.deck_id);
+    // Only load terminals for existing decks
+    if (!decks.has(deckId)) {
+      // Clean up orphaned terminal
+      db.prepare('DELETE FROM terminals WHERE id = ?').run(String(row.id));
+      return;
+    }
+    terminals.push({
+      id: String(row.id),
+      deckId,
+      title: String(row.title),
+      command: row.command ? String(row.command) : null,
+      buffer: String(row.buffer || ''),
+      createdAt: String(row.created_at)
+    });
+  });
+
+  return terminals;
+}
+
+export function saveTerminal(
+  db: DatabaseSync,
+  id: string,
+  deckId: string,
+  title: string,
+  command: string | null,
+  createdAt: string
+): void {
+  const stmt = db.prepare(
+    'INSERT OR REPLACE INTO terminals (id, deck_id, title, command, buffer, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+  );
+  stmt.run(id, deckId, title, command, '', createdAt);
+}
+
+export function updateTerminalBuffer(db: DatabaseSync, id: string, buffer: string): void {
+  const stmt = db.prepare('UPDATE terminals SET buffer = ? WHERE id = ?');
+  stmt.run(buffer, id);
+}
+
+export function deleteTerminal(db: DatabaseSync, id: string): void {
+  const stmt = db.prepare('DELETE FROM terminals WHERE id = ?');
+  stmt.run(id);
+}
+
+export function saveAllTerminalBuffers(
+  db: DatabaseSync,
+  terminals: Map<string, { id: string; buffer: string }>
+): void {
+  const stmt = db.prepare('UPDATE terminals SET buffer = ? WHERE id = ?');
+  terminals.forEach((session) => {
+    stmt.run(session.buffer, session.id);
   });
 }

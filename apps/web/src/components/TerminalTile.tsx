@@ -466,6 +466,14 @@ export function TerminalTile({
             return;
           }
 
+          // Normal closure (1000) = server intentionally closed (terminal exited, deleted, etc.)
+          // Don't reconnect for normal closures
+          if (event.code === 1000) {
+            term.write(`\r\n${TEXT_CLOSED}\r\n`);
+            return;
+          }
+
+          // Abnormal closure (1006, etc.) = network issue, server crash, etc.
           // Try to reconnect if we haven't exceeded attempts
           if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
             reconnectAttempts++;

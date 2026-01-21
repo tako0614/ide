@@ -5,17 +5,8 @@ import { TerminalTile } from './TerminalTile';
 interface TerminalPaneProps {
   terminals: TerminalSession[];
   wsBase: string;
-  onNewTerminal: () => void;
-  onNewClaudeTerminal: () => void;
-  onNewCodexTerminal: () => void;
   onDeleteTerminal: (terminalId: string) => void;
 }
-
-const LABEL_TERMINAL = 'ターミナル';
-const LABEL_ADD = '+';
-const LABEL_CLAUDE = 'Claude';
-const LABEL_CODEX = 'Codex';
-const LABEL_EMPTY = 'ターミナルを追加';
 
 const STORAGE_KEY = 'deck-terminal-grid';
 const MIN_COLS = 1;
@@ -26,9 +17,6 @@ const MAX_ROWS = 6;
 export function TerminalPane({
   terminals,
   wsBase,
-  onNewTerminal,
-  onNewClaudeTerminal,
-  onNewCodexTerminal,
   onDeleteTerminal
 }: TerminalPaneProps) {
   const [cols, setCols] = useState(2);
@@ -73,67 +61,57 @@ export function TerminalPane({
 
   return (
     <section className="panel terminal-view">
-      <div className="terminal-header">
-        <div className="terminal-header-left">
-          <span className="panel-title">{LABEL_TERMINAL}</span>
-          <div className="grid-control">
-            <div className="grid-adjuster">
-              <button
-                type="button"
-                className="grid-btn"
-                onClick={() => adjustCols(-1)}
-                disabled={cols <= MIN_COLS}
-              >
-                −
-              </button>
-              <span className="grid-value">{cols}</span>
-              <button
-                type="button"
-                className="grid-btn"
-                onClick={() => adjustCols(1)}
-                disabled={cols >= MAX_COLS}
-              >
-                +
-              </button>
-            </div>
-            <span className="grid-separator">×</span>
-            <div className="grid-adjuster">
-              <button
-                type="button"
-                className="grid-btn"
-                onClick={() => adjustRows(-1)}
-                disabled={rows <= MIN_ROWS}
-              >
-                −
-              </button>
-              <span className="grid-value">{rows}</span>
-              <button
-                type="button"
-                className="grid-btn"
-                onClick={() => adjustRows(1)}
-                disabled={rows >= MAX_ROWS}
-              >
-                +
-              </button>
-            </div>
+      <div className="terminal-grid-header">
+        <div className="grid-control">
+          <div className="grid-adjuster">
+            <button
+              type="button"
+              className="grid-btn"
+              onClick={() => adjustCols(-1)}
+              disabled={cols <= MIN_COLS}
+            >
+              −
+            </button>
+            <span className="grid-value">{cols}</span>
+            <button
+              type="button"
+              className="grid-btn"
+              onClick={() => adjustCols(1)}
+              disabled={cols >= MAX_COLS}
+            >
+              +
+            </button>
+          </div>
+          <span className="grid-separator">×</span>
+          <div className="grid-adjuster">
+            <button
+              type="button"
+              className="grid-btn"
+              onClick={() => adjustRows(-1)}
+              disabled={rows <= MIN_ROWS}
+            >
+              −
+            </button>
+            <span className="grid-value">{rows}</span>
+            <button
+              type="button"
+              className="grid-btn"
+              onClick={() => adjustRows(1)}
+              disabled={rows >= MAX_ROWS}
+            >
+              +
+            </button>
           </div>
         </div>
-        <div className="terminal-actions">
-          <button type="button" className="chip chip-primary" onClick={onNewTerminal}>
-            {LABEL_ADD}
-          </button>
-          <button type="button" className="chip" onClick={onNewClaudeTerminal}>
-            {LABEL_CLAUDE}
-          </button>
-          <button type="button" className="chip" onClick={onNewCodexTerminal}>
-            {LABEL_CODEX}
-          </button>
-        </div>
+        {terminals.length > maxTerminals && (
+          <span className="terminal-overflow-badge">
+            +{terminals.length - maxTerminals}
+          </span>
+        )}
       </div>
       {terminals.length === 0 ? (
-        <div className="terminal-empty" onClick={onNewTerminal}>
-          <span className="terminal-empty-icon">+</span>
-          <span>{LABEL_EMPTY}</span>
+        <div className="terminal-empty">
+          <span className="terminal-empty-text">ターミナルを追加してください</span>
         </div>
       ) : (
         <div
@@ -151,11 +129,6 @@ export function TerminalPane({
               onDelete={() => onDeleteTerminal(terminal.id)}
             />
           ))}
-        </div>
-      )}
-      {terminals.length > maxTerminals && (
-        <div className="terminal-overflow-notice">
-          +{terminals.length - maxTerminals} 非表示
         </div>
       )}
     </section>

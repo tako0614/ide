@@ -5,6 +5,7 @@ export type TerminalSession = {
   id: string;
   deckId: string;
   title: string;
+  command: string | null;
   createdAt: string;
   term: import('node-pty').IPty;
   sockets: Set<import('ws').WebSocket>;

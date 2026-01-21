@@ -8,19 +8,6 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import { bodyLimit } from 'hono/body-limit';
 import { DatabaseSync } from 'node:sqlite';
 import type { Workspace, Deck, TerminalSession } from './types.js';
-
-// Handle uncaught exceptions from node-pty's ConPTY (AttachConsole errors)
-process.on('uncaughtException', (error: Error) => {
-  // Suppress known node-pty ConPTY errors that don't affect functionality
-  if (error.message?.includes('AttachConsole failed')) {
-    console.log('[node-pty] AttachConsole error suppressed (terminal already exited)');
-    return;
-  }
-  // Re-throw other uncaught exceptions
-  console.error('Uncaught exception:', error);
-  throw error;
-});
-
 import {
   PORT,
   HOST,
@@ -38,7 +25,7 @@ import {
 import { securityHeaders } from './middleware/security.js';
 import { corsMiddleware } from './middleware/cors.js';
 import { basicAuthMiddleware, generateWsToken, isBasicAuthEnabled } from './middleware/auth.js';
-import { checkDatabaseIntegrity, handleDatabaseCorruption, initializeDatabase, loadPersistedState } from './utils/database.js';
+import { checkDatabaseIntegrity, handleDatabaseCorruption, initializeDatabase, loadPersistedState, loadPersistedTerminals, saveAllTerminalBuffers } from './utils/database.js';
 import { createWorkspaceRouter, getConfigHandler } from './routes/workspaces.js';
 import { createDeckRouter } from './routes/decks.js';
 import { createFileRouter } from './routes/files.js';
@@ -122,8 +109,16 @@ export function createServer() {
   app.route('/api/settings', createSettingsRouter());
   app.route('/api/workspaces', createWorkspaceRouter(db, workspaces, workspacePathIndex));
   app.route('/api/decks', createDeckRouter(db, workspaces, decks));
-  app.route('/api/terminals', createTerminalRouter(decks, terminals));
+  const { router: terminalRouter, restoreTerminals } = createTerminalRouter(db, decks, terminals);
+  app.route('/api/terminals', terminalRouter);
   app.route('/api/git', createGitRouter(workspaces));
+
+  // Restore persisted terminals
+  const persistedTerminals = loadPersistedTerminals(db, decks);
+  if (persistedTerminals.length > 0) {
+    console.log(`[TERMINAL] Restoring ${persistedTerminals.length} terminal(s) from database...`);
+    restoreTerminals(persistedTerminals);
+  }
 
   // Config endpoint
   app.get('/api/config', getConfigHandler());
@@ -174,6 +169,56 @@ export function createServer() {
     console.log(`  - Trust Proxy: ${TRUST_PROXY ? 'enabled' : 'disabled'}`);
     console.log(`  - CORS Origin: ${CORS_ORIGIN || (NODE_ENV === 'development' ? '*' : 'NOT SET')}`);
     console.log(`  - Environment: ${NODE_ENV}`);
+  });
+
+  // Graceful shutdown handler - save terminal buffers
+  const saveTerminalBuffersOnShutdown = () => {
+    if (terminals.size > 0) {
+      console.log(`[SHUTDOWN] Saving ${terminals.size} terminal buffer(s)...`);
+      saveAllTerminalBuffers(db, terminals);
+      console.log('[SHUTDOWN] Terminal buffers saved.');
+    }
+  };
+
+  // Handle various shutdown signals
+  process.on('SIGINT', () => {
+    console.log('\n[SHUTDOWN] Received SIGINT, saving state...');
+    saveTerminalBuffersOnShutdown();
+    process.exit(0);
+  });
+
+  process.on('SIGTERM', () => {
+    console.log('[SHUTDOWN] Received SIGTERM, saving state...');
+    saveTerminalBuffersOnShutdown();
+    process.exit(0);
+  });
+
+  // Handle Windows shutdown (Ctrl+C in cmd/powershell)
+  if (process.platform === 'win32') {
+    process.on('SIGHUP', () => {
+      console.log('[SHUTDOWN] Received SIGHUP, saving state...');
+      saveTerminalBuffersOnShutdown();
+      process.exit(0);
+    });
+  }
+
+  // Handle uncaught exceptions - try to save state before crashing
+  const originalExceptionHandler = process.listeners('uncaughtException')[0] as ((err: Error) => void) | undefined;
+  process.removeAllListeners('uncaughtException');
+  process.on('uncaughtException', (error: Error) => {
+    // Suppress known node-pty ConPTY errors that don't affect functionality
+    if (error.message?.includes('AttachConsole failed')) {
+      console.log('[node-pty] AttachConsole error suppressed (terminal already exited)');
+      return;
+    }
+    console.error('[SHUTDOWN] Uncaught exception, saving state before exit...');
+    saveTerminalBuffersOnShutdown();
+    if (originalExceptionHandler) {
+      originalExceptionHandler(error);
+    } else {
+      console.error('Uncaught exception:', error);
+      process.exit(1);
+    }
   });
 
   return server;

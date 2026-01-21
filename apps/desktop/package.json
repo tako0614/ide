@@ -3,7 +3,7 @@
   "description": "Deck IDE server manager for Windows",
   "author": "Deck IDE",
   "private": true,
-  "version": "2.5.0",
+  "version": "2.6.0",
   "main": "src/main.cjs",
   "scripts": {
     "dev": "electron .",

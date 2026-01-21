@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { DeckList } from './components/DeckList';
 import { DeckModal } from './components/DeckModal';
 import { DiffViewer } from './components/DiffViewer';
 import { EditorPane } from './components/EditorPane';
@@ -43,7 +42,6 @@ export default function App() {
   const [statusMessage, setStatusMessage] = useState('');
   const [isWorkspaceModalOpen, setIsWorkspaceModalOpen] = useState(false);
   const [isDeckModalOpen, setIsDeckModalOpen] = useState(false);
-  const [isDeckDrawerOpen, setIsDeckDrawerOpen] = useState(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [sidebarPanel, setSidebarPanel] = useState<SidebarPanel>('files');
 
@@ -66,7 +64,8 @@ export default function App() {
       initializeDeckStates,
       updateDeckState,
       deckStates,
-      setDeckStates
+      setDeckStates,
+      initialDeckId: initialUrlState.deckId
     });
 
   const defaultWorkspaceState = useMemo(() => createEmptyWorkspaceState(), []);
@@ -326,19 +325,6 @@ export default function App() {
     [activeDeckId, handleDeleteTerminal]
   );
 
-  const handleToggleDeckList = useCallback(() => {
-    setIsDeckDrawerOpen((prev) => !prev);
-  }, []);
-
-  const handleDeckHandleKeyDown = useCallback(
-    (event: React.KeyboardEvent<HTMLButtonElement>) => {
-      if (event.key === 'Enter' || event.key === ' ') {
-        event.preventDefault();
-        handleToggleDeckList();
-      }
-    },
-    [handleToggleDeckList]
-  );
 
   const isWorkspaceEditorOpen = workspaceMode === 'editor' && Boolean(editorWorkspaceId);
 
@@ -490,42 +476,75 @@ export default function App() {
     </div>
   );
 
+  const activeDeck = decks.find((d) => d.id === activeDeckId);
+
   const terminalView = (
     <div className="terminal-layout">
-      <button
-        type="button"
-        className={`deck-handle ${isDeckDrawerOpen ? 'is-open' : ''}`}
-        onClick={handleToggleDeckList}
-        onKeyDown={handleDeckHandleKeyDown}
-        aria-label={
-          isDeckDrawerOpen
-            ? '\u30c7\u30c3\u30ad\u3092\u9589\u3058\u308b'
-            : '\u30c7\u30c3\u30ad\u3092\u958b\u304f'
-        }
-        title={
-          isDeckDrawerOpen
-            ? '\u30c7\u30c3\u30ad\u3092\u9589\u3058\u308b'
-            : '\u30c7\u30c3\u30ad\u3092\u958b\u304f'
-        }
-      >
-        <span className="deck-handle-bars" aria-hidden="true" />
-      </button>
-      <aside className={`deck-drawer ${isDeckDrawerOpen ? 'is-open' : ''}`}>
-        <DeckList
-          decks={deckListItems}
-          activeDeckId={activeDeckId}
-          onSelect={setActiveDeckId}
-          onCreate={handleOpenDeckModal}
-        />
-      </aside>
+      <div className="terminal-topbar">
+        <div className="topbar-left">
+          <div className="deck-selector">
+            <select
+              className="deck-select"
+              value={activeDeckId || ''}
+              onChange={(e) => setActiveDeckId(e.target.value || null)}
+            >
+              <option value="" disabled>
+                デッキを選択
+              </option>
+              {decks.map((deck) => (
+                <option key={deck.id} value={deck.id}>
+                  {deck.name}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="topbar-btn topbar-btn-add"
+              onClick={handleOpenDeckModal}
+              title="デッキ作成"
+            >
+              +
+            </button>
+          </div>
+          {activeDeck && (
+            <span className="deck-path">{workspaceById.get(activeDeck.workspaceId)?.path || activeDeck.root}</span>
+          )}
+        </div>
+        <div className="topbar-right">
+          <button
+            type="button"
+            className="topbar-btn"
+            onClick={handleNewTerminal}
+            disabled={!activeDeckId}
+            title="ターミナル追加"
+          >
+            +
+          </button>
+          <button
+            type="button"
+            className="topbar-btn topbar-btn-claude"
+            onClick={handleNewClaudeTerminal}
+            disabled={!activeDeckId}
+            title="Claude Code"
+          >
+            Claude
+          </button>
+          <button
+            type="button"
+            className="topbar-btn topbar-btn-codex"
+            onClick={handleNewCodexTerminal}
+            disabled={!activeDeckId}
+            title="Codex"
+          >
+            Codex
+          </button>
+        </div>
+      </div>
       <div className="terminal-stage">
         {activeDeckId ? (
           <TerminalPane
             terminals={activeDeckState.terminals}
             wsBase={wsBase}
-            onNewTerminal={handleNewTerminal}
-            onNewClaudeTerminal={handleNewClaudeTerminal}
-            onNewCodexTerminal={handleNewCodexTerminal}
             onDeleteTerminal={handleTerminalDelete}
           />
         ) : (

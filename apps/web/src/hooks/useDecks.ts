@@ -15,6 +15,7 @@ interface UseDecksProps {
   updateDeckState: (deckId: string, updater: (state: import('../types').DeckState) => import('../types').DeckState) => void;
   deckStates: Record<string, import('../types').DeckState>;
   setDeckStates: React.Dispatch<React.SetStateAction<Record<string, import('../types').DeckState>>>;
+  initialDeckId?: string | null;
 }
 
 export const useDecks = ({
@@ -22,10 +23,11 @@ export const useDecks = ({
   initializeDeckStates,
   updateDeckState,
   deckStates,
-  setDeckStates
+  setDeckStates,
+  initialDeckId
 }: UseDecksProps) => {
   const [decks, setDecks] = useState<Deck[]>([]);
-  const [activeDeckId, setActiveDeckId] = useState<string | null>(null);
+  const [activeDeckId, setActiveDeckId] = useState<string | null>(initialDeckId ?? null);
 
   useEffect(() => {
     let alive = true;

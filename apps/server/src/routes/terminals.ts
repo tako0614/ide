@@ -1,15 +1,18 @@
 import crypto from 'node:crypto';
 import { Hono } from 'hono';
 import { spawn } from 'node-pty';
+import type { DatabaseSync } from 'node:sqlite';
 import type { Deck, TerminalSession } from '../types.js';
 import { TERMINAL_BUFFER_LIMIT } from '../config.js';
 import { createHttpError, handleError, readJson } from '../utils/error.js';
 import { getDefaultShell } from '../utils/shell.js';
+import { saveTerminal, deleteTerminal as deleteTerminalFromDb, type PersistedTerminal } from '../utils/database.js';
 
 // Track terminal index per deck for unique naming
 const deckTerminalCounters = new Map<string, number>();
 
 export function createTerminalRouter(
+  db: DatabaseSync,
   decks: Map<string, Deck>,
   terminals: Map<string, TerminalSession>
 ) {
@@ -32,8 +35,13 @@ export function createTerminalRouter(
     return next;
   }
 
-  function createTerminalSession(deck: Deck, title?: string, command?: string): TerminalSession {
-    const id = crypto.randomUUID();
+  function createTerminalSession(
+    deck: Deck,
+    title?: string,
+    command?: string,
+    options?: { id?: string; initialBuffer?: string; skipDbSave?: boolean }
+  ): TerminalSession {
+    const id = options?.id || crypto.randomUUID();
 
     // Determine shell and arguments
     let shell: string;
@@ -127,18 +135,25 @@ export function createTerminalRouter(
     const resolvedTitle = title || `Terminal ${getNextTerminalIndex(deck.id)}`;
     const sessionStart = Date.now();
     let firstDataReceived = false;
+    const createdAt = new Date().toISOString();
 
     const session: TerminalSession = {
       id,
       deckId: deck.id,
       title: resolvedTitle,
-      createdAt: new Date().toISOString(),
+      command: command || null,
+      createdAt,
       term,
       sockets: new Set(),
-      buffer: '',
+      buffer: options?.initialBuffer || '',
       lastActive: Date.now(),
       dispose: null
     };
+
+    // Save to database for persistence across restarts (skip if restoring)
+    if (!options?.skipDbSave) {
+      saveTerminal(db, id, deck.id, resolvedTitle, command || null, createdAt);
+    }
 
     // Set up data handler
     try {
@@ -330,6 +345,9 @@ export function createTerminalRouter(
       // Remove from map first to prevent race conditions
       terminals.delete(terminalId);
 
+      // Remove from database
+      deleteTerminalFromDb(db, terminalId);
+
       // Close all WebSocket connections
       session.sockets.forEach((socket) => {
         try {
@@ -365,5 +383,30 @@ export function createTerminalRouter(
     }
   });
 
-  return router;
+  // Function to restore terminals from persisted data
+  function restoreTerminals(persistedTerminals: PersistedTerminal[]): void {
+    for (const persisted of persistedTerminals) {
+      const deck = decks.get(persisted.deckId);
+      if (!deck) {
+        console.log(`[TERMINAL] Skipping restore for terminal ${persisted.id}: deck ${persisted.deckId} not found`);
+        continue;
+      }
+
+      try {
+        console.log(`[TERMINAL] Restoring terminal ${persisted.id} (${persisted.title}) for deck ${persisted.deckId}`);
+        createTerminalSession(deck, persisted.title, persisted.command || undefined, {
+          id: persisted.id,
+          initialBuffer: persisted.buffer,
+          skipDbSave: true
+        });
+        console.log(`[TERMINAL] Successfully restored terminal ${persisted.id}`);
+      } catch (error) {
+        console.error(`[TERMINAL] Failed to restore terminal ${persisted.id}:`, error);
+        // Remove failed terminal from database
+        deleteTerminalFromDb(db, persisted.id);
+      }
+    }
+  }
+
+  return { router, restoreTerminals };
 }
