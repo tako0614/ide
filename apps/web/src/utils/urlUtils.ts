@@ -8,7 +8,7 @@ type WorkspaceMode = 'list' | 'editor';
 export type UrlState = {
   view: AppView;
   workspaceId: string | null;
-  deckId: string | null;
+  deckIds: string[];
   workspaceMode: WorkspaceMode;
 };
 
@@ -20,17 +20,19 @@ export function parseUrlState(): UrlState {
     return {
       view: 'terminal',
       workspaceId: null,
-      deckId: null,
+      deckIds: [],
       workspaceMode: 'list'
     };
   }
   const params = new URLSearchParams(window.location.search);
   const viewParam = params.get('view');
   const modeParam = params.get('mode');
+  const deckParam = params.get('decks') || params.get('deck');
+  const deckIds = deckParam ? deckParam.split(',').filter(Boolean) : [];
   return {
     view: viewParam === 'workspace' ? 'workspace' : 'terminal',
     workspaceId: params.get('workspace'),
-    deckId: params.get('deck'),
+    deckIds,
     workspaceMode: modeParam === 'editor' ? 'editor' : 'list'
   };
 }

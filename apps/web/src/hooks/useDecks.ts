@@ -15,7 +15,7 @@ interface UseDecksProps {
   updateDeckState: (deckId: string, updater: (state: import('../types').DeckState) => import('../types').DeckState) => void;
   deckStates: Record<string, import('../types').DeckState>;
   setDeckStates: React.Dispatch<React.SetStateAction<Record<string, import('../types').DeckState>>>;
-  initialDeckId?: string | null;
+  initialDeckIds?: string[];
 }
 
 export const useDecks = ({
@@ -24,10 +24,10 @@ export const useDecks = ({
   updateDeckState,
   deckStates,
   setDeckStates,
-  initialDeckId
+  initialDeckIds
 }: UseDecksProps) => {
   const [decks, setDecks] = useState<Deck[]>([]);
-  const [activeDeckId, setActiveDeckId] = useState<string | null>(initialDeckId ?? null);
+  const [activeDeckIds, setActiveDeckIds] = useState<string[]>(initialDeckIds ?? []);
 
   useEffect(() => {
     let alive = true;
@@ -54,43 +54,51 @@ export const useDecks = ({
     if (decks.length === 0) {
       return;
     }
-    // If current activeDeckId exists in decks, keep it
-    if (activeDeckId && decks.some((deck) => deck.id === activeDeckId)) {
+    // Filter out invalid deck IDs
+    const validIds = activeDeckIds.filter((id) => decks.some((deck) => deck.id === id));
+    // If all IDs are valid, keep them
+    if (validIds.length === activeDeckIds.length && validIds.length > 0) {
       return;
     }
-    // Otherwise fall back to first deck
-    setActiveDeckId(decks[0]?.id ?? null);
-  }, [decks, activeDeckId]);
+    // If we have some valid IDs, use them; otherwise fall back to first deck
+    if (validIds.length > 0) {
+      setActiveDeckIds(validIds);
+    } else if (decks[0]) {
+      setActiveDeckIds([decks[0].id]);
+    }
+  }, [decks, activeDeckIds]);
 
+  // Load terminals for all active decks
   useEffect(() => {
-    if (!activeDeckId) return;
-    const current = deckStates[activeDeckId];
-    if (current?.terminalsLoaded) return;
-    listTerminals(activeDeckId)
-      .then((sessions) => {
-        updateDeckState(activeDeckId, (state) => ({
-          ...state,
-          terminals: sessions,
-          terminalsLoaded: true
-        }));
-      })
-      .catch((error: unknown) => {
-        updateDeckState(activeDeckId, (state) => ({
-          ...state,
-          terminalsLoaded: true
-        }));
-        setStatusMessage(
-          `ターミナルを取得できませんでした: ${getErrorMessage(error)}`
-        );
-      });
-  }, [activeDeckId, deckStates, updateDeckState, setStatusMessage]);
+    activeDeckIds.forEach((deckId) => {
+      const current = deckStates[deckId];
+      if (current?.terminalsLoaded) return;
+      listTerminals(deckId)
+        .then((sessions) => {
+          updateDeckState(deckId, (state) => ({
+            ...state,
+            terminals: sessions,
+            terminalsLoaded: true
+          }));
+        })
+        .catch((error: unknown) => {
+          updateDeckState(deckId, (state) => ({
+            ...state,
+            terminalsLoaded: true
+          }));
+          setStatusMessage(
+            `ターミナルを取得できませんでした: ${getErrorMessage(error)}`
+          );
+        });
+    });
+  }, [activeDeckIds, deckStates, updateDeckState, setStatusMessage]);
 
   const handleCreateDeck = useCallback(
     async (name: string, workspaceId: string) => {
       try {
         const deck = await apiCreateDeck(name, workspaceId);
         setDecks((prev) => [...prev, deck]);
-        setActiveDeckId(deck.id);
+        setActiveDeckIds((prev) => [...prev.filter((id) => id !== deck.id), deck.id]);
         setDeckStates((prev) => ({
           ...prev,
           [deck.id]: createEmptyDeckState()
@@ -151,8 +159,8 @@ export const useDecks = ({
 
   return {
     decks,
-    activeDeckId,
-    setActiveDeckId,
+    activeDeckIds,
+    setActiveDeckIds,
     handleCreateDeck,
     handleCreateTerminal,
     handleDeleteTerminal

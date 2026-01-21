@@ -58,15 +58,43 @@ export default function App() {
       setWorkspaceStates
     });
 
-  const { decks, activeDeckId, setActiveDeckId, handleCreateDeck, handleCreateTerminal, handleDeleteTerminal } =
+  const { decks, activeDeckIds, setActiveDeckIds, handleCreateDeck, handleCreateTerminal, handleDeleteTerminal } =
     useDecks({
       setStatusMessage,
       initializeDeckStates,
       updateDeckState,
       deckStates,
       setDeckStates,
-      initialDeckId: initialUrlState.deckId
+      initialDeckIds: initialUrlState.deckIds
     });
+
+  // Grid config state per deck
+  const [deckGridConfigs, setDeckGridConfigs] = useState<Record<string, { cols: number; rows: number }>>({});
+
+  // Load grid configs from localStorage
+  useEffect(() => {
+    const saved = localStorage.getItem('deck-grid-configs');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        setDeckGridConfigs(parsed);
+      } catch {
+        // ignore
+      }
+    }
+  }, []);
+
+  const getDeckGridConfig = useCallback((deckId: string) => {
+    return deckGridConfigs[deckId] || { cols: 2, rows: 2 };
+  }, [deckGridConfigs]);
+
+  const setDeckGridConfig = useCallback((deckId: string, cols: number, rows: number) => {
+    setDeckGridConfigs((prev) => {
+      const next = { ...prev, [deckId]: { cols, rows } };
+      localStorage.setItem('deck-grid-configs', JSON.stringify(next));
+      return next;
+    });
+  }, []);
 
   const defaultWorkspaceState = useMemo(() => createEmptyWorkspaceState(), []);
   const defaultDeckState = useMemo(() => createEmptyDeckState(), []);
@@ -75,9 +103,6 @@ export default function App() {
   const activeWorkspaceState = editorWorkspaceId
     ? workspaceStates[editorWorkspaceId] || defaultWorkspaceState
     : defaultWorkspaceState;
-  const activeDeckState = activeDeckId
-    ? deckStates[activeDeckId] || defaultDeckState
-    : defaultDeckState;
 
   const {
     savingFileId,
@@ -159,12 +184,12 @@ export default function App() {
       const next = parseUrlState();
       setView(next.view);
       setEditorWorkspaceId(next.workspaceId ?? null);
-      setActiveDeckId(next.deckId ?? null);
+      setActiveDeckIds(next.deckIds);
       setWorkspaceMode(next.workspaceMode);
     };
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
-  }, [setEditorWorkspaceId, setActiveDeckId]);
+  }, [setEditorWorkspaceId, setActiveDeckIds]);
 
   useEffect(() => {
     const params = new URLSearchParams();
@@ -172,8 +197,8 @@ export default function App() {
     if (view === 'workspace' && editorWorkspaceId) {
       params.set('workspace', editorWorkspaceId);
     }
-    if (activeDeckId) {
-      params.set('deck', activeDeckId);
+    if (activeDeckIds.length > 0) {
+      params.set('decks', activeDeckIds.join(','));
     }
     if (view === 'workspace' && workspaceMode === 'editor' && editorWorkspaceId) {
       params.set('mode', 'editor');
@@ -183,7 +208,7 @@ export default function App() {
       ? `${window.location.pathname}?${query}`
       : window.location.pathname;
     window.history.replaceState(null, '', nextUrl);
-  }, [view, editorWorkspaceId, activeDeckId, workspaceMode]);
+  }, [view, editorWorkspaceId, activeDeckIds, workspaceMode]);
 
   useEffect(() => {
     if (statusMessage !== MESSAGE_SAVED) return;
@@ -293,37 +318,46 @@ export default function App() {
     [handleCreateWorkspace]
   );
 
-  const handleNewTerminal = useCallback(() => {
-    if (!activeDeckId) {
-      setStatusMessage(MESSAGE_SELECT_DECK);
-      return;
-    }
-    handleCreateTerminal(activeDeckId, activeDeckState.terminals.length);
-  }, [activeDeckId, activeDeckState.terminals.length, handleCreateTerminal]);
+  const handleNewTerminalForDeck = useCallback((deckId: string) => {
+    const deckState = deckStates[deckId] || defaultDeckState;
+    handleCreateTerminal(deckId, deckState.terminals.length);
+  }, [deckStates, defaultDeckState, handleCreateTerminal]);
 
-  const handleNewClaudeTerminal = useCallback(() => {
-    if (!activeDeckId) {
-      setStatusMessage(MESSAGE_SELECT_DECK);
-      return;
-    }
-    handleCreateTerminal(activeDeckId, activeDeckState.terminals.length, 'claude', 'Claude Code');
-  }, [activeDeckId, activeDeckState.terminals.length, handleCreateTerminal]);
+  const handleNewClaudeTerminalForDeck = useCallback((deckId: string) => {
+    const deckState = deckStates[deckId] || defaultDeckState;
+    handleCreateTerminal(deckId, deckState.terminals.length, 'claude', 'Claude Code');
+  }, [deckStates, defaultDeckState, handleCreateTerminal]);
 
-  const handleNewCodexTerminal = useCallback(() => {
-    if (!activeDeckId) {
-      setStatusMessage(MESSAGE_SELECT_DECK);
-      return;
-    }
-    handleCreateTerminal(activeDeckId, activeDeckState.terminals.length, 'codex', 'Codex');
-  }, [activeDeckId, activeDeckState.terminals.length, handleCreateTerminal]);
+  const handleNewCodexTerminalForDeck = useCallback((deckId: string) => {
+    const deckState = deckStates[deckId] || defaultDeckState;
+    handleCreateTerminal(deckId, deckState.terminals.length, 'codex', 'Codex');
+  }, [deckStates, defaultDeckState, handleCreateTerminal]);
 
-  const handleTerminalDelete = useCallback(
-    (terminalId: string) => {
-      if (!activeDeckId) return;
-      handleDeleteTerminal(activeDeckId, terminalId);
+  const handleTerminalDeleteForDeck = useCallback(
+    (deckId: string, terminalId: string) => {
+      handleDeleteTerminal(deckId, terminalId);
     },
-    [activeDeckId, handleDeleteTerminal]
+    [handleDeleteTerminal]
   );
+
+  const handleToggleDeck = useCallback((deckId: string) => {
+    setActiveDeckIds((prev) => {
+      if (prev.includes(deckId)) {
+        // Remove deck (but keep at least one)
+        if (prev.length > 1) {
+          return prev.filter((id) => id !== deckId);
+        }
+        return prev;
+      } else {
+        // Add deck (max 3 for horizontal split)
+        if (prev.length < 3) {
+          return [...prev, deckId];
+        }
+        // Replace first one if at max
+        return [...prev.slice(1), deckId];
+      }
+    });
+  }, [setActiveDeckIds]);
 
 
   const isWorkspaceEditorOpen = workspaceMode === 'editor' && Boolean(editorWorkspaceId);
@@ -476,81 +510,123 @@ export default function App() {
     </div>
   );
 
-  const activeDeck = decks.find((d) => d.id === activeDeckId);
-
   const terminalView = (
     <div className="terminal-layout">
       <div className="terminal-topbar">
         <div className="topbar-left">
-          <div className="deck-selector">
-            <select
-              className="deck-select"
-              value={activeDeckId || ''}
-              onChange={(e) => setActiveDeckId(e.target.value || null)}
-            >
-              <option value="" disabled>
-                デッキを選択
-              </option>
-              {decks.map((deck) => (
-                <option key={deck.id} value={deck.id}>
-                  {deck.name}
-                </option>
-              ))}
-            </select>
+          <div className="deck-tabs">
+            {decks.map((deck) => (
+              <button
+                key={deck.id}
+                type="button"
+                className={`deck-tab ${activeDeckIds.includes(deck.id) ? 'active' : ''}`}
+                onClick={() => handleToggleDeck(deck.id)}
+                title={workspaceById.get(deck.workspaceId)?.path || deck.root}
+              >
+                {deck.name}
+              </button>
+            ))}
             <button
               type="button"
-              className="topbar-btn topbar-btn-add"
+              className="deck-tab deck-tab-add"
               onClick={handleOpenDeckModal}
               title="デッキ作成"
             >
               +
             </button>
           </div>
-          {activeDeck && (
-            <span className="deck-path">{workspaceById.get(activeDeck.workspaceId)?.path || activeDeck.root}</span>
-          )}
-        </div>
-        <div className="topbar-right">
-          <button
-            type="button"
-            className="topbar-btn"
-            onClick={handleNewTerminal}
-            disabled={!activeDeckId}
-            title="ターミナル追加"
-          >
-            +
-          </button>
-          <button
-            type="button"
-            className="topbar-btn topbar-btn-claude"
-            onClick={handleNewClaudeTerminal}
-            disabled={!activeDeckId}
-            title="Claude Code"
-          >
-            Claude
-          </button>
-          <button
-            type="button"
-            className="topbar-btn topbar-btn-codex"
-            onClick={handleNewCodexTerminal}
-            disabled={!activeDeckId}
-            title="Codex"
-          >
-            Codex
-          </button>
         </div>
       </div>
-      <div className="terminal-stage">
-        {activeDeckId ? (
-          <TerminalPane
-            terminals={activeDeckState.terminals}
-            wsBase={wsBase}
-            onDeleteTerminal={handleTerminalDelete}
-          />
-        ) : (
+      <div className="terminal-split-container" style={{ gridTemplateColumns: `repeat(${activeDeckIds.length}, 1fr)` }}>
+        {activeDeckIds.length === 0 ? (
           <div className="panel empty-panel">
-            {'\u30c7\u30c3\u30ad\u3092\u4f5c\u6210\u3057\u3066\u304f\u3060\u3055\u3044\u3002'}
+            {'デッキを作成してください。'}
           </div>
+        ) : (
+          activeDeckIds.map((deckId) => {
+            const deck = decks.find((d) => d.id === deckId);
+            const deckState = deckStates[deckId] || defaultDeckState;
+            const gridConfig = getDeckGridConfig(deckId);
+            if (!deck) return null;
+            return (
+              <div key={deckId} className="deck-split-pane">
+                <div className="deck-split-header">
+                  <span className="deck-split-title">{deck.name}</span>
+                  <div className="deck-split-actions">
+                    <div className="grid-control-sm">
+                      <button
+                        type="button"
+                        className="grid-btn-sm"
+                        onClick={() => setDeckGridConfig(deckId, Math.max(1, gridConfig.cols - 1), gridConfig.rows)}
+                        disabled={gridConfig.cols <= 1}
+                      >
+                        −
+                      </button>
+                      <span className="grid-value-sm">{gridConfig.cols}</span>
+                      <button
+                        type="button"
+                        className="grid-btn-sm"
+                        onClick={() => setDeckGridConfig(deckId, Math.min(6, gridConfig.cols + 1), gridConfig.rows)}
+                        disabled={gridConfig.cols >= 6}
+                      >
+                        +
+                      </button>
+                      <span className="grid-separator-sm">×</span>
+                      <button
+                        type="button"
+                        className="grid-btn-sm"
+                        onClick={() => setDeckGridConfig(deckId, gridConfig.cols, Math.max(1, gridConfig.rows - 1))}
+                        disabled={gridConfig.rows <= 1}
+                      >
+                        −
+                      </button>
+                      <span className="grid-value-sm">{gridConfig.rows}</span>
+                      <button
+                        type="button"
+                        className="grid-btn-sm"
+                        onClick={() => setDeckGridConfig(deckId, gridConfig.cols, Math.min(6, gridConfig.rows + 1))}
+                        disabled={gridConfig.rows >= 6}
+                      >
+                        +
+                      </button>
+                    </div>
+                    <span className="deck-split-divider" />
+                    <button
+                      type="button"
+                      className="topbar-btn-sm"
+                      onClick={() => handleNewTerminalForDeck(deckId)}
+                      title="ターミナル追加"
+                    >
+                      +
+                    </button>
+                    <button
+                      type="button"
+                      className="topbar-btn-sm topbar-btn-claude"
+                      onClick={() => handleNewClaudeTerminalForDeck(deckId)}
+                      title="Claude"
+                    >
+                      C
+                    </button>
+                    <button
+                      type="button"
+                      className="topbar-btn-sm topbar-btn-codex"
+                      onClick={() => handleNewCodexTerminalForDeck(deckId)}
+                      title="Codex"
+                    >
+                      X
+                    </button>
+                  </div>
+                </div>
+                <TerminalPane
+                  terminals={deckState.terminals}
+                  wsBase={wsBase}
+                  onDeleteTerminal={(terminalId) => handleTerminalDeleteForDeck(deckId, terminalId)}
+                  gridCols={gridConfig.cols}
+                  gridRows={gridConfig.rows}
+                />
+              </div>
+            );
+          })
         )}
       </div>
     </div>
