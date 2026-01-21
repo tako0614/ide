@@ -1297,35 +1297,62 @@ textarea {
   gap: 12px;
 }
 
-.grid-selector {
+.grid-control {
   display: flex;
-  gap: 4px;
+  align-items: center;
+  gap: 6px;
   background: var(--surface);
-  padding: 3px;
+  padding: 4px 8px;
   border-radius: 6px;
   border: 1px solid var(--border);
 }
 
-.grid-preset-btn {
-  padding: 4px 8px;
-  font-size: 11px;
-  font-family: 'JetBrains Mono', monospace;
+.grid-adjuster {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.grid-btn {
+  width: 22px;
+  height: 22px;
+  padding: 0;
   border: none;
   border-radius: 4px;
   background: transparent;
   color: var(--muted);
   cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   transition: all 0.15s;
 }
 
-.grid-preset-btn:hover {
+.grid-btn:hover:not(:disabled) {
   background: var(--hover);
   color: var(--text);
 }
 
-.grid-preset-btn.active {
-  background: var(--accent);
-  color: #fff;
+.grid-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.grid-value {
+  min-width: 18px;
+  text-align: center;
+  font-size: 13px;
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.grid-separator {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 0 2px;
 }
 
 .terminal-actions {
@@ -2243,7 +2270,7 @@ input:focus-visible {
     overflow: auto;
   }
 
-  .grid-selector {
+  .grid-control {
     display: none;
   }
 }

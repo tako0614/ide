@@ -17,15 +17,11 @@ const LABEL_CLAUDE = 'Claude';
 const LABEL_CODEX = 'Codex';
 const LABEL_EMPTY = 'ターミナルを追加';
 
-const GRID_PRESETS = [
-  { cols: 1, rows: 1, label: '1x1' },
-  { cols: 2, rows: 1, label: '2x1' },
-  { cols: 2, rows: 2, label: '2x2' },
-  { cols: 3, rows: 2, label: '3x2' },
-  { cols: 3, rows: 3, label: '3x3' },
-];
-
 const STORAGE_KEY = 'deck-terminal-grid';
+const MIN_COLS = 1;
+const MAX_COLS = 6;
+const MIN_ROWS = 1;
+const MAX_ROWS = 6;
 
 export function TerminalPane({
   terminals,
@@ -35,7 +31,8 @@ export function TerminalPane({
   onNewCodexTerminal,
   onDeleteTerminal
 }: TerminalPaneProps) {
-  const [gridConfig, setGridConfig] = useState({ cols: 2, rows: 2 });
+  const [cols, setCols] = useState(2);
+  const [rows, setRows] = useState(2);
 
   // Load saved grid config
   useEffect(() => {
@@ -43,8 +40,11 @@ export function TerminalPane({
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
-        if (parsed.cols && parsed.rows) {
-          setGridConfig(parsed);
+        if (parsed.cols >= MIN_COLS && parsed.cols <= MAX_COLS) {
+          setCols(parsed.cols);
+        }
+        if (parsed.rows >= MIN_ROWS && parsed.rows <= MAX_ROWS) {
+          setRows(parsed.rows);
         }
       } catch {
         // ignore
@@ -52,13 +52,23 @@ export function TerminalPane({
     }
   }, []);
 
-  const handleGridChange = (cols: number, rows: number) => {
-    const newConfig = { cols, rows };
-    setGridConfig(newConfig);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(newConfig));
+  const saveConfig = (newCols: number, newRows: number) => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ cols: newCols, rows: newRows }));
   };
 
-  const maxTerminals = gridConfig.cols * gridConfig.rows;
+  const adjustCols = (delta: number) => {
+    const newCols = Math.max(MIN_COLS, Math.min(MAX_COLS, cols + delta));
+    setCols(newCols);
+    saveConfig(newCols, rows);
+  };
+
+  const adjustRows = (delta: number) => {
+    const newRows = Math.max(MIN_ROWS, Math.min(MAX_ROWS, rows + delta));
+    setRows(newRows);
+    saveConfig(cols, newRows);
+  };
+
+  const maxTerminals = cols * rows;
   const visibleTerminals = terminals.slice(0, maxTerminals);
 
   return (
@@ -66,19 +76,46 @@ export function TerminalPane({
       <div className="terminal-header">
         <div className="terminal-header-left">
           <span className="panel-title">{LABEL_TERMINAL}</span>
-          <div className="grid-selector">
-            {GRID_PRESETS.map((preset) => (
+          <div className="grid-control">
+            <div className="grid-adjuster">
               <button
-                key={preset.label}
                 type="button"
-                className={`grid-preset-btn ${
-                  gridConfig.cols === preset.cols && gridConfig.rows === preset.rows ? 'active' : ''
-                }`}
-                onClick={() => handleGridChange(preset.cols, preset.rows)}
+                className="grid-btn"
+                onClick={() => adjustCols(-1)}
+                disabled={cols <= MIN_COLS}
               >
-                {preset.label}
+                −
               </button>
-            ))}
+              <span className="grid-value">{cols}</span>
+              <button
+                type="button"
+                className="grid-btn"
+                onClick={() => adjustCols(1)}
+                disabled={cols >= MAX_COLS}
+              >
+                +
+              </button>
+            </div>
+            <span className="grid-separator">×</span>
+            <div className="grid-adjuster">
+              <button
+                type="button"
+                className="grid-btn"
+                onClick={() => adjustRows(-1)}
+                disabled={rows <= MIN_ROWS}
+              >
+                −
+              </button>
+              <span className="grid-value">{rows}</span>
+              <button
+                type="button"
+                className="grid-btn"
+                onClick={() => adjustRows(1)}
+                disabled={rows >= MAX_ROWS}
+              >
+                +
+              </button>
+            </div>
           </div>
         </div>
         <div className="terminal-actions">
@@ -102,8 +139,8 @@ export function TerminalPane({
         <div
           className="terminal-grid"
           style={{
-            gridTemplateColumns: `repeat(${gridConfig.cols}, 1fr)`,
-            gridTemplateRows: `repeat(${gridConfig.rows}, 1fr)`,
+            gridTemplateColumns: `repeat(${cols}, 1fr)`,
+            gridTemplateRows: `repeat(${rows}, 1fr)`,
           }}
         >
           {visibleTerminals.map((terminal) => (
