@@ -22,8 +22,11 @@ interface TerminalTileProps {
 
 const TEXT_BOOT = 'ターミナルを起動しました: ';
 const TEXT_CONNECTED = '接続しました。';
-const TEXT_CLOSED = '切断しました。';
+const TEXT_RECONNECTING = '再接続中...';
+const TEXT_CLOSED = '接続が終了しました。';
 const RESIZE_MESSAGE_PREFIX = '\u0000resize:';
+const MAX_RECONNECT_ATTEMPTS = 5;
+const RECONNECT_BASE_DELAY_MS = 1000;
 
 export function TerminalTile({
   session,
@@ -424,9 +427,15 @@ export function TerminalTile({
     let socket: WebSocket | null = null;
     let dataDisposable: IDisposable | null = null;
     let cancelled = false;
+    let reconnectAttempts = 0;
+    let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+    let isIntentionalClose = false;
+    let hasConnectedOnce = false;
 
     // Fetch WebSocket token and connect
-    const connect = async () => {
+    const connect = async (isReconnect = false) => {
+      if (cancelled) return;
+
       try {
         // Get a one-time token for WebSocket authentication
         const { token, authEnabled } = await getWsToken();
@@ -438,18 +447,43 @@ export function TerminalTile({
         socketRef.current = socket;
 
         socket.addEventListener('open', () => {
+          reconnectAttempts = 0;
+          hasConnectedOnce = true;
           sendResize();
-          term.write(`\r\n${TEXT_CONNECTED}\r\n\r\n`);
+          if (isReconnect) {
+            term.write(`\r\n\x1b[32m${TEXT_CONNECTED}\x1b[0m\r\n`);
+          } else {
+            term.write(`\r\n${TEXT_CONNECTED}\r\n\r\n`);
+          }
         });
         socket.addEventListener('message', (event) => {
           if (typeof event.data === 'string') {
             term.write(event.data);
           }
         });
-        socket.addEventListener('close', () => {
-          term.write(`\r\n${TEXT_CLOSED}\r\n\r\n`);
+        socket.addEventListener('close', (event) => {
+          if (cancelled || isIntentionalClose) {
+            return;
+          }
+
+          // Try to reconnect if we haven't exceeded attempts
+          if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+            reconnectAttempts++;
+            const delay = RECONNECT_BASE_DELAY_MS * Math.pow(2, reconnectAttempts - 1);
+            term.write(`\r\n\x1b[33m${TEXT_RECONNECTING} (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})\x1b[0m\r\n`);
+            reconnectTimeout = setTimeout(() => connect(true), delay);
+          } else {
+            term.write(`\r\n\x1b[31m${TEXT_CLOSED}\x1b[0m\r\n`);
+          }
         });
 
+        socket.addEventListener('error', () => {
+          // Error event is usually followed by close event, so we don't need to handle it separately
+        });
+
+        if (dataDisposable) {
+          dataDisposable.dispose();
+        }
         dataDisposable = term.onData((data) => {
           if (socket && socket.readyState === WebSocket.OPEN) {
             socket.send(data);
@@ -457,7 +491,14 @@ export function TerminalTile({
         });
       } catch (err) {
         console.error('[Terminal] Failed to connect:', err);
-        term.write(`\r\n\x1b[31m接続エラー: ${err instanceof Error ? err.message : 'Unknown error'}\x1b[0m\r\n`);
+        if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS && hasConnectedOnce) {
+          reconnectAttempts++;
+          const delay = RECONNECT_BASE_DELAY_MS * Math.pow(2, reconnectAttempts - 1);
+          term.write(`\r\n\x1b[33m${TEXT_RECONNECTING} (${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})\x1b[0m\r\n`);
+          reconnectTimeout = setTimeout(() => connect(true), delay);
+        } else {
+          term.write(`\r\n\x1b[31m接続エラー: ${err instanceof Error ? err.message : 'Unknown error'}\x1b[0m\r\n`);
+        }
       }
     };
 
@@ -465,6 +506,10 @@ export function TerminalTile({
 
     return () => {
       cancelled = true;
+      isIntentionalClose = true;
+      if (reconnectTimeout) {
+        clearTimeout(reconnectTimeout);
+      }
       resizeObserver.disconnect();
       if (dataDisposable) {
         dataDisposable.dispose();
