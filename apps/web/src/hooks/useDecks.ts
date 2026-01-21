@@ -50,9 +50,15 @@ export const useDecks = ({
   }, [setStatusMessage, initializeDeckStates]);
 
   useEffect(() => {
+    // Don't do anything until decks are loaded
+    if (decks.length === 0) {
+      return;
+    }
+    // If current activeDeckId exists in decks, keep it
     if (activeDeckId && decks.some((deck) => deck.id === activeDeckId)) {
       return;
     }
+    // Otherwise fall back to first deck
     setActiveDeckId(decks[0]?.id ?? null);
   }, [decks, activeDeckId]);
 
