@@ -10,188 +10,443 @@
     <title>Deck IDE</title>
     <style>
       :root {
-        color-scheme: light;
-        --bg: #f7f7f7;
-        --panel: #ffffff;
-        --border: #1b1b1b;
-        --ink: #111111;
-        --muted: #666666;
+        --bg: #f5f5f7;
+        --card-bg: #ffffff;
+        --border: rgba(0, 0, 0, 0.08);
+        --text: #1d1d1f;
+        --text-secondary: #86868b;
+        --accent: #0071e3;
+        --accent-hover: #0077ed;
+        --success: #34c759;
+        --warning: #ff9500;
+        --danger: #ff3b30;
+        --radius: 12px;
+        --shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
       }
-      body {
+
+      * {
+        box-sizing: border-box;
         margin: 0;
-        font-family: 'Segoe UI', sans-serif;
+        padding: 0;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         background: var(--bg);
-        color: var(--ink);
+        color: var(--text);
+        font-size: 14px;
+        line-height: 1.5;
       }
+
       .app {
-        padding: 18px;
-        display: grid;
-        gap: 14px;
-      }
-      .panel {
-        background: var(--panel);
-        border: 1px solid var(--border);
-        border-radius: 14px;
-        padding: 12px;
-        display: grid;
-        gap: 10px;
-      }
-      .title {
-        font-size: 16px;
-        font-weight: 600;
-      }
-      .status {
-        font-size: 13px;
-        color: var(--muted);
-        word-break: break-all;
-      }
-      .row {
+        padding: 20px;
         display: flex;
-        gap: 8px;
-        flex-wrap: wrap;
+        flex-direction: column;
+        gap: 16px;
+        max-width: 480px;
+        margin: 0 auto;
       }
-      button {
+
+      /* Header */
+      .header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 0 4px;
+      }
+
+      .logo {
+        font-size: 20px;
+        font-weight: 600;
+        color: var(--text);
+      }
+
+      .lang-switch {
+        display: flex;
+        gap: 4px;
+        background: var(--card-bg);
+        padding: 4px;
+        border-radius: 8px;
         border: 1px solid var(--border);
-        background: var(--panel);
-        color: var(--ink);
-        padding: 8px 12px;
-        border-radius: 10px;
+      }
+
+      .lang-btn {
+        padding: 4px 10px;
+        border: none;
+        background: transparent;
+        border-radius: 6px;
         cursor: pointer;
         font-size: 12px;
+        color: var(--text-secondary);
+        transition: all 0.2s;
       }
-      button.primary {
-        background: var(--ink);
-        color: var(--panel);
+
+      .lang-btn.active {
+        background: var(--accent);
+        color: white;
       }
-      label {
-        font-size: 12px;
+
+      /* Cards */
+      .card {
+        background: var(--card-bg);
+        border-radius: var(--radius);
+        padding: 20px;
+        box-shadow: var(--shadow);
+        border: 1px solid var(--border);
+      }
+
+      .card-header {
         display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 16px;
+      }
+
+      .card-title {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--text-secondary);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+
+      /* Status Card */
+      .status-card {
+        text-align: center;
+        padding: 28px 20px;
+      }
+
+      .status-indicator {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        display: inline-block;
+        margin-right: 8px;
+        animation: pulse 2s infinite;
+      }
+
+      .status-indicator.running {
+        background: var(--success);
+      }
+
+      .status-indicator.stopped {
+        background: var(--danger);
+        animation: none;
+      }
+
+      @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
+      }
+
+      .status-text {
+        font-size: 18px;
+        font-weight: 600;
+        margin-bottom: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .status-url {
+        font-size: 13px;
+        color: var(--text-secondary);
+        word-break: break-all;
+        margin-bottom: 20px;
+      }
+
+      .status-error {
+        font-size: 12px;
+        color: var(--danger);
+        margin-top: 8px;
+      }
+
+      .btn-group {
+        display: flex;
+        gap: 10px;
+        justify-content: center;
+      }
+
+      /* Buttons */
+      .btn {
+        padding: 10px 20px;
+        border: none;
+        border-radius: 8px;
+        font-size: 14px;
+        font-weight: 500;
+        cursor: pointer;
+        transition: all 0.2s;
+        display: inline-flex;
         align-items: center;
         gap: 6px;
       }
-      input[type='checkbox'] {
-        width: 14px;
-        height: 14px;
+
+      .btn:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
       }
-      input[type='text'],
-      input[type='password'],
-      input[type='number'] {
+
+      .btn-primary {
+        background: var(--accent);
+        color: white;
+      }
+
+      .btn-primary:hover:not(:disabled) {
+        background: var(--accent-hover);
+      }
+
+      .btn-secondary {
+        background: var(--bg);
+        color: var(--text);
+        border: 1px solid var(--border);
+      }
+
+      .btn-secondary:hover:not(:disabled) {
+        background: #e8e8ed;
+      }
+
+      .btn-danger {
+        background: var(--danger);
+        color: white;
+      }
+
+      .btn-danger:hover:not(:disabled) {
+        background: #e5342b;
+      }
+
+      .btn-sm {
+        padding: 6px 12px;
+        font-size: 12px;
+      }
+
+      /* Form Elements */
+      .form-group {
+        margin-bottom: 16px;
+      }
+
+      .form-group:last-child {
+        margin-bottom: 0;
+      }
+
+      .form-label {
+        display: block;
+        font-size: 13px;
+        font-weight: 500;
+        margin-bottom: 6px;
+        color: var(--text);
+      }
+
+      .form-input {
         width: 100%;
-        padding: 6px 8px;
+        padding: 10px 12px;
         border: 1px solid var(--border);
         border-radius: 8px;
-        font-size: 12px;
+        font-size: 14px;
+        transition: border-color 0.2s;
+        background: var(--card-bg);
       }
-      .form-group {
-        display: grid;
-        gap: 4px;
+
+      .form-input:focus {
+        outline: none;
+        border-color: var(--accent);
       }
-      .form-label {
-        font-size: 11px;
-        font-weight: 500;
-        color: var(--muted);
+
+      .form-row {
+        display: flex;
+        gap: 10px;
+        align-items: flex-end;
       }
+
+      .form-row .form-group {
+        flex: 1;
+        margin-bottom: 0;
+      }
+
+      /* Checkbox */
+      .checkbox-label {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        cursor: pointer;
+        font-size: 14px;
+      }
+
+      .checkbox-label input[type="checkbox"] {
+        width: 18px;
+        height: 18px;
+        accent-color: var(--accent);
+      }
+
+      /* Auth Fields */
       .auth-fields {
         display: none;
-        grid-template-columns: 1fr;
-        gap: 10px;
-        margin-top: 4px;
+        margin-top: 16px;
+        padding-top: 16px;
+        border-top: 1px solid var(--border);
       }
+
       .auth-fields.visible {
-        display: grid;
+        display: block;
       }
-      .logs {
-        background: #0f0f0f;
-        color: #f5f5f5;
-        border-radius: 10px;
-        padding: 10px;
-        font-family: Consolas, 'JetBrains Mono', monospace;
-        font-size: 11px;
-        line-height: 1.4;
-        height: 140px;
-        overflow: auto;
-        white-space: pre-wrap;
-      }
-      .update-status {
+
+      /* Logs */
+      .logs-container {
+        background: #1a1a1a;
+        border-radius: 8px;
+        padding: 12px;
+        font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
         font-size: 12px;
-        color: var(--muted);
+        line-height: 1.5;
+        height: 160px;
+        overflow: auto;
+        color: #e0e0e0;
       }
-      .update-status.available {
-        color: #0a7d00;
+
+      .logs-container::-webkit-scrollbar {
+        width: 8px;
+      }
+
+      .logs-container::-webkit-scrollbar-track {
+        background: transparent;
+      }
+
+      .logs-container::-webkit-scrollbar-thumb {
+        background: #444;
+        border-radius: 4px;
+      }
+
+      /* Updates */
+      .update-info {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .update-text {
+        flex: 1;
+        font-size: 14px;
+      }
+
+      .update-text.available {
+        color: var(--success);
         font-weight: 500;
       }
+
       .progress-bar {
         height: 6px;
-        background: #e0e0e0;
+        background: var(--bg);
         border-radius: 3px;
         overflow: hidden;
+        margin-top: 12px;
       }
-      .progress-bar-fill {
+
+      .progress-fill {
         height: 100%;
-        background: var(--ink);
-        transition: width 0.2s;
+        background: var(--accent);
+        transition: width 0.3s ease;
+        border-radius: 3px;
+      }
+
+      /* Divider */
+      .divider {
+        height: 1px;
+        background: var(--border);
+        margin: 16px 0;
       }
     </style>
   </head>
   <body>
     <div class="app">
-      <div class="panel">
-        <div class="title">Deck IDE Server</div>
-        <div class="status" id="status">Loading...</div>
-        <div class="row">
-          <button class="primary" id="start">Start</button>
-          <button id="stop">Stop</button>
-          <button id="open">Open UI</button>
+      <!-- Header -->
+      <div class="header">
+        <div class="logo">Deck IDE</div>
+        <div class="lang-switch">
+          <button class="lang-btn" data-lang="en">EN</button>
+          <button class="lang-btn active" data-lang="ja">JA</button>
         </div>
       </div>
-      <div class="panel">
-        <div class="title">Settings</div>
-        <div class="form-group">
-          <label class="form-label" for="port">Port</label>
-          <div class="row">
-            <input type="number" id="port" min="1024" max="65535" value="8787" style="flex: 1;" />
-            <button id="kill-port" title="Kill process using this port">🗙 Kill Port</button>
-          </div>
+
+      <!-- Status Card -->
+      <div class="card status-card">
+        <div class="status-text">
+          <span class="status-indicator stopped" id="status-indicator"></span>
+          <span id="status-label">Stopped</span>
         </div>
-        <label>
+        <div class="status-url" id="status-url"></div>
+        <div class="status-error" id="status-error"></div>
+        <div class="btn-group">
+          <button class="btn btn-primary" id="start" data-i18n="start">Start</button>
+          <button class="btn btn-secondary" id="stop" data-i18n="stop">Stop</button>
+          <button class="btn btn-secondary" id="open" data-i18n="openUi">Open UI</button>
+        </div>
+      </div>
+
+      <!-- Settings Card -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title" data-i18n="settings">Settings</span>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label" for="port" data-i18n="port">Port</label>
+            <input type="number" class="form-input" id="port" min="1024" max="65535" value="8787" />
+          </div>
+          <button class="btn btn-danger btn-sm" id="kill-port" data-i18n="killPort">Kill Port</button>
+        </div>
+
+        <div class="divider"></div>
+
+        <label class="checkbox-label">
           <input type="checkbox" id="basicauth-enabled" />
-          Enable Basic Authentication
+          <span data-i18n="enableAuth">Enable Basic Authentication</span>
         </label>
+
         <div id="basicauth-fields" class="auth-fields">
           <div class="form-group">
-            <label class="form-label" for="basicauth-username">Username</label>
-            <input type="text" id="basicauth-username" autocomplete="off" />
+            <label class="form-label" for="basicauth-username" data-i18n="username">Username</label>
+            <input type="text" class="form-input" id="basicauth-username" autocomplete="off" />
           </div>
           <div class="form-group">
-            <label class="form-label" for="basicauth-password">Password</label>
-            <input type="password" id="basicauth-password" autocomplete="off" />
+            <label class="form-label" for="basicauth-password" data-i18n="password">Password</label>
+            <input type="password" class="form-input" id="basicauth-password" autocomplete="off" />
           </div>
         </div>
-        <button class="primary" id="save-config">Save Settings</button>
-      </div>
-      <div class="panel">
-        <label>
+
+        <div class="divider"></div>
+
+        <label class="checkbox-label">
           <input type="checkbox" id="autostart" />
-          Start on login
+          <span data-i18n="startOnLogin">Start on login</span>
         </label>
+
+        <div class="divider"></div>
+
+        <button class="btn btn-primary" id="save-config" style="width: 100%;" data-i18n="saveSettings">Save Settings</button>
       </div>
-      <div class="panel">
-        <div class="row" style="justify-content: space-between; align-items: center;">
-          <div class="title">Updates</div>
-          <button id="check-update">Check</button>
+
+      <!-- Updates Card -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title" data-i18n="updates">Updates</span>
+          <button class="btn btn-secondary btn-sm" id="check-update" data-i18n="checkUpdate">Check</button>
         </div>
-        <div class="update-status" id="update-status">Checking for updates...</div>
+        <div class="update-info">
+          <span class="update-text" id="update-status" data-i18n="checkingUpdates">Checking for updates...</span>
+        </div>
         <div class="progress-bar" id="update-progress" style="display: none;">
-          <div class="progress-bar-fill" id="update-progress-fill" style="width: 0%;"></div>
+          <div class="progress-fill" id="update-progress-fill" style="width: 0%;"></div>
         </div>
-        <button class="primary" id="install-update" style="display: none;">Install Update & Restart</button>
+        <button class="btn btn-primary" id="install-update" style="display: none; width: 100%; margin-top: 12px;" data-i18n="installUpdate">Install Update & Restart</button>
       </div>
-      <div class="panel">
-        <div class="row">
-          <div class="title">Logs</div>
-          <button id="clear">Clear</button>
+
+      <!-- Logs Card -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title" data-i18n="logs">Logs</span>
+          <button class="btn btn-secondary btn-sm" id="clear" data-i18n="clear">Clear</button>
         </div>
-        <div class="logs" id="logs"></div>
+        <div class="logs-container" id="logs"></div>
       </div>
     </div>
     <script src="./renderer.js"></script>
