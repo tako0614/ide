@@ -22,8 +22,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build web app
-        run: npm run build:web
+      - name: Build shared package
+        run: npm --workspace @deck-ide/shared run build
 
       - name: Build desktop app
         run: npm run build:desktop
