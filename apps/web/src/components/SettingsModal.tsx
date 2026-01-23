@@ -7,6 +7,11 @@ interface Settings {
   basicAuthPassword: string;
 }
 
+interface WsStats {
+  limit: number;
+  connections: { ip: string; count: number }[];
+}
+
 interface SettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -24,6 +29,11 @@ const LABEL_PASSWORD_NOTE = '※ 12文字以上推奨';
 const LABEL_CANCEL = 'キャンセル';
 const LABEL_SAVE = '保存';
 const LABEL_RESTART_NOTE = '※ 設定を保存すると、サーバーが再起動されます';
+const LABEL_WEBSOCKET = 'WebSocket設定';
+const LABEL_WS_LIMIT = '接続数上限 (IP毎)';
+const LABEL_WS_CONNECTIONS = '現在の接続数';
+const LABEL_WS_CLEAR = '全接続をクリア';
+const LABEL_WS_APPLY = '適用';
 
 export function SettingsModal({ isOpen, onClose, onSave }: SettingsModalProps) {
   const [port, setPort] = useState(8787);
@@ -31,6 +41,23 @@ export function SettingsModal({ isOpen, onClose, onSave }: SettingsModalProps) {
   const [basicAuthUser, setBasicAuthUser] = useState('');
   const [basicAuthPassword, setBasicAuthPassword] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+
+  // WebSocket settings
+  const [wsLimit, setWsLimit] = useState(1000);
+  const [wsStats, setWsStats] = useState<WsStats | null>(null);
+  const [isClearing, setIsClearing] = useState(false);
+
+  const loadWsStats = () => {
+    fetch('/api/ws/stats')
+      .then(res => res.json())
+      .then((data: WsStats) => {
+        setWsStats(data);
+        setWsLimit(data.limit);
+      })
+      .catch(err => {
+        console.error('Failed to load WS stats:', err);
+      });
+  };
 
   useEffect(() => {
     if (isOpen) {
@@ -46,8 +73,38 @@ export function SettingsModal({ isOpen, onClose, onSave }: SettingsModalProps) {
         .catch(err => {
           console.error('Failed to load settings:', err);
         });
+
+      // Load WebSocket stats
+      loadWsStats();
     }
   }, [isOpen]);
+
+  const handleWsLimitApply = async () => {
+    try {
+      await fetch('/api/ws/limit', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ limit: wsLimit })
+      });
+      loadWsStats();
+    } catch (err) {
+      console.error('Failed to set WS limit:', err);
+    }
+  };
+
+  const handleWsClear = async () => {
+    setIsClearing(true);
+    try {
+      const res = await fetch('/api/ws/clear', { method: 'POST' });
+      const data = await res.json();
+      console.log(`Cleared ${data.cleared} connections`);
+      loadWsStats();
+    } catch (err) {
+      console.error('Failed to clear WS connections:', err);
+    } finally {
+      setIsClearing(false);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -152,6 +209,61 @@ export function SettingsModal({ isOpen, onClose, onSave }: SettingsModalProps) {
                   </div>
                 </>
               )}
+            </section>
+
+            <section className="settings-section">
+              <h3 className="settings-section-title">{LABEL_WEBSOCKET}</h3>
+
+              <div className="form-group">
+                <label htmlFor="wsLimit" className="form-label">
+                  {LABEL_WS_LIMIT}
+                </label>
+                <div className="form-row">
+                  <input
+                    type="number"
+                    id="wsLimit"
+                    className="form-input"
+                    value={wsLimit}
+                    onChange={(e) => setWsLimit(Number(e.target.value))}
+                    min={1}
+                    max={10000}
+                  />
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={handleWsLimitApply}
+                  >
+                    {LABEL_WS_APPLY}
+                  </button>
+                </div>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">{LABEL_WS_CONNECTIONS}</label>
+                <div className="ws-stats">
+                  {wsStats && wsStats.connections.length > 0 ? (
+                    wsStats.connections.map(({ ip, count }) => (
+                      <div key={ip} className="ws-stat-row">
+                        <span className="ws-stat-ip">{ip}</span>
+                        <span className="ws-stat-count">{count}</span>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="ws-stat-empty">接続なし</div>
+                  )}
+                </div>
+              </div>
+
+              <div className="form-group">
+                <button
+                  type="button"
+                  className="danger-button"
+                  onClick={handleWsClear}
+                  disabled={isClearing}
+                >
+                  {isClearing ? 'クリア中...' : LABEL_WS_CLEAR}
+                </button>
+              </div>
             </section>
 
             <p className="settings-restart-note">{LABEL_RESTART_NOTE}</p>

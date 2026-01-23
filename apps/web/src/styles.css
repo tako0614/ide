@@ -732,6 +732,93 @@ textarea {
   border-left: 2px solid var(--accent);
 }
 
+.form-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.form-row .form-input {
+  flex: 1;
+}
+
+.secondary-button {
+  background: var(--bg-soft);
+  color: var(--ink);
+  border: 1px solid var(--border);
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  border-radius: 2px;
+  cursor: pointer;
+  transition: background 0.1s, border-color 0.1s;
+}
+
+.secondary-button:hover {
+  background: var(--list-hover);
+  border-color: var(--accent);
+}
+
+.danger-button {
+  background: rgba(241, 76, 76, 0.1);
+  color: #f14c4c;
+  border: 1px solid rgba(241, 76, 76, 0.3);
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  border-radius: 2px;
+  cursor: pointer;
+  transition: background 0.1s, border-color 0.1s;
+}
+
+.danger-button:hover:not(:disabled) {
+  background: rgba(241, 76, 76, 0.2);
+  border-color: #f14c4c;
+}
+
+.danger-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ws-stats {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  padding: 8px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+.ws-stat-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.ws-stat-row:not(:last-child) {
+  border-bottom: 1px solid var(--border);
+}
+
+.ws-stat-ip {
+  color: var(--ink);
+}
+
+.ws-stat-count {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.ws-stat-empty {
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+  padding: 8px;
+}
+
 /* ========================================
    File Tree
    ======================================== */

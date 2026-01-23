@@ -32,7 +32,7 @@ import { createFileRouter } from './routes/files.js';
 import { createTerminalRouter } from './routes/terminals.js';
 import { createGitRouter } from './routes/git.js';
 import { createSettingsRouter } from './routes/settings.js';
-import { setupWebSocketServer } from './websocket.js';
+import { setupWebSocketServer, getConnectionLimit, setConnectionLimit, getConnectionStats, clearAllConnections } from './websocket.js';
 
 // Request ID and logging middleware
 const requestIdMiddleware: MiddlewareHandler = async (c, next) => {
@@ -129,6 +129,28 @@ export function createServer() {
       token: generateWsToken(),
       authEnabled: isBasicAuthEnabled()
     });
+  });
+
+  // WebSocket management endpoints
+  app.get('/api/ws/stats', (c) => {
+    return c.json({
+      limit: getConnectionLimit(),
+      connections: getConnectionStats()
+    });
+  });
+
+  app.put('/api/ws/limit', async (c) => {
+    const body = await c.req.json<{ limit: number }>();
+    if (typeof body.limit !== 'number' || body.limit < 1) {
+      return c.json({ error: 'Invalid limit value' }, 400);
+    }
+    setConnectionLimit(body.limit);
+    return c.json({ limit: getConnectionLimit() });
+  });
+
+  app.post('/api/ws/clear', (c) => {
+    const closedCount = clearAllConnections();
+    return c.json({ cleared: closedCount });
   });
 
   // File routes - mount at /api to handle /api/files, /api/preview, /api/file

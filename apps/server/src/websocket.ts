@@ -11,10 +11,45 @@ import { verifyWebSocketAuth } from './middleware/auth.js';
 const MIN_TERMINAL_SIZE = 1;
 const MAX_TERMINAL_SIZE = 500;
 const MAX_MESSAGE_SIZE = 64 * 1024; // 64KB max message size
-const MAX_CONNECTIONS_PER_IP = 10;
+
+// Configurable connection limit per IP (default: 1000)
+let maxConnectionsPerIP = 1000;
 
 // Track connections per IP
 const connectionsByIP = new Map<string, Set<WebSocket>>();
+
+// Export for API access
+export function getConnectionLimit(): number {
+  return maxConnectionsPerIP;
+}
+
+export function setConnectionLimit(limit: number): void {
+  maxConnectionsPerIP = Math.max(1, Math.floor(limit));
+}
+
+export function getConnectionStats(): { ip: string; count: number }[] {
+  const stats: { ip: string; count: number }[] = [];
+  for (const [ip, connections] of connectionsByIP) {
+    stats.push({ ip, count: connections.size });
+  }
+  return stats;
+}
+
+export function clearAllConnections(): number {
+  let closedCount = 0;
+  for (const [ip, connections] of connectionsByIP) {
+    for (const socket of connections) {
+      try {
+        socket.close(1000, 'Connection cleared by admin');
+        closedCount++;
+      } catch {
+        // Socket might already be closed
+      }
+    }
+  }
+  connectionsByIP.clear();
+  return closedCount;
+}
 
 function getClientIP(req: IncomingMessage): string {
   if (TRUST_PROXY) {
@@ -36,7 +71,7 @@ function trackConnection(ip: string, socket: WebSocket): boolean {
     connections = new Set();
     connectionsByIP.set(ip, connections);
   }
-  if (connections.size >= MAX_CONNECTIONS_PER_IP) {
+  if (connections.size >= maxConnectionsPerIP) {
     return false;
   }
   connections.add(socket);
