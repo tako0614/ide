@@ -340,7 +340,7 @@ export default function App() {
     [handleDeleteTerminal]
   );
 
-  const handleToggleDeck = useCallback((deckId: string) => {
+  const handleToggleDeck = useCallback((deckId: string, shiftKey = false) => {
     setActiveDeckIds((prev) => {
       if (prev.includes(deckId)) {
         // Remove deck (but keep at least one)
@@ -348,13 +348,16 @@ export default function App() {
           return prev.filter((id) => id !== deckId);
         }
         return prev;
-      } else {
-        // Add deck (max 3 for horizontal split)
+      } else if (shiftKey) {
+        // Shift+click: Add deck for split view (max 3)
         if (prev.length < 3) {
           return [...prev, deckId];
         }
         // Replace first one if at max
         return [...prev.slice(1), deckId];
+      } else {
+        // Normal click: Replace with single deck (no split)
+        return [deckId];
       }
     });
   }, [setActiveDeckIds]);
@@ -520,8 +523,8 @@ export default function App() {
                 key={deck.id}
                 type="button"
                 className={`deck-tab ${activeDeckIds.includes(deck.id) ? 'active' : ''}`}
-                onClick={() => handleToggleDeck(deck.id)}
-                title={workspaceById.get(deck.workspaceId)?.path || deck.root}
+                onClick={(e) => handleToggleDeck(deck.id, e.shiftKey)}
+                title={`${workspaceById.get(deck.workspaceId)?.path || deck.root}\nShift+クリックで分割表示`}
               >
                 {deck.name}
               </button>

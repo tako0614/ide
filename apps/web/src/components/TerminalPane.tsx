@@ -9,6 +9,17 @@ interface TerminalPaneProps {
   gridRows: number;
 }
 
+// 実際のターミナル数に基づいて最適なグリッドを計算
+function getOptimalGrid(count: number, maxCols: number, maxRows: number) {
+  if (count <= 1) return { cols: 1, rows: 1 };
+
+  // 横優先で最小グリッドを計算
+  const cols = Math.min(count, maxCols);
+  const rows = Math.min(Math.ceil(count / cols), maxRows);
+
+  return { cols, rows };
+}
+
 export function TerminalPane({
   terminals,
   wsBase,
@@ -18,6 +29,13 @@ export function TerminalPane({
 }: TerminalPaneProps) {
   const maxTerminals = gridCols * gridRows;
   const visibleTerminals = terminals.slice(0, maxTerminals);
+
+  // 設定の範囲内で、実際のターミナル数に最適化されたグリッド
+  const { cols: optCols, rows: optRows } = getOptimalGrid(
+    visibleTerminals.length,
+    gridCols,
+    gridRows
+  );
 
   return (
     <section className="terminal-pane">
@@ -29,8 +47,8 @@ export function TerminalPane({
         <div
           className="terminal-grid"
           style={{
-            gridTemplateColumns: `repeat(${gridCols}, 1fr)`,
-            gridTemplateRows: `repeat(${gridRows}, 1fr)`,
+            gridTemplateColumns: `repeat(${optCols}, 1fr)`,
+            gridTemplateRows: `repeat(${optRows}, 1fr)`,
           }}
         >
           {visibleTerminals.map((terminal) => (
