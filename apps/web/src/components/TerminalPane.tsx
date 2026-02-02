@@ -5,17 +5,15 @@ interface TerminalPaneProps {
   terminals: TerminalSession[];
   wsBase: string;
   onDeleteTerminal: (terminalId: string) => void;
-  gridCols: number;
-  gridRows: number;
 }
 
-// 実際のターミナル数に基づいて最適なグリッドを計算
-function getOptimalGrid(count: number, maxCols: number, maxRows: number) {
+// ターミナル数に基づいて最適なグリッドを自動計算
+function getOptimalGrid(count: number) {
   if (count <= 1) return { cols: 1, rows: 1 };
 
-  // 横優先で最小グリッドを計算
-  const cols = Math.min(count, maxCols);
-  const rows = Math.min(Math.ceil(count / cols), maxRows);
+  // 正方形に近い形を目指す
+  const cols = Math.ceil(Math.sqrt(count));
+  const rows = Math.ceil(count / cols);
 
   return { cols, rows };
 }
@@ -24,18 +22,8 @@ export function TerminalPane({
   terminals,
   wsBase,
   onDeleteTerminal,
-  gridCols,
-  gridRows
 }: TerminalPaneProps) {
-  const maxTerminals = gridCols * gridRows;
-  const visibleTerminals = terminals.slice(0, maxTerminals);
-
-  // 設定の範囲内で、実際のターミナル数に最適化されたグリッド
-  const { cols: optCols, rows: optRows } = getOptimalGrid(
-    visibleTerminals.length,
-    gridCols,
-    gridRows
-  );
+  const { cols, rows } = getOptimalGrid(terminals.length);
 
   return (
     <section className="terminal-pane">
@@ -47,11 +35,11 @@ export function TerminalPane({
         <div
           className="terminal-grid"
           style={{
-            gridTemplateColumns: `repeat(${optCols}, 1fr)`,
-            gridTemplateRows: `repeat(${optRows}, 1fr)`,
+            gridTemplateColumns: `repeat(${cols}, 1fr)`,
+            gridTemplateRows: `repeat(${rows}, 1fr)`,
           }}
         >
-          {visibleTerminals.map((terminal) => (
+          {terminals.map((terminal) => (
             <TerminalTile
               key={terminal.id}
               session={terminal}
@@ -59,11 +47,6 @@ export function TerminalPane({
               onDelete={() => onDeleteTerminal(terminal.id)}
             />
           ))}
-        </div>
-      )}
-      {terminals.length > maxTerminals && (
-        <div className="terminal-overflow-badge">
-          +{terminals.length - maxTerminals}
         </div>
       )}
     </section>

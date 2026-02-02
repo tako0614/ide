@@ -68,33 +68,6 @@ export default function App() {
       initialDeckIds: initialUrlState.deckIds
     });
 
-  // Grid config state per deck
-  const [deckGridConfigs, setDeckGridConfigs] = useState<Record<string, { cols: number; rows: number }>>({});
-
-  // Load grid configs from localStorage
-  useEffect(() => {
-    const saved = localStorage.getItem('deck-grid-configs');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        setDeckGridConfigs(parsed);
-      } catch {
-        // ignore
-      }
-    }
-  }, []);
-
-  const getDeckGridConfig = useCallback((deckId: string) => {
-    return deckGridConfigs[deckId] || { cols: 2, rows: 2 };
-  }, [deckGridConfigs]);
-
-  const setDeckGridConfig = useCallback((deckId: string, cols: number, rows: number) => {
-    setDeckGridConfigs((prev) => {
-      const next = { ...prev, [deckId]: { cols, rows } };
-      localStorage.setItem('deck-grid-configs', JSON.stringify(next));
-      return next;
-    });
-  }, []);
 
   const defaultWorkspaceState = useMemo(() => createEmptyWorkspaceState(), []);
   const defaultDeckState = useMemo(() => createEmptyDeckState(), []);
@@ -549,51 +522,12 @@ export default function App() {
           activeDeckIds.map((deckId) => {
             const deck = decks.find((d) => d.id === deckId);
             const deckState = deckStates[deckId] || defaultDeckState;
-            const gridConfig = getDeckGridConfig(deckId);
             if (!deck) return null;
             return (
               <div key={deckId} className="deck-split-pane">
                 <div className="deck-split-header">
                   <span className="deck-split-title">{deck.name}</span>
                   <div className="deck-split-actions">
-                    <div className="grid-control-sm">
-                      <button
-                        type="button"
-                        className="grid-btn-sm"
-                        onClick={() => setDeckGridConfig(deckId, Math.max(1, gridConfig.cols - 1), gridConfig.rows)}
-                        disabled={gridConfig.cols <= 1}
-                      >
-                        −
-                      </button>
-                      <span className="grid-value-sm">{gridConfig.cols}</span>
-                      <button
-                        type="button"
-                        className="grid-btn-sm"
-                        onClick={() => setDeckGridConfig(deckId, Math.min(6, gridConfig.cols + 1), gridConfig.rows)}
-                        disabled={gridConfig.cols >= 6}
-                      >
-                        +
-                      </button>
-                      <span className="grid-separator-sm">×</span>
-                      <button
-                        type="button"
-                        className="grid-btn-sm"
-                        onClick={() => setDeckGridConfig(deckId, gridConfig.cols, Math.max(1, gridConfig.rows - 1))}
-                        disabled={gridConfig.rows <= 1}
-                      >
-                        −
-                      </button>
-                      <span className="grid-value-sm">{gridConfig.rows}</span>
-                      <button
-                        type="button"
-                        className="grid-btn-sm"
-                        onClick={() => setDeckGridConfig(deckId, gridConfig.cols, Math.min(6, gridConfig.rows + 1))}
-                        disabled={gridConfig.rows >= 6}
-                      >
-                        +
-                      </button>
-                    </div>
-                    <span className="deck-split-divider" />
                     <button
                       type="button"
                       className="topbar-btn-sm"
@@ -624,8 +558,6 @@ export default function App() {
                   terminals={deckState.terminals}
                   wsBase={wsBase}
                   onDeleteTerminal={(terminalId) => handleTerminalDeleteForDeck(deckId, terminalId)}
-                  gridCols={gridConfig.cols}
-                  gridRows={gridConfig.rows}
                 />
               </div>
             );
