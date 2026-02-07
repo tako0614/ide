@@ -1,14 +1,17 @@
 {
   "name": "deck-ide-desktop",
-  "description": "Deck IDE server manager for Windows",
+  "description": "Deck IDE server manager",
   "author": "Deck IDE",
   "private": true,
-  "version": "2.9.0",
+  "version": "2.9.1",
   "main": "src/main.cjs",
   "scripts": {
     "dev": "electron .",
     "start": "electron .",
-    "build": "node scripts/prepare.cjs && electron-builder --win --x64"
+    "build": "node scripts/prepare.cjs && electron-builder",
+    "build:win": "node scripts/prepare.cjs && electron-builder --win --x64",
+    "build:mac": "node scripts/prepare.cjs && electron-builder --mac --x64 --arm64",
+    "build:linux": "node scripts/prepare.cjs && electron-builder --linux --x64"
   },
   "dependencies": {
     "@hono/node-server": "^1.12.2",
@@ -57,10 +60,24 @@
       "repo": "ide"
     },
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "artifactName": "Deck-IDE-Setup-${version}.${ext}"
     },
     "nsis": {
-      "artifactName": "Deck-IDE-Setup-${version}.${ext}"
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "mac": {
+      "target": [
+        { "target": "dmg", "arch": ["x64", "arm64"] }
+      ],
+      "artifactName": "Deck-IDE-${version}-${arch}.${ext}",
+      "category": "public.app-category.developer-tools"
+    },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "artifactName": "Deck-IDE-${version}-${arch}.${ext}",
+      "category": "Development"
     }
   }
 }
