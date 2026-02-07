@@ -35,8 +35,8 @@ export function TerminalPane({
         <div
           className="terminal-grid"
           style={{
-            gridTemplateColumns: `repeat(${cols}, 1fr)`,
-            gridTemplateRows: `repeat(${rows}, 1fr)`,
+            gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
+            gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
           }}
         >
           {terminals.map((terminal) => (
