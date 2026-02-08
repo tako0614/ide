@@ -563,6 +563,8 @@ export function streamAgentSession(
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
+        let currentEvent = '';
+        let currentData = '';
 
         while (!aborted) {
           const { done, value } = await reader.read();
@@ -571,9 +573,6 @@ export function streamAgentSession(
           buffer += decoder.decode(value, { stream: true });
           const lines = buffer.split('\n');
           buffer = lines.pop() || '';
-
-          let currentEvent = '';
-          let currentData = '';
 
           for (const line of lines) {
             if (line.startsWith('event:')) {

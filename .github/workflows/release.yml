@@ -10,7 +10,17 @@ permissions:
 
 jobs:
   build:
-    runs-on: windows-latest
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            build_cmd: npm run build:desktop:win
+          - os: macos-latest
+            build_cmd: npm run build:desktop:mac
+          - os: ubuntu-latest
+            build_cmd: npm run build:desktop:linux
+
+    runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout
@@ -29,15 +39,58 @@ jobs:
         run: npm --workspace @deck-ide/shared run build
 
       - name: Build desktop app
-        run: npm run build:desktop
+        run: ${{ matrix.build_cmd }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Windows artifacts
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: |
+            apps/desktop/dist/*.exe
+            apps/desktop/dist/latest.yml
+
+      - name: Upload macOS artifacts
+        if: matrix.os == 'macos-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-macos
+          path: |
+            apps/desktop/dist/*.dmg
+            apps/desktop/dist/latest-mac.yml
+
+      - name: Upload Linux artifacts
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: |
+            apps/desktop/dist/*.AppImage
+            apps/desktop/dist/*.deb
+            apps/desktop/dist/latest-linux.yml
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: find artifacts -type f
 
       - name: Upload to Release
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            apps/desktop/dist/*.exe
-            apps/desktop/dist/*.yml
+            artifacts/**/*.exe
+            artifacts/**/*.dmg
+            artifacts/**/*.AppImage
+            artifacts/**/*.deb
+            artifacts/**/*.yml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

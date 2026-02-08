@@ -12,6 +12,9 @@
     "build:server": "npm --workspace apps/server run build",
     "build:web": "npm --workspace apps/web run build",
     "build:desktop": "npm run build:web && npm run build:server && npm --workspace apps/desktop run build",
+    "build:desktop:win": "npm run build:web && npm run build:server && npm --workspace apps/desktop run build:win",
+    "build:desktop:mac": "npm run build:web && npm run build:server && npm --workspace apps/desktop run build:mac",
+    "build:desktop:linux": "npm run build:web && npm run build:server && npm --workspace apps/desktop run build:linux",
     "build": "npm run build:web",
     "serve": "npm run build:web && npm run build:server && npm --workspace apps/server run serve"
   }
