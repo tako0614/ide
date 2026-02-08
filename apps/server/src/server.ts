@@ -112,7 +112,7 @@ export function createServer() {
   app.route('/api/decks', createDeckRouter(db, workspaces, decks));
   const { router: terminalRouter, restoreTerminals } = createTerminalRouter(db, decks, terminals);
   app.route('/api/terminals', terminalRouter);
-  const { router: agentRouter, abortAllAgents } = createAgentRouter(db);
+  const { router: agentRouter, abortAllAgents } = createAgentRouter(db, workspaces);
   app.route('/api/agents', agentRouter);
   app.route('/api/git', createGitRouter(workspaces));
 

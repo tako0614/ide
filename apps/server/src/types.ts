@@ -37,6 +37,7 @@ export interface AgentSessionData {
   messages: AgentMessage[];
   createdAt: string;
   totalCostUsd?: number;
+  maxCostUsd?: number;
   durationMs?: number;
   error?: string;
 }

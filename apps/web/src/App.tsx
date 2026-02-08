@@ -639,8 +639,8 @@ export default function App() {
         isOpen={isAgentModalOpen}
         provider={agentModalProvider}
         workspaces={workspaces}
-        onSubmit={(prompt, cwd) => {
-          handleCreateAgent({ provider: agentModalProvider, prompt, cwd });
+        onSubmit={(prompt, cwd, maxCostUsd) => {
+          handleCreateAgent({ provider: agentModalProvider, prompt, cwd, maxCostUsd });
           setIsAgentModalOpen(false);
         }}
         onClose={() => setIsAgentModalOpen(false)}

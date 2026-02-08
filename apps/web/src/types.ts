@@ -77,4 +77,5 @@ export interface CreateAgentRequest {
   provider: AgentProvider;
   prompt: string;
   cwd: string;
+  maxCostUsd?: number;
 }

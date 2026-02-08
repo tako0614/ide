@@ -1,10 +1,11 @@
 import crypto from 'node:crypto';
+import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import type { DatabaseSync } from 'node:sqlite';
-import type { AgentSessionData, AgentMessage } from '../types.js';
-import { MAX_CONCURRENT_AGENTS } from '../config.js';
+import type { AgentSessionData, AgentMessage, Workspace } from '../types.js';
+import { MAX_CONCURRENT_AGENTS, MAX_AGENT_COST_USD, MAX_AGENT_MESSAGES, MAX_AGENT_PROMPT_LENGTH } from '../config.js';
 import {
   saveAgentSession,
   updateAgentSession,
@@ -22,7 +23,7 @@ interface RunningAgent {
 const SESSION_TTL_MS = 60 * 60 * 1000;
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
 
-export function createAgentRouter(db: DatabaseSync) {
+export function createAgentRouter(db: DatabaseSync, workspaces: Map<string, Workspace>) {
   const router = new Hono();
   const runningAgents = new Map<string, RunningAgent>();
 
@@ -57,11 +58,14 @@ export function createAgentRouter(db: DatabaseSync) {
     return runningAgents.size;
   }
 
-  function broadcastMessage(agentId: string, event: string, data: unknown) {
+  function broadcastMessage(agentId: string, event: string, data: unknown): Promise<void> {
     const running = runningAgents.get(agentId);
     if (running) {
       running.emitter.emit('sse', { event, data });
+      // Give SSE write queue time to flush before caller proceeds
+      return new Promise((resolve) => setImmediate(resolve));
     }
+    return Promise.resolve();
   }
 
   function formatSdkError(provider: string, err: unknown): string {
@@ -77,57 +81,76 @@ export function createAgentRouter(db: DatabaseSync) {
 
   // Parse Claude SDK streamed messages into AgentMessage[]
   // SDK message types: system (init), assistant (message.content[]), user (tool results), result (final)
-  function parseClaudeMessage(sdkMsg: Record<string, unknown>): AgentMessage | null {
+  // Returns an array because a single assistant message can contain both text and tool_use blocks
+  function parseClaudeMessages(sdkMsg: Record<string, unknown>): AgentMessage[] {
     const msgType = String(sdkMsg.type || '');
 
     if (msgType === 'assistant') {
       // assistant message has message.content[] array
       const inner = sdkMsg.message as Record<string, unknown> | undefined;
       const contentArr = inner?.content as Array<Record<string, unknown>> | undefined;
-      if (!contentArr || contentArr.length === 0) return null;
+      if (!contentArr || contentArr.length === 0) return [];
 
-      const parts: string[] = [];
-      let toolName: string | undefined;
+      const messages: AgentMessage[] = [];
+      const textParts: string[] = [];
 
       for (const block of contentArr) {
         if (block.type === 'text' && typeof block.text === 'string') {
-          parts.push(block.text);
+          textParts.push(block.text);
         } else if (block.type === 'tool_use') {
-          toolName = String(block.name || 'tool');
+          // Flush accumulated text as an assistant message first
+          if (textParts.length > 0) {
+            messages.push({
+              id: crypto.randomUUID(),
+              role: 'assistant',
+              content: textParts.join('\n'),
+              timestamp: new Date().toISOString()
+            });
+            textParts.length = 0;
+          }
+          const toolName = String(block.name || 'tool');
           const input = block.input ? JSON.stringify(block.input) : '';
-          parts.push(`[${toolName}] ${input}`);
+          messages.push({
+            id: crypto.randomUUID(),
+            role: 'tool',
+            content: `[${toolName}] ${input}`,
+            timestamp: new Date().toISOString(),
+            toolName
+          });
         }
       }
 
-      if (parts.length === 0) return null;
+      // Flush remaining text
+      if (textParts.length > 0) {
+        messages.push({
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: textParts.join('\n'),
+          timestamp: new Date().toISOString()
+        });
+      }
 
-      return {
-        id: crypto.randomUUID(),
-        role: toolName ? 'tool' : 'assistant',
-        content: parts.join('\n'),
-        timestamp: new Date().toISOString(),
-        toolName
-      };
+      return messages;
     }
 
     if (msgType === 'user') {
       // user message = tool results, skip to avoid noise
-      return null;
+      return [];
     }
 
     if (msgType === 'result') {
       const result = sdkMsg.result;
-      if (!result) return null;
-      return {
+      if (!result) return [];
+      return [{
         id: crypto.randomUUID(),
         role: 'system',
         content: typeof result === 'string' ? result : JSON.stringify(result),
         timestamp: new Date().toISOString()
-      };
+      }];
     }
 
     // system/init messages - skip
-    return null;
+    return [];
   }
 
   async function runClaudeAgent(agent: RunningAgent) {
@@ -137,7 +160,7 @@ export function createAgentRouter(db: DatabaseSync) {
     try {
       session.status = 'running';
       updateAgentSession(db, session.id, { status: 'running' });
-      broadcastMessage(session.id, 'status', { status: 'running' });
+      await broadcastMessage(session.id, 'status', { status: 'running' });
 
       // Dynamic import of Claude Agent SDK
       let queryFn: (opts: unknown) => AsyncIterable<unknown>;
@@ -171,11 +194,37 @@ export function createAgentRouter(db: DatabaseSync) {
           if (typeof sdkMsg.duration_ms === 'number') resultDuration = sdkMsg.duration_ms;
         }
 
-        const agentMsg = parseClaudeMessage(sdkMsg);
-        if (!agentMsg) continue;
+        // Cost limit check
+        if (resultCost != null) {
+          const costLimit = session.maxCostUsd ?? MAX_AGENT_COST_USD;
+          if (resultCost >= costLimit) {
+            abortController.abort();
+            session.status = 'error';
+            session.error = `Cost limit exceeded ($${resultCost.toFixed(2)} >= $${costLimit.toFixed(2)})`;
+            session.totalCostUsd = resultCost;
+            session.durationMs = Date.now() - startTime;
+            updateAgentSession(db, session.id, {
+              status: 'error',
+              error: session.error,
+              totalCostUsd: resultCost,
+              messages: session.messages,
+              durationMs: session.durationMs
+            });
+            await broadcastMessage(session.id, 'status', { status: 'error', error: session.error });
+            break;
+          }
+        }
 
-        session.messages.push(agentMsg);
-        broadcastMessage(session.id, 'message', agentMsg);
+        const agentMsgs = parseClaudeMessages(sdkMsg);
+        for (const agentMsg of agentMsgs) {
+          session.messages.push(agentMsg);
+          await broadcastMessage(session.id, 'message', agentMsg);
+        }
+
+        // Trim old messages if exceeding limit (keep first message for context)
+        if (session.messages.length > MAX_AGENT_MESSAGES) {
+          session.messages = [session.messages[0], ...session.messages.slice(-(MAX_AGENT_MESSAGES - 1))];
+        }
 
         // Persist periodically
         if (session.messages.length % 5 === 0) {
@@ -183,7 +232,12 @@ export function createAgentRouter(db: DatabaseSync) {
         }
       }
 
-      if (!abortController.signal.aborted) {
+      if (abortController.signal.aborted) {
+        // Abort didn't throw - update status here
+        session.status = 'aborted';
+        updateAgentSession(db, session.id, { status: 'aborted', messages: session.messages });
+        await broadcastMessage(session.id, 'status', { status: 'aborted' });
+      } else {
         session.status = 'completed';
         session.durationMs = resultDuration ?? (Date.now() - startTime);
         session.totalCostUsd = resultCost;
@@ -193,7 +247,7 @@ export function createAgentRouter(db: DatabaseSync) {
           durationMs: session.durationMs,
           totalCostUsd: session.totalCostUsd
         });
-        broadcastMessage(session.id, 'status', {
+        await broadcastMessage(session.id, 'status', {
           status: 'completed',
           durationMs: session.durationMs,
           totalCostUsd: session.totalCostUsd
@@ -203,7 +257,7 @@ export function createAgentRouter(db: DatabaseSync) {
       if (abortController.signal.aborted) {
         session.status = 'aborted';
         updateAgentSession(db, session.id, { status: 'aborted', messages: session.messages });
-        broadcastMessage(session.id, 'status', { status: 'aborted' });
+        await broadcastMessage(session.id, 'status', { status: 'aborted' });
       } else {
         const errorMsg = formatSdkError('claude', err);
         session.status = 'error';
@@ -215,11 +269,14 @@ export function createAgentRouter(db: DatabaseSync) {
           messages: session.messages,
           durationMs: session.durationMs
         });
-        broadcastMessage(session.id, 'status', { status: 'error', error: errorMsg });
+        await broadcastMessage(session.id, 'status', { status: 'error', error: errorMsg });
       }
     } finally {
       runningAgents.delete(session.id);
-      sessions.set(session.id, session);
+      // Only persist if session wasn't deleted externally (by DELETE handler)
+      if (sessions.has(session.id)) {
+        sessions.set(session.id, session);
+      }
     }
   }
 
@@ -230,7 +287,7 @@ export function createAgentRouter(db: DatabaseSync) {
     try {
       session.status = 'running';
       updateAgentSession(db, session.id, { status: 'running' });
-      broadcastMessage(session.id, 'status', { status: 'running' });
+      await broadcastMessage(session.id, 'status', { status: 'running' });
 
       // Dynamic import of Codex SDK
       let CodexClass: new () => { startThread(): { run(prompt: string): Promise<unknown> } };
@@ -245,31 +302,41 @@ export function createAgentRouter(db: DatabaseSync) {
       const thread = codex.startThread();
       const result = await thread.run(session.prompt);
 
-      if (abortController.signal.aborted) return;
+      if (abortController.signal.aborted) {
+        // Abort didn't throw - update status here
+        session.status = 'aborted';
+        updateAgentSession(db, session.id, { status: 'aborted', messages: session.messages });
+        await broadcastMessage(session.id, 'status', { status: 'aborted' });
+      } else {
+        const agentMsg: AgentMessage = {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: typeof result === 'string' ? result : JSON.stringify(result),
+          timestamp: new Date().toISOString()
+        };
 
-      const agentMsg: AgentMessage = {
-        id: crypto.randomUUID(),
-        role: 'assistant',
-        content: typeof result === 'string' ? result : JSON.stringify(result),
-        timestamp: new Date().toISOString()
-      };
+        session.messages.push(agentMsg);
+        await broadcastMessage(session.id, 'message', agentMsg);
 
-      session.messages.push(agentMsg);
-      broadcastMessage(session.id, 'message', agentMsg);
+        // Trim old messages if exceeding limit (keep first message for context)
+        if (session.messages.length > MAX_AGENT_MESSAGES) {
+          session.messages = [session.messages[0], ...session.messages.slice(-(MAX_AGENT_MESSAGES - 1))];
+        }
 
-      session.status = 'completed';
-      session.durationMs = Date.now() - startTime;
-      updateAgentSession(db, session.id, {
-        status: 'completed',
-        messages: session.messages,
-        durationMs: session.durationMs
-      });
-      broadcastMessage(session.id, 'status', { status: 'completed', durationMs: session.durationMs });
+        session.status = 'completed';
+        session.durationMs = Date.now() - startTime;
+        updateAgentSession(db, session.id, {
+          status: 'completed',
+          messages: session.messages,
+          durationMs: session.durationMs
+        });
+        await broadcastMessage(session.id, 'status', { status: 'completed', durationMs: session.durationMs });
+      }
     } catch (err: unknown) {
       if (abortController.signal.aborted) {
         session.status = 'aborted';
         updateAgentSession(db, session.id, { status: 'aborted', messages: session.messages });
-        broadcastMessage(session.id, 'status', { status: 'aborted' });
+        await broadcastMessage(session.id, 'status', { status: 'aborted' });
       } else {
         const errorMsg = formatSdkError('codex', err);
         session.status = 'error';
@@ -281,11 +348,14 @@ export function createAgentRouter(db: DatabaseSync) {
           messages: session.messages,
           durationMs: session.durationMs
         });
-        broadcastMessage(session.id, 'status', { status: 'error', error: errorMsg });
+        await broadcastMessage(session.id, 'status', { status: 'error', error: errorMsg });
       }
     } finally {
       runningAgents.delete(session.id);
-      sessions.set(session.id, session);
+      // Only persist if session wasn't deleted externally (by DELETE handler)
+      if (sessions.has(session.id)) {
+        sessions.set(session.id, session);
+      }
     }
   }
 
@@ -304,8 +374,8 @@ export function createAgentRouter(db: DatabaseSync) {
       );
     }
 
-    const body = await c.req.json<{ provider: string; prompt: string; cwd: string }>();
-    const { provider, prompt, cwd } = body;
+    const body = await c.req.json<{ provider: string; prompt: string; cwd: string; maxCostUsd?: number }>();
+    const { provider, prompt, cwd, maxCostUsd } = body;
 
     if (!provider || !prompt || !cwd) {
       return c.json({ error: 'provider, prompt, and cwd are required' }, 400);
@@ -315,14 +385,30 @@ export function createAgentRouter(db: DatabaseSync) {
       return c.json({ error: 'provider must be "claude" or "codex"' }, 400);
     }
 
+    // Validate prompt length
+    if (prompt.length > MAX_AGENT_PROMPT_LENGTH) {
+      return c.json({ error: `Prompt too long (max ${MAX_AGENT_PROMPT_LENGTH} chars)` }, 400);
+    }
+
+    // Validate cwd is within a registered workspace (path traversal protection)
+    const resolvedCwd = path.resolve(cwd);
+    const validCwd = Array.from(workspaces.values()).some((w) => {
+      const resolvedWorkspacePath = path.resolve(w.path);
+      return resolvedCwd === resolvedWorkspacePath || resolvedCwd.startsWith(resolvedWorkspacePath + path.sep);
+    });
+    if (!validCwd) {
+      return c.json({ error: 'cwd must be within a registered workspace' }, 400);
+    }
+
     const session: AgentSessionData = {
       id: crypto.randomUUID(),
       provider: provider as AgentSessionData['provider'],
       prompt,
-      cwd,
+      cwd: resolvedCwd,
       status: 'idle',
       messages: [],
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      maxCostUsd: maxCostUsd != null ? maxCostUsd : MAX_AGENT_COST_USD
     };
 
     sessions.set(session.id, session);
@@ -407,6 +493,7 @@ export function createAgentRouter(db: DatabaseSync) {
       await new Promise<void>((resolve) => {
         const checkDone = () => {
           if (!runningAgents.has(id)) {
+            clearInterval(interval);
             running.emitter.off('sse', onSSE);
             resolve();
           }

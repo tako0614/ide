@@ -79,11 +79,19 @@ export function initializeDatabase(db: DatabaseSync): void {
       status TEXT NOT NULL DEFAULT 'idle',
       messages TEXT NOT NULL DEFAULT '[]',
       total_cost_usd REAL,
+      max_cost_usd REAL,
       duration_ms INTEGER,
       error TEXT,
       created_at TEXT NOT NULL
     );
   `);
+
+  // Migration: add max_cost_usd column if missing (existing databases)
+  try {
+    db.exec('ALTER TABLE agent_sessions ADD COLUMN max_cost_usd REAL');
+  } catch {
+    // Column already exists
+  }
 
   // Create indexes for better query performance
   db.exec(`CREATE INDEX IF NOT EXISTS idx_decks_workspace_id ON decks(workspace_id);`);
@@ -202,7 +210,7 @@ export function saveAllTerminalBuffers(
 // Agent session persistence functions
 export function saveAgentSession(db: DatabaseSync, session: AgentSessionData): void {
   const stmt = db.prepare(
-    'INSERT OR REPLACE INTO agent_sessions (id, provider, prompt, cwd, status, messages, total_cost_usd, duration_ms, error, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    'INSERT OR REPLACE INTO agent_sessions (id, provider, prompt, cwd, status, messages, total_cost_usd, max_cost_usd, duration_ms, error, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
   );
   stmt.run(
     session.id,
@@ -212,6 +220,7 @@ export function saveAgentSession(db: DatabaseSync, session: AgentSessionData): v
     session.status,
     JSON.stringify(session.messages),
     session.totalCostUsd ?? null,
+    session.maxCostUsd ?? null,
     session.durationMs ?? null,
     session.error ?? null,
     session.createdAt
@@ -266,6 +275,7 @@ export function loadAgentSessions(db: DatabaseSync): AgentSessionData[] {
     messages: JSON.parse(String(row.messages || '[]')),
     createdAt: String(row.created_at),
     totalCostUsd: row.total_cost_usd != null ? Number(row.total_cost_usd) : undefined,
+    maxCostUsd: row.max_cost_usd != null ? Number(row.max_cost_usd) : undefined,
     durationMs: row.duration_ms != null ? Number(row.duration_ms) : undefined,
     error: row.error ? String(row.error) : undefined
   }));

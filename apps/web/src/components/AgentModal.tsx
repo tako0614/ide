@@ -5,7 +5,7 @@ interface AgentModalProps {
   isOpen: boolean;
   provider: AgentProvider;
   workspaces: Workspace[];
-  onSubmit: (prompt: string, cwd: string) => void;
+  onSubmit: (prompt: string, cwd: string, maxCostUsd: number) => void;
   onClose: () => void;
 }
 
@@ -18,6 +18,7 @@ export function AgentModal({
 }: AgentModalProps) {
   const [prompt, setPrompt] = useState('');
   const [cwd, setCwd] = useState(workspaces[0]?.path || '');
+  const [maxCostUsd, setMaxCostUsd] = useState(5);
 
   useEffect(() => {
     if (isOpen && workspaces.length > 0 && !cwd) {
@@ -34,7 +35,7 @@ export function AgentModal({
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
     if (!prompt.trim()) return;
-    onSubmit(prompt.trim(), cwd);
+    onSubmit(prompt.trim(), cwd, maxCostUsd);
     setPrompt('');
   };
 
@@ -70,6 +71,17 @@ export function AgentModal({
               </option>
             ))}
           </select>
+        </label>
+        <label className="field">
+          <span>{'\u30b3\u30b9\u30c8\u4e0a\u9650 (USD)'}</span>
+          <input
+            type="number"
+            min="0.1"
+            max="100"
+            step="0.1"
+            value={maxCostUsd}
+            onChange={(event) => setMaxCostUsd(Number(event.target.value))}
+          />
         </label>
         <div className="modal-actions">
           <button type="button" className="ghost-button" onClick={onClose}>
