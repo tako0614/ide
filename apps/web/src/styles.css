@@ -523,7 +523,8 @@ textarea {
 }
 
 .field input,
-.field select {
+.field select,
+.field textarea {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 2px;
@@ -534,7 +535,8 @@ textarea {
 }
 
 .field input:focus,
-.field select:focus {
+.field select:focus,
+.field textarea:focus {
   outline: none;
   border-color: var(--focus-border);
 }
@@ -2522,6 +2524,217 @@ input:focus-visible {
 }
 
 /* ========================================
+   Agent View
+   ======================================== */
+
+/* Agent Pane - mirrors terminal-pane */
+.agent-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 4px;
+}
+
+.agent-grid {
+  display: grid;
+  gap: 4px;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.agent-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-soft);
+  border: 1px dashed var(--border);
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* Agent Tile - mirrors terminal-tile */
+.agent-tile {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel);
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.agent-tile-header {
+  display: flex;
+  align-items: center;
+  padding: 6px 10px;
+  font-size: 12px;
+  background: var(--bg-soft);
+  border-bottom: 1px solid var(--border);
+  gap: 8px;
+}
+
+.agent-tile-prompt {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--ink);
+}
+
+.agent-tile-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+/* Provider badges */
+.agent-provider-badge {
+  font-size: 11px;
+  font-weight: 700;
+  font-family: 'JetBrains Mono', monospace;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.agent-provider-badge.claude {
+  color: #d97757;
+  background: rgba(217, 119, 87, 0.15);
+}
+
+.agent-provider-badge.codex {
+  color: #00a86b;
+  background: rgba(0, 168, 107, 0.15);
+}
+
+/* Status dots */
+.agent-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--muted);
+}
+
+.agent-status-dot.idle {
+  background: var(--muted);
+}
+
+.agent-status-dot.running {
+  background: #4ec9b0;
+  animation: agent-pulse 1.5s infinite;
+}
+
+.agent-status-dot.completed {
+  background: #73c991;
+}
+
+.agent-status-dot.error {
+  background: #f14c4c;
+}
+
+.agent-status-dot.aborted {
+  background: #cca700;
+}
+
+@keyframes agent-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* Messages */
+.agent-msg {
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.agent-msg:last-of-type {
+  border-bottom: none;
+}
+
+.agent-msg-user {
+  color: var(--accent);
+}
+
+.agent-msg-assistant {
+  color: var(--ink);
+}
+
+.agent-msg-tool {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.agent-msg-system {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.agent-msg-error {
+  color: #f14c4c;
+}
+
+.agent-msg-text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.agent-tool-name {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 2px;
+}
+
+.agent-cost {
+  font-size: 10px;
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+/* Agent Modal extras */
+.agent-prompt-input {
+  min-height: 80px;
+  resize: vertical;
+}
+
+.agent-btn-claude {
+  background: #d97757;
+  border-color: #d97757;
+}
+
+.agent-btn-claude:hover:not(:disabled) {
+  background: #c5684a;
+}
+
+.agent-btn-codex {
+  background: #00a86b;
+  border-color: #00a86b;
+}
+
+.agent-btn-codex:hover:not(:disabled) {
+  background: #009960;
+}
+
+/* ========================================
    Responsive
    ======================================== */
 
@@ -2580,7 +2793,8 @@ input:focus-visible {
   }
 
   /* On small screens, stack terminals vertically but stay within viewport */
-  .terminal-grid {
+  .terminal-grid,
+  .agent-grid {
     grid-template-columns: 1fr !important;
     overflow: hidden;
   }

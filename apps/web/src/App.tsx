@@ -8,6 +8,8 @@ import { SideNav } from './components/SideNav';
 import { SourceControl } from './components/SourceControl';
 import { StatusMessage } from './components/StatusMessage';
 import { TerminalPane } from './components/TerminalPane';
+import { AgentPane } from './components/AgentPane';
+import { AgentModal } from './components/AgentModal';
 import { WorkspaceList } from './components/WorkspaceList';
 import { WorkspaceModal } from './components/WorkspaceModal';
 import { getConfig, getWsBase } from './api';
@@ -17,7 +19,8 @@ import { useWorkspaces } from './hooks/useWorkspaces';
 import { useDecks } from './hooks/useDecks';
 import { useFileOperations } from './hooks/useFileOperations';
 import { useGitState } from './hooks/useGitState';
-import type { AppView, WorkspaceMode, SidebarPanel } from './types';
+import { useAgents } from './hooks/useAgents';
+import type { AppView, WorkspaceMode, SidebarPanel, AgentProvider } from './types';
 import {
   DEFAULT_ROOT_FALLBACK,
   SAVED_MESSAGE_TIMEOUT,
@@ -43,6 +46,8 @@ export default function App() {
   const [isWorkspaceModalOpen, setIsWorkspaceModalOpen] = useState(false);
   const [isDeckModalOpen, setIsDeckModalOpen] = useState(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+  const [isAgentModalOpen, setIsAgentModalOpen] = useState(false);
+  const [agentModalProvider, setAgentModalProvider] = useState<AgentProvider>('claude');
   const [sidebarPanel, setSidebarPanel] = useState<SidebarPanel>('files');
 
   const { workspaceStates, setWorkspaceStates, updateWorkspaceState, initializeWorkspaceStates } =
@@ -68,6 +73,7 @@ export default function App() {
       initialDeckIds: initialUrlState.deckIds
     });
 
+  const { sessions: agentSessions, handleCreateAgent, handleDeleteAgent } = useAgents({ setStatusMessage });
 
   const defaultWorkspaceState = useMemo(() => createEmptyWorkspaceState(), []);
   const defaultDeckState = useMemo(() => createEmptyDeckState(), []);
@@ -567,6 +573,36 @@ export default function App() {
     </div>
   );
 
+  const agentView = (
+    <div className="terminal-layout">
+      <div className="terminal-topbar">
+        <div className="topbar-left">
+          <button
+            type="button"
+            className="topbar-btn-sm topbar-btn-claude"
+            onClick={() => {
+              if (workspaces.length === 0) { setStatusMessage(MESSAGE_WORKSPACE_REQUIRED); return; }
+              setAgentModalProvider('claude'); setIsAgentModalOpen(true);
+            }}
+          >
+            + Claude
+          </button>
+          <button
+            type="button"
+            className="topbar-btn-sm topbar-btn-codex"
+            onClick={() => {
+              if (workspaces.length === 0) { setStatusMessage(MESSAGE_WORKSPACE_REQUIRED); return; }
+              setAgentModalProvider('codex'); setIsAgentModalOpen(true);
+            }}
+          >
+            + Codex
+          </button>
+        </div>
+      </div>
+      <AgentPane sessions={agentSessions} onDeleteAgent={handleDeleteAgent} />
+    </div>
+  );
+
   return (
     <div className="app" data-view={view}>
       <SideNav
@@ -579,6 +615,7 @@ export default function App() {
       <main className="main">
         {view === 'workspace' && workspaceView}
         {view === 'terminal' && terminalView}
+        {view === 'agent' && agentView}
       </main>
       <StatusMessage message={statusMessage} />
       <WorkspaceModal
@@ -597,6 +634,16 @@ export default function App() {
         isOpen={isSettingsModalOpen}
         onClose={() => setIsSettingsModalOpen(false)}
         onSave={handleSaveSettings}
+      />
+      <AgentModal
+        isOpen={isAgentModalOpen}
+        provider={agentModalProvider}
+        workspaces={workspaces}
+        onSubmit={(prompt, cwd) => {
+          handleCreateAgent({ provider: agentModalProvider, prompt, cwd });
+          setIsAgentModalOpen(false);
+        }}
+        onClose={() => setIsAgentModalOpen(false)}
       />
     </div>
   );
