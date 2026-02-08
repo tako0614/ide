@@ -34,6 +34,7 @@ export const MAX_FILE_SIZE = Number(process.env.MAX_FILE_SIZE || 10 * 1024 * 102
 export const TERMINAL_BUFFER_LIMIT = Number(process.env.TERMINAL_BUFFER_LIMIT || 50000);
 export const MAX_REQUEST_BODY_SIZE = Number(process.env.MAX_REQUEST_BODY_SIZE || 1024 * 1024); // 1MB default
 export const TRUST_PROXY = process.env.TRUST_PROXY === 'true'; // Only trust proxy headers if explicitly enabled
+export const MAX_CONCURRENT_AGENTS = Number(process.env.MAX_CONCURRENT_AGENTS || 5);
 
 // In packaged app: server is at app.asar.unpacked/server/, web is at app.asar.unpacked/web/dist/
 // In development: server is at apps/server/dist/, web is at apps/web/dist/

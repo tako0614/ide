@@ -21,6 +21,9 @@ export const MESSAGE_DUPLICATE_WORKSPACE = '同じパスのワークスペース
 export const MESSAGE_WORKSPACE_REQUIRED = 'デッキを作成する前にワークスペースを追加してください。';
 export const MESSAGE_SELECT_WORKSPACE = 'ワークスペースを選択してください。';
 export const MESSAGE_SELECT_DECK = 'デッキを選択してください。';
+export const MESSAGE_AGENT_FETCH_ERROR = 'エージェントセッションを取得できませんでした';
+export const MESSAGE_AGENT_START_ERROR = 'エージェントの開始に失敗しました';
+export const MESSAGE_AGENT_DELETE_ERROR = 'エージェントの削除に失敗しました';
 
 // Timing constants
 export const SAVED_MESSAGE_TIMEOUT = 2000;

@@ -32,6 +32,7 @@ import { createFileRouter } from './routes/files.js';
 import { createTerminalRouter } from './routes/terminals.js';
 import { createGitRouter } from './routes/git.js';
 import { createSettingsRouter } from './routes/settings.js';
+import { createAgentRouter } from './routes/agents.js';
 import { setupWebSocketServer, getConnectionLimit, setConnectionLimit, getConnectionStats, clearAllConnections } from './websocket.js';
 
 // Request ID and logging middleware
@@ -111,6 +112,8 @@ export function createServer() {
   app.route('/api/decks', createDeckRouter(db, workspaces, decks));
   const { router: terminalRouter, restoreTerminals } = createTerminalRouter(db, decks, terminals);
   app.route('/api/terminals', terminalRouter);
+  const { router: agentRouter, abortAllAgents } = createAgentRouter(db);
+  app.route('/api/agents', agentRouter);
   app.route('/api/git', createGitRouter(workspaces));
 
   // Restore persisted terminals
@@ -193,8 +196,9 @@ export function createServer() {
     console.log(`  - Environment: ${NODE_ENV}`);
   });
 
-  // Graceful shutdown handler - save terminal buffers
+  // Graceful shutdown handler - save terminal buffers and abort agents
   const saveTerminalBuffersOnShutdown = () => {
+    abortAllAgents();
     if (terminals.size > 0) {
       console.log(`[SHUTDOWN] Saving ${terminals.size} terminal buffer(s)...`);
       saveAllTerminalBuffers(db, terminals);

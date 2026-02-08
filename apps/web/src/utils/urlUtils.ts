@@ -2,7 +2,7 @@
  * URL and routing utilities
  */
 
-type AppView = 'workspace' | 'terminal';
+type AppView = 'workspace' | 'terminal' | 'agent';
 type WorkspaceMode = 'list' | 'editor';
 
 export type UrlState = {
@@ -30,7 +30,7 @@ export function parseUrlState(): UrlState {
   const deckParam = params.get('decks') || params.get('deck');
   const deckIds = deckParam ? deckParam.split(',').filter(Boolean) : [];
   return {
-    view: viewParam === 'workspace' ? 'workspace' : 'terminal',
+    view: viewParam === 'workspace' ? 'workspace' : viewParam === 'agent' ? 'agent' : 'terminal',
     workspaceId: params.get('workspace'),
     deckIds,
     workspaceMode: modeParam === 'editor' ? 'editor' : 'list'
