@@ -11,6 +11,8 @@ class LogManager {
     this.logBuffer = [];
     this.logFilePath = '';
     this.mainWindow = null;
+    this._pendingLog = '';
+    this._logTimer = null;
   }
 
   /**
@@ -50,7 +52,18 @@ class LogManager {
     }
 
     if (this.mainWindow) {
-      this.mainWindow.webContents.send('server-log', normalized);
+      // バッチ送信: 200ms ごとにまとめて IPC を送る
+      this._pendingLog += normalized;
+      if (!this._logTimer) {
+        this._logTimer = setTimeout(() => {
+          this._logTimer = null;
+          const batch = this._pendingLog;
+          this._pendingLog = '';
+          if (this.mainWindow && batch) {
+            this.mainWindow.webContents.send('server-log', batch);
+          }
+        }, 200);
+      }
     }
   }
 

@@ -350,7 +350,7 @@ window.api.onStatus((status) => {
 });
 
 window.api.onLog((text) => {
-  logsEl.textContent += text;
+  logsEl.insertAdjacentText('beforeend', text);
   logsEl.scrollTop = logsEl.scrollHeight;
 });
 
