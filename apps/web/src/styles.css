@@ -2735,6 +2735,18 @@ input:focus-visible {
 }
 
 /* ========================================
+   Mobile: Hamburger Button
+   ======================================== */
+
+/* Hidden on desktop by default */
+.sidebar-toggle-btn { display: none; }
+
+/* Safari virtual keyboard: dvh units */
+@supports (height: 100dvh) {
+  body, #root, .app { height: 100dvh; }
+}
+
+/* ========================================
    Responsive
    ======================================== */
 
@@ -2744,7 +2756,7 @@ input:focus-visible {
     grid-template-rows: 200px minmax(0, 1fr);
   }
 
-  .activity-bar {
+  .workspace-editor-grid > .activity-bar {
     grid-row: 1 / -1;
   }
 
@@ -2760,7 +2772,7 @@ input:focus-visible {
     grid-template-rows: minmax(0, 1fr) 48px 22px;
   }
 
-  .activity-bar {
+  .app > nav.activity-bar {
     grid-row: 2;
     flex-direction: row;
     width: auto;
@@ -2779,7 +2791,7 @@ input:focus-visible {
     margin-left: auto;
   }
 
-  .activity-bar-item.active::before {
+  .app > nav.activity-bar .activity-bar-item.active::before {
     left: 0;
     right: 0;
     top: 0;
@@ -2801,5 +2813,127 @@ input:focus-visible {
 
   .grid-control {
     display: none;
+  }
+
+  /* Workspace editor: drawer layout */
+  .workspace-editor-grid {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr);
+    position: relative;
+  }
+
+  /* Inner activity-bar slides in as drawer */
+  .workspace-editor-grid > .activity-bar {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 48px;
+    z-index: 101;
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+    flex-direction: column;
+    height: auto;
+    border-right: 1px solid var(--border);
+    border-top: none;
+  }
+
+  /* Sidebar panel slides in as drawer */
+  .sidebar-panel {
+    position: absolute;
+    left: 48px;
+    top: 0;
+    bottom: 0;
+    width: 260px;
+    z-index: 100;
+    transform: translateX(calc(-100% - 48px));
+    transition: transform 0.2s ease;
+    border-bottom: none;
+    border-right: 1px solid var(--border);
+    overflow-y: auto;
+  }
+
+  /* Drawer open state */
+  .drawer-open .workspace-editor-grid > .activity-bar,
+  .drawer-open .sidebar-panel {
+    transform: translateX(0);
+  }
+
+  /* Backdrop overlay */
+  .sidebar-overlay {
+    display: none;
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    z-index: 99;
+  }
+
+  .drawer-open .sidebar-overlay {
+    display: block;
+  }
+
+  /* Show hamburger button */
+  .sidebar-toggle-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* Touch targets (minimum 44px) */
+  .activity-bar-item {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  .deck-tab {
+    min-height: 40px;
+    padding: 0 14px;
+    font-size: 13px;
+  }
+
+  .topbar-btn-sm {
+    min-height: 40px;
+    min-width: 44px;
+    padding: 0 10px;
+  }
+
+  .ghost-button {
+    min-height: 36px;
+  }
+
+  /* Deck tabs: horizontal scroll */
+  .deck-tabs {
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+
+  .deck-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* Modal: near full-screen on mobile */
+  .modal {
+    max-width: calc(100vw - 16px);
+    margin: 8px;
+    border-radius: 8px;
+  }
+
+  /* Safe area: notch / home bar */
+  .app {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  /* Minimum readable font sizes */
+  .file-item-name,
+  .source-control-file-name {
+    font-size: 12px;
+  }
+
+  /* Workspace editor header: compact on mobile */
+  .workspace-editor-header {
+    gap: 8px;
+    padding: 0 8px;
   }
 }

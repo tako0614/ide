@@ -408,5 +408,11 @@ export function createTerminalRouter(
     }
   }
 
-  return { router, restoreTerminals };
+  function createTerminal(deckId: string, title?: string, command?: string): TerminalSession | null {
+    const deck = decks.get(deckId);
+    if (!deck) return null;
+    return createTerminalSession(deck, title, command);
+  }
+
+  return { router, restoreTerminals, createTerminal };
 }

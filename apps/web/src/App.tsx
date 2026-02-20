@@ -20,7 +20,7 @@ import { useDecks } from './hooks/useDecks';
 import { useFileOperations } from './hooks/useFileOperations';
 import { useGitState } from './hooks/useGitState';
 import { useAgents } from './hooks/useAgents';
-import type { AppView, WorkspaceMode, SidebarPanel, AgentProvider } from './types';
+import type { AppView, WorkspaceMode, SidebarPanel, AgentProvider, FileTreeNode } from './types';
 import {
   DEFAULT_ROOT_FALLBACK,
   SAVED_MESSAGE_TIMEOUT,
@@ -49,6 +49,7 @@ export default function App() {
   const [isAgentModalOpen, setIsAgentModalOpen] = useState(false);
   const [agentModalProvider, setAgentModalProvider] = useState<AgentProvider>('claude');
   const [sidebarPanel, setSidebarPanel] = useState<SidebarPanel>('files');
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
 
   const { workspaceStates, setWorkspaceStates, updateWorkspaceState, initializeWorkspaceStates } =
     useWorkspaceState();
@@ -342,12 +343,17 @@ export default function App() {
   }, [setActiveDeckIds]);
 
 
+  const handleOpenFileMobile = useCallback((node: FileTreeNode) => {
+    handleOpenFile(node);
+    setIsSidebarOpen(false);
+  }, [handleOpenFile]);
+
   const isWorkspaceEditorOpen = workspaceMode === 'editor' && Boolean(editorWorkspaceId);
 
   const gitChangeCount = gitState.status?.files.length ?? 0;
 
   const workspaceEditor = isWorkspaceEditorOpen ? (
-    <div className="workspace-editor-overlay">
+    <div className={`workspace-editor-overlay${isSidebarOpen ? ' drawer-open' : ''}`}>
       <div className="workspace-editor-header">
         <button
           type="button"
@@ -355,6 +361,16 @@ export default function App() {
           onClick={handleCloseWorkspaceEditor}
         >
           {'\u4e00\u89a7\u306b\u623b\u308b'}
+        </button>
+        <button
+          type="button"
+          className="sidebar-toggle-btn ghost-button"
+          onClick={() => setIsSidebarOpen((v) => !v)}
+          aria-label="\u30b5\u30a4\u30c9\u30d0\u30fc"
+        >
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+            <path d="M3 12h18M3 6h18M3 18h18" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+          </svg>
         </button>
         <div className="workspace-meta">
           {activeWorkspace ? (
@@ -401,7 +417,7 @@ export default function App() {
                 loading={activeWorkspaceState.treeLoading}
                 error={activeWorkspaceState.treeError}
                 onToggleDir={handleToggleDir}
-                onOpenFile={handleOpenFile}
+                onOpenFile={handleOpenFileMobile}
                 onRefresh={handleRefreshTree}
                 onCreateFile={handleCreateFile}
                 onCreateDirectory={handleCreateDirectory}
@@ -461,6 +477,11 @@ export default function App() {
           theme={theme}
         />
       </div>
+      <div
+        className="sidebar-overlay"
+        onClick={() => setIsSidebarOpen(false)}
+        aria-hidden="true"
+      />
       {gitState.diffPath && (
         <DiffViewer
           diff={gitState.diff}
