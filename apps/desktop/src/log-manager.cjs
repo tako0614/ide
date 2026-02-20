@@ -11,7 +11,7 @@ class LogManager {
     this.logBuffer = [];
     this.logFilePath = '';
     this.mainWindow = null;
-    this._pendingLog = '';
+    this._pendingLogLines = [];
     this._logTimer = null;
   }
 
@@ -52,13 +52,13 @@ class LogManager {
     }
 
     if (this.mainWindow) {
-      // バッチ送信: 200ms ごとにまとめて IPC を送る
-      this._pendingLog += normalized;
+      // バッチ送信: 200ms ごとにまとめて IPC を送る（配列で文字列結合コストを回避）
+      this._pendingLogLines.push(normalized);
       if (!this._logTimer) {
         this._logTimer = setTimeout(() => {
           this._logTimer = null;
-          const batch = this._pendingLog;
-          this._pendingLog = '';
+          const batch = this._pendingLogLines.join('');
+          this._pendingLogLines = [];
           if (this.mainWindow && batch) {
             this.mainWindow.webContents.send('server-log', batch);
           }
@@ -79,10 +79,13 @@ class LogManager {
    */
   clearLogs() {
     this.logBuffer.length = 0;
+    this._pendingLogLines = [];
     if (this.logFilePath) {
-      fs.writeFileSync(this.logFilePath, '');
+      fs.writeFile(this.logFilePath, '', (err) => {
+        if (err) console.error('[LogManager] Failed to clear log file:', err);
+      });
     }
-    return this.logBuffer.join('\n');
+    return '';
   }
 }
 
