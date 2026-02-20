@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events';
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import type { DatabaseSync } from 'node:sqlite';
-import type { AgentSessionData, AgentMessage, Workspace } from '../types.js';
+import type { AgentSessionData, AgentMessage, Workspace, TerminalSession, Deck } from '../types.js';
 import { MAX_CONCURRENT_AGENTS, MAX_AGENT_COST_USD, MAX_AGENT_MESSAGES, MAX_AGENT_PROMPT_LENGTH } from '../config.js';
 import {
   saveAgentSession,
@@ -23,7 +23,13 @@ interface RunningAgent {
 const SESSION_TTL_MS = 60 * 60 * 1000;
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
 
-export function createAgentRouter(db: DatabaseSync, workspaces: Map<string, Workspace>) {
+export function createAgentRouter(
+  db: DatabaseSync,
+  workspaces: Map<string, Workspace>,
+  terminals: Map<string, TerminalSession>,
+  decks: Map<string, Deck>,
+  createTerminalFn: (deckId: string, title?: string, command?: string) => TerminalSession | null
+) {
   const router = new Hono();
   const runningAgents = new Map<string, RunningAgent>();
 
@@ -56,6 +62,125 @@ export function createAgentRouter(db: DatabaseSync, workspaces: Map<string, Work
 
   function getRunningCount(): number {
     return runningAgents.size;
+  }
+
+  // Lazy MCP server for IDE terminal & agent tools
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let ideToolsMcpServer: { type: 'sdk'; name: string; instance: any } | undefined;
+
+  async function getIdeMcpServer() {
+    if (ideToolsMcpServer) return ideToolsMcpServer;
+
+    const { createSdkMcpServer, tool } = await import('@anthropic-ai/claude-agent-sdk');
+    const { z } = await import('zod');
+
+    ideToolsMcpServer = createSdkMcpServer({
+      name: 'deck-ide',
+      version: '1.0.0',
+      tools: [
+        tool('terminal_list', 'List all terminal sessions in the IDE', {}, async () => ({
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify(
+              Array.from(terminals.values()).map(s => ({
+                id: s.id, title: s.title, deckId: s.deckId, pid: s.term.pid
+              }))
+            )
+          }]
+        })),
+
+        tool('terminal_read', 'Read terminal output buffer', {
+          terminalId: z.string().describe('Terminal session ID'),
+          maxBytes: z.number().optional().describe('Max bytes to return from end of buffer (default: 8192)')
+        }, async ({ terminalId, maxBytes = 8192 }) => {
+          const session = terminals.get(terminalId);
+          if (!session) return { content: [{ type: 'text' as const, text: 'Error: terminal not found' }], isError: true };
+          return { content: [{ type: 'text' as const, text: session.buffer.slice(-maxBytes) }] };
+        }),
+
+        tool('terminal_write', 'Write text or a command to a terminal PTY', {
+          terminalId: z.string().describe('Terminal session ID'),
+          text: z.string().describe('Text to write. Append \\n to execute a command.')
+        }, async ({ terminalId, text }) => {
+          const session = terminals.get(terminalId);
+          if (!session) return { content: [{ type: 'text' as const, text: 'Error: terminal not found' }], isError: true };
+          session.term.write(text);
+          return { content: [{ type: 'text' as const, text: 'OK' }] };
+        }),
+
+        tool('terminal_create', 'Create a new terminal session', {
+          deckId: z.string().describe('Deck/workspace ID for the terminal'),
+          title: z.string().optional().describe('Terminal title'),
+          command: z.string().optional().describe('Initial command to run in the terminal')
+        }, async ({ deckId, title, command }) => {
+          const session = createTerminalFn(deckId, title, command);
+          if (!session) return { content: [{ type: 'text' as const, text: 'Error: deck not found' }], isError: true };
+          return { content: [{ type: 'text' as const, text: JSON.stringify({ id: session.id, title: session.title }) }] };
+        }),
+
+        tool('agent_list', 'List all agent sessions', {}, async () => ({
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify(
+              Array.from(sessions.values()).map(s => ({
+                id: s.id, provider: s.provider, status: s.status,
+                prompt: s.prompt.slice(0, 100), createdAt: s.createdAt
+              }))
+            )
+          }]
+        })),
+
+        tool('agent_create', 'Create and start a new sub-agent', {
+          provider: z.enum(['claude', 'codex']).describe('AI provider'),
+          prompt: z.string().describe('Task prompt for the sub-agent'),
+          cwd: z.string().describe('Working directory (must be within a registered workspace)'),
+          maxCostUsd: z.number().optional().describe('Cost limit in USD')
+        }, async ({ provider, prompt, cwd, maxCostUsd }) => {
+          if (getRunningCount() >= MAX_CONCURRENT_AGENTS) {
+            return { content: [{ type: 'text' as const, text: `Error: max concurrent agents (${MAX_CONCURRENT_AGENTS}) reached` }], isError: true };
+          }
+          const resolvedCwd = path.resolve(cwd);
+          const validCwd = Array.from(workspaces.values()).some(w => {
+            const wp = path.resolve(w.path);
+            return resolvedCwd === wp || resolvedCwd.startsWith(wp + path.sep);
+          });
+          if (!validCwd) return { content: [{ type: 'text' as const, text: 'Error: cwd not within workspace' }], isError: true };
+
+          const subSession: AgentSessionData = {
+            id: crypto.randomUUID(),
+            provider: provider as AgentSessionData['provider'],
+            prompt, cwd: resolvedCwd, status: 'idle', messages: [],
+            createdAt: new Date().toISOString(),
+            maxCostUsd: maxCostUsd ?? MAX_AGENT_COST_USD
+          };
+          sessions.set(subSession.id, subSession);
+          saveAgentSession(db, subSession);
+          const abortController = new AbortController();
+          const emitter = new EventEmitter();
+          const subAgent: RunningAgent = { session: subSession, abortController, emitter };
+          runningAgents.set(subSession.id, subAgent);
+          if (provider === 'claude') runClaudeAgent(subAgent).catch(console.error);
+          else runCodexAgent(subAgent).catch(console.error);
+
+          return { content: [{ type: 'text' as const, text: JSON.stringify({ agentId: subSession.id, status: 'started' }) }] };
+        }),
+
+        tool('agent_status', 'Get status and messages of an agent', {
+          agentId: z.string().describe('Agent session ID'),
+          lastN: z.number().optional().describe('Number of most recent messages to return (default: 20)')
+        }, async ({ agentId, lastN = 20 }) => {
+          const session = sessions.get(agentId);
+          if (!session) return { content: [{ type: 'text' as const, text: 'Error: agent not found' }], isError: true };
+          return { content: [{ type: 'text' as const, text: JSON.stringify({
+            id: session.id, status: session.status, provider: session.provider,
+            error: session.error, totalCostUsd: session.totalCostUsd,
+            messages: session.messages.slice(-lastN)
+          }) }] };
+        }),
+      ]
+    });
+
+    return ideToolsMcpServer;
   }
 
   function broadcastMessage(agentId: string, event: string, data: unknown): Promise<void> {
@@ -171,17 +296,30 @@ export function createAgentRouter(db: DatabaseSync, workspaces: Map<string, Work
         throw new Error(formatSdkError('claude', importErr));
       }
 
+      const ideServer = await getIdeMcpServer();
+
       let resultCost: number | undefined;
       let resultDuration: number | undefined;
 
       for await (const message of queryFn({
         prompt: session.prompt,
         options: {
-          allowedTools: ['Read', 'Edit', 'Bash', 'Glob', 'Grep', 'Write'],
+          allowedTools: [
+            'Read', 'Edit', 'Bash', 'Glob', 'Grep', 'Write',
+            'mcp__deck-ide__terminal_list',
+            'mcp__deck-ide__terminal_read',
+            'mcp__deck-ide__terminal_write',
+            'mcp__deck-ide__terminal_create',
+            'mcp__deck-ide__agent_list',
+            'mcp__deck-ide__agent_create',
+            'mcp__deck-ide__agent_status',
+          ],
           cwd: session.cwd,
           permissionMode: 'bypassPermissions',
+          allowDangerouslySkipPermissions: true,
           maxTurns: 30,
-          abortController
+          abortController,
+          mcpServers: { 'deck-ide': ideServer }
         }
       })) {
         if (abortController.signal.aborted) break;
