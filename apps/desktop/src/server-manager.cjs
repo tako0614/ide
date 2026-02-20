@@ -43,10 +43,25 @@ class ServerManager {
 
   /**
    * ステータスをウィンドウにブロードキャスト
+   * immediate=true のときは即時送信、false のときは 500ms デバウンス
    */
-  broadcastStatus() {
+  broadcastStatus(immediate = false) {
     if (!this.mainWindow) return;
-    this.mainWindow.webContents.send('server-status', this.getStatus());
+    if (immediate) {
+      if (this._statusTimer) {
+        clearTimeout(this._statusTimer);
+        this._statusTimer = null;
+      }
+      this.mainWindow.webContents.send('server-status', this.getStatus());
+      return;
+    }
+    if (this._statusTimer) return;
+    this._statusTimer = setTimeout(() => {
+      this._statusTimer = null;
+      if (this.mainWindow) {
+        this.mainWindow.webContents.send('server-status', this.getStatus());
+      }
+    }, 500);
   }
 
   /**
@@ -93,14 +108,14 @@ class ServerManager {
       const text = chunk.toString();
       logManager.appendLog(text);
       this.parseServerUrl(text);
-      this.broadcastStatus();
+      this.broadcastStatus(false); // デバウンス
     });
 
     this.serverProcess.stderr.on('data', (chunk) => {
       const text = chunk.toString();
       logManager.appendLog(text);
       this.lastError = text.trim();
-      this.broadcastStatus();
+      this.broadcastStatus(false); // デバウンス
     });
 
     this.serverProcess.on('exit', (code) => {
@@ -109,11 +124,11 @@ class ServerManager {
         this.lastError = `Server exited with code ${code}`;
       }
       logManager.appendLog(`\n${this.lastError || 'Server stopped.'}\n`);
-      this.broadcastStatus();
+      this.broadcastStatus(true); // 即時
     });
 
     logManager.appendLog(`\nStarting server with ${nodeBinary}...\n`);
-    this.broadcastStatus();
+    this.broadcastStatus(true); // 即時
   }
 
   /**
