@@ -89,7 +89,13 @@ class AutoUpdaterManager {
           total: progress.total
         }
       };
-      this.broadcastStatus();
+      // 高頻度イベントを 200ms スロットルで間引く
+      if (!this._progressTimer) {
+        this._progressTimer = setTimeout(() => {
+          this._progressTimer = null;
+          this.broadcastStatus();
+        }, 200);
+      }
     });
 
     autoUpdater.on('update-downloaded', (info) => {

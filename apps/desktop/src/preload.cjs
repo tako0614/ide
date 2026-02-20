@@ -16,12 +16,15 @@ contextBridge.exposeInMainWorld('api', {
   checkForUpdates: () => ipcRenderer.invoke('update-check'),
   installUpdate: () => ipcRenderer.invoke('update-install'),
   onStatus: (callback) => {
+    ipcRenderer.removeAllListeners('server-status');
     ipcRenderer.on('server-status', (_, status) => callback(status));
   },
   onLog: (callback) => {
+    ipcRenderer.removeAllListeners('server-log');
     ipcRenderer.on('server-log', (_, text) => callback(text));
   },
   onUpdateStatus: (callback) => {
+    ipcRenderer.removeAllListeners('update-status');
     ipcRenderer.on('update-status', (_, status) => callback(status));
   }
 });

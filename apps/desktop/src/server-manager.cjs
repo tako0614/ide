@@ -145,6 +145,10 @@ class ServerManager {
     logManager.appendLog('\nStop requested, saving state...\n');
     this.broadcastStatus();
 
+    // ストリームを先に破棄してデータイベントを止める
+    try { proc.stdout.destroy(); } catch {}
+    try { proc.stderr.destroy(); } catch {}
+
     // Try graceful shutdown with SIGINT first
     try {
       proc.kill('SIGINT');

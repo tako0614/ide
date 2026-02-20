@@ -194,7 +194,8 @@ const refresh = async () => {
   const status = await window.api.getStatus();
   renderStatus(status);
   const logs = await window.api.getLogs();
-  logsEl.textContent = logs || '';
+  // 末尾 20000 文字のみ表示してDOMの肥大化を防ぐ
+  logsEl.textContent = logs ? logs.slice(-20000) : '';
   logsEl.scrollTop = logsEl.scrollHeight;
   await loadConfig();
 };
@@ -349,9 +350,16 @@ window.api.onStatus((status) => {
   renderStatus(status);
 });
 
+let _scrollPending = false;
 window.api.onLog((text) => {
   logsEl.insertAdjacentText('beforeend', text);
-  logsEl.scrollTop = logsEl.scrollHeight;
+  if (!_scrollPending) {
+    _scrollPending = true;
+    requestAnimationFrame(() => {
+      logsEl.scrollTop = logsEl.scrollHeight;
+      _scrollPending = false;
+    });
+  }
 });
 
 window.api.onUpdateStatus((status) => {
