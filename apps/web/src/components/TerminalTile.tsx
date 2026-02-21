@@ -48,7 +48,7 @@ export function TerminalTile({
       fontFamily: TERMINAL_FONT_FAMILY,
       fontSize: TERMINAL_FONT_SIZE,
       allowProposedApi: true,
-      scrollback: 10000,
+      scrollback: 3000,
       convertEol: false,
       // Don't use windowsMode with ConPTY - it handles line discipline itself
       windowsMode: false,

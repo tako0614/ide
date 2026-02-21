@@ -128,11 +128,14 @@ export default function App() {
     () => new Map(workspaces.map((workspace) => [workspace.id, workspace])),
     [workspaces]
   );
-  const deckListItems = decks.map((deck) => ({
-    id: deck.id,
-    name: deck.name,
-    path: workspaceById.get(deck.workspaceId)?.path || deck.root
-  }));
+  const deckListItems = useMemo(
+    () => decks.map((deck) => ({
+      id: deck.id,
+      name: deck.name,
+      path: workspaceById.get(deck.workspaceId)?.path || deck.root
+    })),
+    [decks, workspaceById]
+  );
 
   useEffect(() => {
     let alive = true;
