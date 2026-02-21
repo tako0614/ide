@@ -10,7 +10,11 @@ export function AgentTile({ session, onDelete }: AgentTileProps) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    // 高頻度メッセージでスクロールアニメーションが積み重なるのを防ぐ
+    const timer = setTimeout(() => {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, 80);
+    return () => clearTimeout(timer);
   }, [session.messages.length]);
 
   return (

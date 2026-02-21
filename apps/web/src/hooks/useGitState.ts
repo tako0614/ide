@@ -101,6 +101,10 @@ export const useGitState = (
   // Map of workspaceId -> GitState
   const [gitStates, setGitStates] = useState<Record<string, GitState>>({});
   const loadingRefs = useRef<Record<string, boolean>>({});
+  // ref で gitStates を参照することで useCallback の deps から外し、
+  // git操作のたびにコールバックが再生成されるのを防ぐ
+  const gitStatesRef = useRef(gitStates);
+  gitStatesRef.current = gitStates;
 
   // Get git state for active workspace
   const gitState = activeWorkspaceId
@@ -146,7 +150,7 @@ export const useGitState = (
         }));
 
         // Get the selected repo path (use first repo if none selected)
-        const currentState = gitStates[workspaceId] || createEmptyGitState();
+        const currentState = gitStatesRef.current[workspaceId] || createEmptyGitState();
         const repoPath = currentState.selectedRepoPath ?? (repos.length > 0 ? repos[0].path : undefined);
 
         // Fetch status for the selected repo
@@ -177,7 +181,7 @@ export const useGitState = (
         loadingRefs.current[workspaceId] = false;
       }
     },
-    [activeWorkspaceId, updateGitState, gitStates]
+    [activeWorkspaceId, updateGitState]
   );
 
   // Select a specific repository within the workspace
@@ -222,16 +226,16 @@ export const useGitState = (
 
   // Refresh all known workspaces
   const refreshAllGitStatuses = useCallback(async () => {
-    const workspaceIds = Object.keys(gitStates);
+    const workspaceIds = Object.keys(gitStatesRef.current);
     await Promise.all(workspaceIds.map((id) => refreshGitStatus(id)));
-  }, [gitStates, refreshGitStatus]);
+  }, [refreshGitStatus]);
 
   // Helper to get current repo path
   const getCurrentRepoPath = useCallback(() => {
     if (!activeWorkspaceId) return undefined;
-    const state = gitStates[activeWorkspaceId];
+    const state = gitStatesRef.current[activeWorkspaceId];
     return state?.selectedRepoPath || undefined;
-  }, [activeWorkspaceId, gitStates]);
+  }, [activeWorkspaceId]);
 
   const handleStageFile = useCallback(
     async (path: string) => {
