@@ -149,24 +149,19 @@ class ServerManager {
     try { proc.stdout.destroy(); } catch {}
     try { proc.stderr.destroy(); } catch {}
 
-    // Try graceful shutdown with SIGINT first
-    try {
-      proc.kill('SIGINT');
-    } catch (e) {
-      // Ignore error, will force kill below
-    }
-
-    // Force kill after timeout if still running
+    // Force kill fallback after 3 seconds
     const forceKillTimeout = setTimeout(() => {
-      try {
-        proc.kill('SIGKILL');
-      } catch (e) {
-        // Process already dead
-      }
+      try { proc.kill('SIGKILL'); } catch {}
     }, 3000);
+    proc.once('exit', () => clearTimeout(forceKillTimeout));
 
-    proc.once('exit', () => {
-      clearTimeout(forceKillTimeout);
+    // HTTP経由でgraceful shutdown（Windowsを含む全プラットフォームで確実に動作）
+    fetch(this.serverUrl + '/api/shutdown', {
+      method: 'POST',
+      signal: AbortSignal.timeout(1500)
+    }).catch(() => {
+      // HTTPが失敗した場合（サーバーがすでに停止中など）はシグナルでフォールバック
+      try { proc.kill('SIGINT'); } catch {}
     });
   }
 

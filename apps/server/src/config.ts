@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SETTINGS_FILE = path.join(__dirname, '..', '..', 'settings.json');
+export const SETTINGS_FILE = path.join(__dirname, '..', '..', 'settings.json');
 
 // Load settings from file if exists
 interface Settings {
@@ -34,10 +34,6 @@ export const MAX_FILE_SIZE = Number(process.env.MAX_FILE_SIZE || 10 * 1024 * 102
 export const TERMINAL_BUFFER_LIMIT = Number(process.env.TERMINAL_BUFFER_LIMIT || 50000);
 export const MAX_REQUEST_BODY_SIZE = Number(process.env.MAX_REQUEST_BODY_SIZE || 1024 * 1024); // 1MB default
 export const TRUST_PROXY = process.env.TRUST_PROXY === 'true'; // Only trust proxy headers if explicitly enabled
-export const MAX_CONCURRENT_AGENTS = Number(process.env.MAX_CONCURRENT_AGENTS || 5);
-export const MAX_AGENT_COST_USD = Number(process.env.MAX_AGENT_COST_USD || 5);
-export const MAX_AGENT_MESSAGES = Number(process.env.MAX_AGENT_MESSAGES || 500);
-export const MAX_AGENT_PROMPT_LENGTH = Number(process.env.MAX_AGENT_PROMPT_LENGTH || 10000);
 
 // In packaged app: server is at app.asar.unpacked/server/, web is at app.asar.unpacked/web/dist/
 // In development: server is at apps/server/dist/, web is at apps/web/dist/
@@ -83,3 +79,6 @@ if (!Number.isFinite(MAX_FILE_SIZE) || MAX_FILE_SIZE < 1024) {
 
 // Ensure data directory exists
 fsSync.mkdirSync(path.dirname(dbPath), { recursive: true });
+
+// PTY daemon info file - written by daemon on startup so server can find its port
+export const daemonInfoPath = path.join(path.dirname(dbPath), 'pty-daemon.json');

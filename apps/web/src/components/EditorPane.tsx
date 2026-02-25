@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useCallback, useState } from 'react';
 import Editor, { type OnMount } from '@monaco-editor/react';
 import type { EditorFile } from '../types';
 import { EDITOR_FONT_FAMILY, EDITOR_FONT_SIZE } from '../constants';
@@ -80,32 +80,32 @@ export function EditorPane({
   theme
 }: EditorPaneProps) {
   const activeFile = files.find((file) => file.id === activeFileId);
-  const editorRef = useRef<ReturnType<OnMount> | null>(null);
-  const cursorPositionRef = useRef({ line: 1, column: 1 });
+  const editorRef = useRef<Parameters<OnMount>[0] | null>(null);
+  const [cursorPosition, setCursorPosition] = useState({ line: 1, column: 1 });
 
   const handleEditorMount: OnMount = useCallback((editor) => {
     editorRef.current = editor;
     editor.onDidChangeCursorPosition((e) => {
-      cursorPositionRef.current = {
+      setCursorPosition({
         line: e.position.lineNumber,
         column: e.position.column
-      };
+      });
     });
   }, []);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (!activeFile) return;
+      if (!activeFileId) return;
       const isSave =
         (event.ctrlKey || event.metaKey) &&
         event.key.toLowerCase() === 's';
       if (!isSave) return;
       event.preventDefault();
-      onSaveFile?.(activeFile.id);
+      onSaveFile?.(activeFileId);
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeFile, onSaveFile]);
+  }, [activeFileId, onSaveFile]);
 
   const handleCloseTab = (e: React.MouseEvent, fileId: string) => {
     e.stopPropagation();
@@ -248,7 +248,7 @@ export function EditorPane({
           </div>
           <div className="editor-statusbar-right">
             <span className="editor-status-item">
-              Ln {cursorPositionRef.current.line}, Col {cursorPositionRef.current.column}
+              Ln {cursorPosition.line}, Col {cursorPosition.column}
             </span>
             <span className="editor-status-item">UTF-8</span>
             <span className="editor-status-item">

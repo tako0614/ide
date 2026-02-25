@@ -78,6 +78,13 @@ app.on('window-all-closed', () => {
 });
 
 /**
+ * macOS: Dockアイコンクリック時にウィンドウを表示
+ */
+app.on('activate', () => {
+  windowManager.showWindow();
+});
+
+/**
  * IPCハンドラーの登録
  */
 

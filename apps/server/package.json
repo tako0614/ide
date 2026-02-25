@@ -10,10 +10,8 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "*",
     "@deck-ide/shared": "file:../../packages/shared",
     "@hono/node-server": "^1.12.2",
-    "@openai/codex-sdk": "*",
     "hono": "^4.5.10",
     "node-pty": "^1.0.0",
     "simple-git": "^3.27.0",

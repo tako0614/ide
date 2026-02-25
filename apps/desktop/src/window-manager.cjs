@@ -84,8 +84,10 @@ class WindowManager {
 
     this.tray.setContextMenu(contextMenu);
 
-    // トレイアイコンをダブルクリックでウィンドウを表示
-    this.tray.on('double-click', () => {
+    // トレイアイコンクリックでウィンドウを表示
+    // macOS: シングルクリック、Windows/Linux: ダブルクリック
+    const clickEvent = process.platform === 'darwin' ? 'click' : 'double-click';
+    this.tray.on(clickEvent, () => {
       this.showWindow();
     });
   }

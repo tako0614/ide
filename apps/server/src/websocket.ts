@@ -136,6 +136,7 @@ export function setupWebSocketServer(
     const url = new URL(req.url || '', `http://localhost:${PORT}`);
     const match = url.pathname.match(/\/api\/terminals\/(.+)/);
     if (!match) {
+      untrackConnection(clientIP, socket);
       socket.close(1002, 'Invalid path');
       return;
     }
@@ -143,22 +144,26 @@ export function setupWebSocketServer(
     const id = match[1];
     const session = terminals.get(id);
     if (!session) {
+      untrackConnection(clientIP, socket);
       socket.close(1002, 'Terminal not found');
       return;
     }
-
-    const wsConnectTime = Date.now();
-    console.log(`[PERF] WebSocket connected to terminal ${id} at ${wsConnectTime}`);
 
     session.sockets.add(socket);
     session.lastActive = Date.now();
 
     // Send buffer content if available
+    // bufferOffset: client sends how many bytes it already received, so we only send the delta
+    const offsetParam = url.searchParams.get('bufferOffset');
+    const clientBufferOffset = offsetParam ? Math.max(0, parseInt(offsetParam, 10) || 0) : 0;
     if (session.buffer) {
       try {
-        const bufferSize = session.buffer.length;
-        console.log(`[PERF] Sending ${bufferSize} chars of buffered data to terminal ${id}`);
-        socket.send(session.buffer);
+        const bufferToSend = clientBufferOffset > 0
+          ? session.buffer.slice(clientBufferOffset)
+          : session.buffer;
+        if (bufferToSend) {
+          socket.send(bufferToSend);
+        }
       } catch (error) {
         console.error(`Failed to send buffer to socket ${socketId}:`, error);
       }
@@ -179,41 +184,6 @@ export function setupWebSocketServer(
 
         session.lastActive = Date.now();
 
-        // Debug: Log responses from client
-        if (message.match(/\x1b\[\d+;\d+R/)) {
-          console.log(`[RESPONSE] CPR (cursor position) from client to terminal ${id}`);
-        }
-        if (message.match(/\x1b\[\?[^;]+;[0-4]\$y/)) {
-          const match = message.match(/\x1b\[\?(\d+);([0-4])\$y/);
-          const mode = match ? match[1] : '?';
-          const status = match ? match[2] : '?';
-          console.log(`[RESPONSE] DECRQM mode ${mode} status ${status} from client to terminal ${id}`);
-        }
-        if (message.match(/\x1b\[\?[\d;]+c/)) {
-          console.log(`[RESPONSE] DA1 from client to terminal ${id}`);
-        }
-        if (message.match(/\x1b\[>[^c]*c/)) {
-          console.log(`[RESPONSE] DA2 from client to terminal ${id}`);
-        }
-        if (message.match(/\x1bP>[\|]/)) {
-          console.log(`[RESPONSE] XTVERSION from client to terminal ${id}`);
-        }
-        if (message.match(/\x1b\]1[012];rgb:/)) {
-          console.log(`[RESPONSE] OSC color from client to terminal ${id}`);
-        }
-        if (message.match(/\x1b\]4;\d+;rgb:/)) {
-          console.log(`[RESPONSE] OSC 4 color palette from client to terminal ${id}`);
-        }
-        if (message.match(/\x1b\[8;\d+;\d+t/)) {
-          console.log(`[RESPONSE] XTWINOPS window size from client to terminal ${id}`);
-        }
-        if (message.match(/\x1b\[\?\d+m/)) {
-          console.log(`[RESPONSE] XTQMODKEYS from client to terminal ${id}`);
-        }
-        if (message.match(/\x1bP[01]\$r/)) {
-          console.log(`[RESPONSE] DECRQSS/XTGETTCAP from client to terminal ${id}`);
-        }
-
         // Check for resize message
         if (message.startsWith('\u0000resize:')) {
           const payload = message.slice('\u0000resize:'.length);
@@ -222,7 +192,7 @@ export function setupWebSocketServer(
           const rows = validateTerminalSize(Number(rowsRaw));
 
           try {
-            session.term.resize(cols, rows);
+            session.resize(cols, rows);
           } catch (resizeError) {
             console.error(`Failed to resize terminal ${id}:`, resizeError);
           }
@@ -231,7 +201,7 @@ export function setupWebSocketServer(
 
         try {
           // Write user input to terminal
-          session.term.write(message);
+          session.write(message);
         } catch (writeError) {
           console.error(`Failed to write to terminal ${id}:`, writeError);
         }
@@ -240,8 +210,7 @@ export function setupWebSocketServer(
       }
     });
 
-    socket.on('close', (code, reason) => {
-      console.log(`[WS] Socket ${socketId} closed for terminal ${id}: code=${code}, reason=${reason?.toString() || 'none'}`);
+    socket.on('close', () => {
       session.sockets.delete(socket);
       session.lastActive = Date.now();
       untrackConnection(clientIP, socket);

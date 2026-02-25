@@ -287,6 +287,10 @@ async function getOriginalContent(git: SimpleGit, filePath: string): Promise<str
   }
 }
 
+function resolveRepoPath(workspacePath: string, repoPath?: string): string {
+  return repoPath ? nodePath.join(workspacePath, repoPath) : workspacePath;
+}
+
 export function createGitRouter(workspaces: Map<string, Workspace>) {
   const router = new Hono();
 
@@ -304,7 +308,7 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
 
       // If repoPath is specified, get status for that specific repo
       if (repoPath !== undefined) {
-        const fullRepoPath = repoPath ? nodePath.join(workspace.path, repoPath) : workspace.path;
+        const fullRepoPath = resolveRepoPath(workspace.path, repoPath);
         const git = simpleGit(fullRepoPath);
 
         const isRepo = await isGitRepository(git);
@@ -365,7 +369,7 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
       // Get info for each repo
       const repos: GitRepoInfo[] = [];
       for (const repoPath of repoPaths) {
-        const fullPath = repoPath ? nodePath.join(workspace.path, repoPath) : workspace.path;
+        const fullPath = resolveRepoPath(workspace.path, repoPath);
         const git = simpleGit(fullPath);
 
         try {
@@ -404,7 +408,7 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
       const allFiles: (GitFileStatus & { repoPath: string })[] = [];
 
       for (const repoPath of repoPaths) {
-        const fullPath = repoPath ? nodePath.join(workspace.path, repoPath) : workspace.path;
+        const fullPath = resolveRepoPath(workspace.path, repoPath);
         const git = simpleGit(fullPath);
 
         try {
@@ -451,9 +455,7 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
 
       const paths = validateGitPaths(body.paths);
       const workspace = requireWorkspace(workspaces, body.workspaceId);
-      const repoFullPath = body.repoPath
-        ? nodePath.join(workspace.path, body.repoPath)
-        : workspace.path;
+      const repoFullPath = resolveRepoPath(workspace.path, body.repoPath);
       const git = simpleGit(repoFullPath);
 
       await git.add(paths);
@@ -474,9 +476,7 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
 
       const paths = validateGitPaths(body.paths);
       const workspace = requireWorkspace(workspaces, body.workspaceId);
-      const repoFullPath = body.repoPath
-        ? nodePath.join(workspace.path, body.repoPath)
-        : workspace.path;
+      const repoFullPath = resolveRepoPath(workspace.path, body.repoPath);
       const git = simpleGit(repoFullPath);
 
       await git.reset(['HEAD', '--', ...paths]);
@@ -497,9 +497,7 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
 
       const message = validateCommitMessage(body.message);
       const workspace = requireWorkspace(workspaces, body.workspaceId);
-      const repoFullPath = body.repoPath
-        ? nodePath.join(workspace.path, body.repoPath)
-        : workspace.path;
+      const repoFullPath = resolveRepoPath(workspace.path, body.repoPath);
       const git = simpleGit(repoFullPath);
 
       const result = await git.commit(message);
@@ -528,9 +526,7 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
 
       const paths = validateGitPaths(body.paths);
       const workspace = requireWorkspace(workspaces, body.workspaceId);
-      const repoFullPath = body.repoPath
-        ? nodePath.join(workspace.path, body.repoPath)
-        : workspace.path;
+      const repoFullPath = resolveRepoPath(workspace.path, body.repoPath);
       const git = simpleGit(repoFullPath);
 
       // First, check if any of these are untracked files
@@ -587,9 +583,7 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
       }
 
       const workspace = requireWorkspace(workspaces, workspaceId);
-      const repoFullPath = repoPath
-        ? nodePath.join(workspace.path, repoPath)
-        : workspace.path;
+      const repoFullPath = resolveRepoPath(workspace.path, repoPath);
       const git = simpleGit(repoFullPath);
 
       let original = '';
@@ -631,9 +625,7 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
       }
 
       const workspace = requireWorkspace(workspaces, body.workspaceId);
-      const repoFullPath = body.repoPath
-        ? nodePath.join(workspace.path, body.repoPath)
-        : workspace.path;
+      const repoFullPath = resolveRepoPath(workspace.path, body.repoPath);
       const git = simpleGit(repoFullPath);
 
       // Check if we have a remote
@@ -671,9 +663,7 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
       }
 
       const workspace = requireWorkspace(workspaces, body.workspaceId);
-      const repoFullPath = body.repoPath
-        ? nodePath.join(workspace.path, body.repoPath)
-        : workspace.path;
+      const repoFullPath = resolveRepoPath(workspace.path, body.repoPath);
       const git = simpleGit(repoFullPath);
 
       // Check if we have a remote
@@ -706,9 +696,7 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
       }
 
       const workspace = requireWorkspace(workspaces, body.workspaceId);
-      const repoFullPath = body.repoPath
-        ? nodePath.join(workspace.path, body.repoPath)
-        : workspace.path;
+      const repoFullPath = resolveRepoPath(workspace.path, body.repoPath);
       const git = simpleGit(repoFullPath);
 
       await git.fetch();
@@ -729,9 +717,7 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
       }
 
       const workspace = requireWorkspace(workspaces, workspaceId);
-      const repoFullPath = repoPath
-        ? nodePath.join(workspace.path, repoPath)
-        : workspace.path;
+      const repoFullPath = resolveRepoPath(workspace.path, repoPath);
       const git = simpleGit(repoFullPath);
 
       const isRepo = await isGitRepository(git);
@@ -764,9 +750,7 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
       }
 
       const workspace = requireWorkspace(workspaces, workspaceId);
-      const repoFullPath = repoPath
-        ? nodePath.join(workspace.path, repoPath)
-        : workspace.path;
+      const repoFullPath = resolveRepoPath(workspace.path, repoPath);
       const git = simpleGit(repoFullPath);
 
       const isRepo = await isGitRepository(git);
@@ -800,9 +784,7 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
       }
 
       const workspace = requireWorkspace(workspaces, workspaceId);
-      const repoFullPath = repoPath
-        ? nodePath.join(workspace.path, repoPath)
-        : workspace.path;
+      const repoFullPath = resolveRepoPath(workspace.path, repoPath);
       const git = simpleGit(repoFullPath);
 
       const isRepo = await isGitRepository(git);
@@ -847,9 +829,7 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
       }
 
       const workspace = requireWorkspace(workspaces, body.workspaceId);
-      const repoFullPath = body.repoPath
-        ? nodePath.join(workspace.path, body.repoPath)
-        : workspace.path;
+      const repoFullPath = resolveRepoPath(workspace.path, body.repoPath);
       const git = simpleGit(repoFullPath);
 
       await git.checkout(branchName);
@@ -885,9 +865,7 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
       }
 
       const workspace = requireWorkspace(workspaces, body.workspaceId);
-      const repoFullPath = body.repoPath
-        ? nodePath.join(workspace.path, body.repoPath)
-        : workspace.path;
+      const repoFullPath = resolveRepoPath(workspace.path, body.repoPath);
       const git = simpleGit(repoFullPath);
 
       const checkout = body.checkout !== false;
@@ -918,9 +896,7 @@ export function createGitRouter(workspaces: Map<string, Workspace>) {
       const limit = Math.min(Math.max(1, parseInt(limitStr, 10) || 50), 500);
 
       const workspace = requireWorkspace(workspaces, workspaceId);
-      const repoFullPath = repoPath
-        ? nodePath.join(workspace.path, repoPath)
-        : workspace.path;
+      const repoFullPath = resolveRepoPath(workspace.path, repoPath);
       const git = simpleGit(repoFullPath);
 
       const isRepo = await isGitRepository(git);

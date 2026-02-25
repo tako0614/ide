@@ -1,15 +1,7 @@
 import { Hono } from 'hono';
 import fs from 'node:fs/promises';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { createHttpError, handleError } from '../utils/error.js';
-import { PORT, BASIC_AUTH_USER, BASIC_AUTH_PASSWORD } from '../config.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// Settings file path
-const SETTINGS_FILE = path.join(__dirname, '..', '..', 'settings.json');
+import { PORT, BASIC_AUTH_USER, BASIC_AUTH_PASSWORD, SETTINGS_FILE } from '../config.js';
 
 interface Settings {
   port: number;

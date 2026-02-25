@@ -60,6 +60,15 @@ export function SettingsModal({ isOpen, onClose, onSave }: SettingsModalProps) {
   };
 
   useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { e.preventDefault(); onClose(); }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
+
+  useEffect(() => {
     if (isOpen) {
       // Load current settings from server
       fetch('/api/settings')
@@ -97,7 +106,6 @@ export function SettingsModal({ isOpen, onClose, onSave }: SettingsModalProps) {
     try {
       const res = await fetch('/api/ws/clear', { method: 'POST' });
       const data = await res.json();
-      console.log(`Cleared ${data.cleared} connections`);
       loadWsStats();
     } catch (err) {
       console.error('Failed to clear WS connections:', err);
@@ -128,10 +136,10 @@ export function SettingsModal({ isOpen, onClose, onSave }: SettingsModalProps) {
   if (!isOpen) return null;
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
+    <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title" onClick={onClose}>
       <div className="modal-content settings-modal" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
-          <h2 className="modal-title">{LABEL_SETTINGS}</h2>
+          <h2 className="modal-title" id="settings-modal-title">{LABEL_SETTINGS}</h2>
           <button
             type="button"
             className="modal-close-btn"

@@ -351,8 +351,19 @@ window.api.onStatus((status) => {
 });
 
 let _scrollPending = false;
+let _logAccum = 0;
+const LOG_TRIM_THRESHOLD = 30000;
+const LOG_KEEP_SIZE = 20000;
+
 window.api.onLog((text) => {
   logsEl.insertAdjacentText('beforeend', text);
+  _logAccum += text.length;
+  // DOMの肥大化を防ぐ: 蓄積サイズが閾値を超えたら末尾20000字に切り詰める
+  if (_logAccum > LOG_TRIM_THRESHOLD) {
+    const content = logsEl.textContent || '';
+    logsEl.textContent = content.slice(-LOG_KEEP_SIZE);
+    _logAccum = LOG_KEEP_SIZE;
+  }
   if (!_scrollPending) {
     _scrollPending = true;
     requestAnimationFrame(() => {

@@ -3,6 +3,7 @@ import { FileTree } from './FileTree';
 import type { FileTreeNode } from '../types';
 import { previewFiles } from '../api';
 import { getErrorMessage, getParentPath, joinPath, toTreeNodes } from '../utils';
+import { useModalKeyboard } from '../hooks/useModalKeyboard';
 
 interface WorkspaceModalProps {
   isOpen: boolean;
@@ -21,6 +22,8 @@ export const WorkspaceModal = ({
   const [previewTree, setPreviewTree] = useState<FileTreeNode[]>([]);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const formRef = useModalKeyboard<HTMLFormElement>(isOpen, onClose);
 
   const previewRoot = workspacePathDraft.trim() || defaultRoot;
   const canPreviewBack = useMemo(() => {
@@ -93,16 +96,22 @@ export const WorkspaceModal = ({
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
-    await onSubmit(workspacePathDraft);
-    setWorkspacePathDraft('');
+    if (isSubmitting) return;
+    setIsSubmitting(true);
+    try {
+      await onSubmit(workspacePathDraft);
+      setWorkspacePathDraft('');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   if (!isOpen) return null;
 
   return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true">
-      <form className="modal" onSubmit={handleSubmit}>
-        <div className="modal-title">
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="workspace-modal-title">
+      <form className="modal" ref={formRef} onSubmit={handleSubmit}>
+        <div className="modal-title" id="workspace-modal-title">
           {'\u30ef\u30fc\u30af\u30b9\u30da\u30fc\u30b9\u8ffd\u52a0'}
         </div>
         <label className="field">
@@ -111,6 +120,8 @@ export const WorkspaceModal = ({
             type="text"
             value={workspacePathDraft}
             placeholder={defaultRoot || ''}
+            required
+            maxLength={500}
             onChange={(event) => setWorkspacePathDraft(event.target.value)}
           />
         </label>
@@ -129,11 +140,11 @@ export const WorkspaceModal = ({
           />
         </div>
         <div className="modal-actions">
-          <button type="button" className="ghost-button" onClick={onClose}>
+          <button type="button" className="ghost-button" onClick={onClose} disabled={isSubmitting}>
             {'\u30ad\u30e3\u30f3\u30bb\u30eb'}
           </button>
-          <button type="submit" className="primary-button">
-            {'\u8ffd\u52a0'}
+          <button type="submit" className="primary-button" disabled={isSubmitting}>
+            {isSubmitting ? '\u8ffd\u52a0\u4e2d...' : '\u8ffd\u52a0'}
           </button>
         </div>
       </form>

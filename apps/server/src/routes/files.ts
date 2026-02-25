@@ -8,6 +8,15 @@ import { resolveSafePath, normalizeWorkspacePath } from '../utils/path.js';
 import { requireWorkspace } from './workspaces.js';
 import { sortFileEntries } from '@deck-ide/shared/utils-node';
 
+function mapFileEntry(entry: { name: string; isDirectory(): boolean }, normalizedBase: string) {
+  const entryPath = normalizedBase ? `${normalizedBase}/${entry.name}` : entry.name;
+  return {
+    name: entry.name,
+    path: entryPath,
+    type: (entry.isDirectory() ? 'dir' : 'file') as 'dir' | 'file'
+  };
+}
+
 export function createFileRouter(workspaces: Map<string, Workspace>) {
   const router = new Hono();
 
@@ -26,16 +35,7 @@ export function createFileRouter(workspaces: Map<string, Workspace>) {
       }
       const entries = await fs.readdir(target, { withFileTypes: true });
       const normalizedBase = requestedPath.replace(/\\/g, '/');
-      const mapped = entries.map((entry) => {
-        const entryPath = normalizedBase
-          ? `${normalizedBase}/${entry.name}`
-          : entry.name;
-        return {
-          name: entry.name,
-          path: entryPath,
-          type: (entry.isDirectory() ? 'dir' : 'file') as 'dir' | 'file'
-        };
-      });
+      const mapped = entries.map((entry) => mapFileEntry(entry, normalizedBase));
       const sorted = sortFileEntries(mapped);
       return c.json(sorted);
     } catch (error) {
@@ -55,16 +55,7 @@ export function createFileRouter(workspaces: Map<string, Workspace>) {
       }
       const entries = await fs.readdir(target, { withFileTypes: true });
       const normalizedBase = String(requestedPath || '').replace(/\\/g, '/');
-      const mapped = entries.map((entry) => {
-        const entryPath = normalizedBase
-          ? `${normalizedBase}/${entry.name}`
-          : entry.name;
-        return {
-          name: entry.name,
-          path: entryPath,
-          type: (entry.isDirectory() ? 'dir' : 'file') as 'dir' | 'file'
-        };
-      });
+      const mapped = entries.map((entry) => mapFileEntry(entry, normalizedBase));
       const sorted = sortFileEntries(mapped);
       return c.json(sorted);
     } catch (error) {

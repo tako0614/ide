@@ -1,6 +1,6 @@
 import fsSync from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
-import type { Workspace, Deck, AgentSessionData } from '../types.js';
+import type { Workspace, Deck } from '../types.js';
 import { getWorkspaceKey } from './path.js';
 
 export type PersistedTerminal = {
@@ -69,29 +69,6 @@ export function initializeDatabase(db: DatabaseSync): void {
       created_at TEXT NOT NULL
     );
   `);
-
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS agent_sessions (
-      id TEXT PRIMARY KEY,
-      provider TEXT NOT NULL,
-      prompt TEXT NOT NULL,
-      cwd TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'idle',
-      messages TEXT NOT NULL DEFAULT '[]',
-      total_cost_usd REAL,
-      max_cost_usd REAL,
-      duration_ms INTEGER,
-      error TEXT,
-      created_at TEXT NOT NULL
-    );
-  `);
-
-  // Migration: add max_cost_usd column if missing (existing databases)
-  try {
-    db.exec('ALTER TABLE agent_sessions ADD COLUMN max_cost_usd REAL');
-  } catch {
-    // Column already exists
-  }
 
   // Create indexes for better query performance
   db.exec(`CREATE INDEX IF NOT EXISTS idx_decks_workspace_id ON decks(workspace_id);`);
@@ -201,86 +178,17 @@ export function saveAllTerminalBuffers(
   db: DatabaseSync,
   terminals: Map<string, { id: string; buffer: string }>
 ): void {
+  if (terminals.size === 0) return;
   const stmt = db.prepare('UPDATE terminals SET buffer = ? WHERE id = ?');
-  terminals.forEach((session) => {
-    stmt.run(session.buffer, session.id);
-  });
+  db.exec('BEGIN TRANSACTION');
+  try {
+    terminals.forEach((session) => {
+      stmt.run(session.buffer, session.id);
+    });
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
 }
 
-// Agent session persistence functions
-export function saveAgentSession(db: DatabaseSync, session: AgentSessionData): void {
-  const stmt = db.prepare(
-    'INSERT OR REPLACE INTO agent_sessions (id, provider, prompt, cwd, status, messages, total_cost_usd, max_cost_usd, duration_ms, error, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-  );
-  stmt.run(
-    session.id,
-    session.provider,
-    session.prompt,
-    session.cwd,
-    session.status,
-    JSON.stringify(session.messages),
-    session.totalCostUsd ?? null,
-    session.maxCostUsd ?? null,
-    session.durationMs ?? null,
-    session.error ?? null,
-    session.createdAt
-  );
-}
-
-export function updateAgentSession(
-  db: DatabaseSync,
-  id: string,
-  updates: Partial<Pick<AgentSessionData, 'status' | 'messages' | 'totalCostUsd' | 'durationMs' | 'error'>>
-): void {
-  const fields: string[] = [];
-  const values: (string | number | null)[] = [];
-
-  if (updates.status !== undefined) {
-    fields.push('status = ?');
-    values.push(updates.status);
-  }
-  if (updates.messages !== undefined) {
-    fields.push('messages = ?');
-    values.push(JSON.stringify(updates.messages));
-  }
-  if (updates.totalCostUsd !== undefined) {
-    fields.push('total_cost_usd = ?');
-    values.push(updates.totalCostUsd);
-  }
-  if (updates.durationMs !== undefined) {
-    fields.push('duration_ms = ?');
-    values.push(updates.durationMs);
-  }
-  if (updates.error !== undefined) {
-    fields.push('error = ?');
-    values.push(updates.error);
-  }
-
-  if (fields.length === 0) return;
-  values.push(id);
-  db.prepare(`UPDATE agent_sessions SET ${fields.join(', ')} WHERE id = ?`).run(...values);
-}
-
-export function loadAgentSessions(db: DatabaseSync): AgentSessionData[] {
-  const rows = db
-    .prepare('SELECT * FROM agent_sessions ORDER BY created_at ASC')
-    .all();
-
-  return rows.map((row) => ({
-    id: String(row.id),
-    provider: String(row.provider) as AgentSessionData['provider'],
-    prompt: String(row.prompt),
-    cwd: String(row.cwd),
-    status: String(row.status) as AgentSessionData['status'],
-    messages: JSON.parse(String(row.messages || '[]')),
-    createdAt: String(row.created_at),
-    totalCostUsd: row.total_cost_usd != null ? Number(row.total_cost_usd) : undefined,
-    maxCostUsd: row.max_cost_usd != null ? Number(row.max_cost_usd) : undefined,
-    durationMs: row.duration_ms != null ? Number(row.duration_ms) : undefined,
-    error: row.error ? String(row.error) : undefined
-  }));
-}
-
-export function deleteAgentSession(db: DatabaseSync, id: string): void {
-  db.prepare('DELETE FROM agent_sessions WHERE id = ?').run(id);
-}
