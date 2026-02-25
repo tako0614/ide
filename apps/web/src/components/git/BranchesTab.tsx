@@ -45,13 +45,13 @@ export function BranchesTab({
   );
 
   return (
-    <div className="branches-section">
-      <div className="branch-actions">
+    <div className="flex flex-col gap-2">
+      <div className="px-3 py-2 border-b border-border">
         {showNewBranchInput ? (
-          <div className="new-branch-form">
+          <div className="flex gap-1.5 items-center">
             <input
               type="text"
-              className="new-branch-input"
+              className="flex-1 px-2 py-1 text-xs border border-border rounded-[2px] bg-panel text-ink font-mono focus:outline-none focus:border-focus"
               placeholder="ブランチ名..."
               value={newBranchName}
               onChange={(e) => setNewBranchName(e.target.value)}
@@ -60,7 +60,7 @@ export function BranchesTab({
             />
             <button
               type="button"
-              className="chip"
+              className="border border-border bg-transparent text-ink px-2.5 py-1 text-xs rounded-[2px] cursor-pointer hover:bg-list-hover disabled:opacity-50 disabled:cursor-not-allowed"
               onClick={handleCreateBranch}
               disabled={!newBranchName.trim()}
             >
@@ -68,7 +68,7 @@ export function BranchesTab({
             </button>
             <button
               type="button"
-              className="chip"
+              className="border border-border bg-transparent text-ink px-2.5 py-1 text-xs rounded-[2px] cursor-pointer hover:bg-list-hover disabled:opacity-50 disabled:cursor-not-allowed"
               onClick={() => {
                 setShowNewBranchInput(false);
                 setNewBranchName('');
@@ -80,7 +80,7 @@ export function BranchesTab({
         ) : (
           <button
             type="button"
-            className="chip"
+            className="border border-border bg-transparent text-ink px-2.5 py-1 text-xs rounded-[2px] cursor-pointer hover:bg-list-hover disabled:opacity-50 disabled:cursor-not-allowed"
             onClick={() => setShowNewBranchInput(true)}
           >
             {LABEL_NEW_BRANCH}
@@ -88,18 +88,21 @@ export function BranchesTab({
         )}
       </div>
       {branchesLoading ? (
-        <div className="empty-state">{LABEL_LOADING}</div>
+        <div className="flex items-center justify-center h-full text-muted text-[13px] p-5">{LABEL_LOADING}</div>
       ) : (
-        <div className="branch-list">
+        <div className="flex flex-col">
           {branches.map((branch) => (
             <button
               key={branch.name}
               type="button"
-              className={clsx('branch-item', branch.current && 'current')}
+              className={clsx(
+                'flex items-center gap-2 px-3 py-1.5 bg-transparent border-0 text-ink text-[13px] cursor-pointer text-left transition-colors hover:bg-list-hover disabled:cursor-default',
+                branch.current && 'bg-list-active cursor-default'
+              )}
               onClick={() => !branch.current && onCheckoutBranch(branch.name)}
               disabled={branch.current}
             >
-              <svg className="branch-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <svg className="w-4 h-4 flex-shrink-0 text-ink-muted" viewBox="0 0 24 24" aria-hidden="true">
                 <path
                   d="M6 3v12M18 9a3 3 0 1 1 0 6 3 3 0 0 1 0-6zM6 21a3 3 0 1 1 0-6 3 3 0 0 1 0 6z"
                   fill="none"
@@ -114,8 +117,10 @@ export function BranchesTab({
                   strokeWidth="2"
                 />
               </svg>
-              <span className="branch-name">{branch.name}</span>
-              {branch.current && <span className="branch-current-badge">現在</span>}
+              <span className="flex-1 overflow-hidden text-ellipsis whitespace-nowrap font-mono">{branch.name}</span>
+              {branch.current && (
+                <span className="text-[10px] font-semibold px-1.5 py-0.5 bg-accent text-white rounded-[3px]">現在</span>
+              )}
             </button>
           ))}
         </div>

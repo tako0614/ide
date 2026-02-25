@@ -261,14 +261,18 @@ export function FileTree({
           {onBack ? (
             <button
               type="button"
-              className="chip"
+              className="border border-border bg-transparent text-ink px-2.5 py-1 text-xs rounded-[2px] cursor-pointer hover:bg-list-hover disabled:opacity-50 disabled:cursor-not-allowed"
               onClick={onBack}
               disabled={canBack === false}
             >
               {LABEL_BACK}
             </button>
           ) : null}
-          <button type="button" className="chip" onClick={onRefresh}>
+          <button
+            type="button"
+            className="border border-border bg-transparent text-ink px-2.5 py-1 text-xs rounded-[2px] cursor-pointer hover:bg-list-hover disabled:opacity-50 disabled:cursor-not-allowed"
+            onClick={onRefresh}
+          >
             {LABEL_REFRESH}
           </button>
         </div>
@@ -278,7 +282,7 @@ export function FileTree({
         onContextMenu={(e) => handleContextMenu(e, null, true)}
       >
         {loading ? <div className="tree-state">{LABEL_LOADING}</div> : null}
-        {error ? <div className="tree-state error">{error}</div> : null}
+        {error ? <div className="tree-state text-[#f14c4c]">{error}</div> : null}
         {safeEntries.length === 0 && !loading ? (
           <div className="tree-state">{LABEL_EMPTY}</div>
         ) : null}

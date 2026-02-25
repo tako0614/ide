@@ -98,14 +98,14 @@ export function WorkspaceEditor({
       <div className="workspace-editor-header">
         <button
           type="button"
-          className="ghost-button"
+          className="bg-transparent text-ink border-0 px-2 py-1 text-xs rounded-[2px] cursor-pointer hover:bg-list-hover"
           onClick={onCloseWorkspaceEditor}
         >
           {'\u4e00\u89a7\u306b\u623b\u308b'}
         </button>
         <button
           type="button"
-          className="sidebar-toggle-btn ghost-button"
+          className="sidebar-toggle-btn bg-transparent text-ink border-0 px-2 py-1 text-xs rounded-[2px] cursor-pointer hover:bg-list-hover min-h-[44px] min-w-[44px]"
           onClick={() => setIsSidebarOpen((v) => !v)}
           aria-label="\u30b5\u30a4\u30c9\u30d0\u30fc"
         >
@@ -114,9 +114,7 @@ export function WorkspaceEditor({
           </svg>
         </button>
         <div className="workspace-meta">
-          {activeWorkspace ? (
-            <span className="workspace-path">{activeWorkspace.path}</span>
-          ) : null}
+          {activeWorkspace ? activeWorkspace.path : null}
         </div>
       </div>
       <div className="workspace-editor-grid">

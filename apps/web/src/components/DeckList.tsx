@@ -25,31 +25,38 @@ export function DeckList({
   onCreate
 }: DeckListProps) {
   return (
-    <section className="panel deck-list">
+    <section className="panel">
       <div className="panel-header">
         <div>
           <div className="panel-title">{LABEL_DECK}</div>
           <div className="panel-subtitle">{LABEL_MULTI}</div>
         </div>
-        <div className="deck-actions">
-          <button type="button" className="chip" onClick={onCreate}>
+        <div className="flex gap-2 items-center">
+          <button
+            type="button"
+            className="border border-border bg-transparent text-ink px-2.5 py-1 text-xs rounded-[2px] cursor-pointer hover:bg-list-hover disabled:opacity-50 disabled:cursor-not-allowed"
+            onClick={onCreate}
+          >
             {LABEL_CREATE}
           </button>
         </div>
       </div>
-      <div className="panel-body">
+      <div className="panel-body flex flex-col gap-2 p-3">
         {decks.length === 0 ? (
-          <div className="empty-state">{LABEL_EMPTY}</div>
+          <div className="flex items-center justify-center h-full text-muted text-[13px] p-5">{LABEL_EMPTY}</div>
         ) : (
           decks.map((deck) => (
             <button
               key={deck.id}
               type="button"
-              className={clsx('deck-item', deck.id === activeDeckId && 'is-active')}
+              className={clsx(
+                'w-full text-left p-3 border border-border bg-panel text-ink cursor-pointer grid gap-1 transition-colors hover:bg-list-hover',
+                deck.id === activeDeckId && 'bg-list-active border-accent'
+              )}
               onClick={() => onSelect(deck.id)}
             >
-              <div className="deck-name">{deck.name}</div>
-              <div className="deck-root">{deck.path}</div>
+              <div className="font-semibold">{deck.name}</div>
+              <div className="font-mono text-xs text-muted">{deck.path}</div>
             </button>
           ))
         )}

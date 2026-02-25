@@ -16,28 +16,31 @@ export function WorkspaceList({
   onSelect
 }: WorkspaceListProps) {
   return (
-    <section className="panel workspace-panel">
+    <section className="panel">
       <div className="panel-header">
         <div>
           <div className="panel-title">{LABEL_WORKSPACE}</div>
         </div>
       </div>
-      <div className="panel-body">
+      <div className="panel-body grid gap-2 p-3">
         {workspaces.length === 0 ? (
-          <div className="empty-state">{LABEL_EMPTY}</div>
+          <div className="flex items-center justify-center h-full text-muted text-[13px] p-5">{LABEL_EMPTY}</div>
         ) : (
           workspaces.map((workspace) => (
             <div
               key={workspace.id}
-              className={clsx('workspace-item', workspace.id === selectedWorkspaceId && 'is-active')}
+              className={clsx(
+                'grid gap-2 p-3 border border-border bg-panel transition-colors hover:bg-list-hover focus-within:bg-list-hover',
+                workspace.id === selectedWorkspaceId && 'bg-list-active border-accent'
+              )}
             >
               <button
                 type="button"
-                className="workspace-main"
+                className="border-0 bg-transparent text-left p-0 cursor-pointer w-full grid gap-1"
                 onClick={() => onSelect(workspace.id)}
               >
-                <div className="workspace-name">{workspace.name}</div>
-                <div className="workspace-path">{workspace.path}</div>
+                <div className="font-semibold text-[14px]">{workspace.name}</div>
+                <div className="text-xs text-muted font-mono">{workspace.path}</div>
               </button>
             </div>
           ))

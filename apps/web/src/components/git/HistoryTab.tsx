@@ -9,21 +9,21 @@ interface HistoryTabProps {
 
 export function HistoryTab({ logs, logsLoading }: HistoryTabProps) {
   return (
-    <div className="history-section">
+    <div className="flex flex-col">
       {logsLoading ? (
-        <div className="empty-state">{LABEL_LOADING}</div>
+        <div className="flex items-center justify-center h-full text-muted text-[13px] p-5">{LABEL_LOADING}</div>
       ) : logs.length === 0 ? (
-        <div className="empty-state">コミット履歴がありません</div>
+        <div className="flex items-center justify-center h-full text-muted text-[13px] p-5">コミット履歴がありません</div>
       ) : (
-        <div className="log-list">
+        <div className="flex flex-col">
           {logs.map((log) => (
-            <div key={log.hash} className="log-item">
-              <div className="log-header">
-                <span className="log-hash">{log.hashShort}</span>
-                <span className="log-author">{log.author}</span>
+            <div key={log.hash} className="flex flex-col gap-0.5 px-3 py-2 border-b border-border hover:bg-list-hover transition-colors">
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-xs text-accent font-semibold">{log.hashShort}</span>
+                <span className="text-xs text-ink-muted">{log.author}</span>
               </div>
-              <div className="log-message">{log.message}</div>
-              <div className="log-date">{new Date(log.date).toLocaleString()}</div>
+              <div className="text-[13px] text-ink overflow-hidden text-ellipsis whitespace-nowrap">{log.message}</div>
+              <div className="text-[11px] text-muted">{new Date(log.date).toLocaleString()}</div>
             </div>
           ))}
         </div>

@@ -22,7 +22,7 @@ export function FileTreeContextMenu({
 }: FileTreeContextMenuProps) {
   return (
     <div
-      className="context-menu"
+      className="fixed z-[1000] min-w-[160px] py-1 bg-panel border border-border rounded-[6px] shadow-[0_4px_12px_rgba(0,0,0,0.15)]"
       style={{ left: contextMenu.x, top: contextMenu.y }}
       onClick={(e) => e.stopPropagation()}
     >
@@ -30,14 +30,14 @@ export function FileTreeContextMenu({
         <>
           <button
             type="button"
-            className="context-menu-item"
+            className="block w-full px-3 py-1.5 text-[13px] text-left bg-transparent border-0 text-ink cursor-pointer hover:bg-list-hover"
             onClick={() => onNewFile(contextMenu.node?.path || '', contextMenu.node ? 1 : 0)}
           >
             新規ファイル
           </button>
           <button
             type="button"
-            className="context-menu-item"
+            className="block w-full px-3 py-1.5 text-[13px] text-left bg-transparent border-0 text-ink cursor-pointer hover:bg-list-hover"
             onClick={() => onNewFolder(contextMenu.node?.path || '', contextMenu.node ? 1 : 0)}
           >
             新規フォルダ
@@ -46,10 +46,10 @@ export function FileTreeContextMenu({
       )}
       {contextMenu.node && !contextMenu.isRoot && (
         <>
-          {contextMenu.node.type === 'dir' && <div className="context-menu-separator" />}
+          {contextMenu.node.type === 'dir' && <div className="h-px my-1 bg-border" />}
           <button
             type="button"
-            className="context-menu-item delete"
+            className="block w-full px-3 py-1.5 text-[13px] text-left bg-transparent border-0 text-[#f14c4c] cursor-pointer hover:bg-[rgba(241,76,76,0.1)]"
             onClick={() => onDelete(contextMenu.node!)}
           >
             削除

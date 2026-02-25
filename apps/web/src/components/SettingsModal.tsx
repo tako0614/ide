@@ -35,6 +35,8 @@ const LABEL_WS_CONNECTIONS = '現在の接続数';
 const LABEL_WS_CLEAR = '全接続をクリア';
 const LABEL_WS_APPLY = '適用';
 
+const INPUT_CLASS = 'bg-panel border border-border rounded-[2px] px-2 py-1.5 text-[13px] font-mono text-ink focus:outline-none focus:border-focus';
+
 export function SettingsModal({ isOpen, onClose, onSave }: SettingsModalProps) {
   const [port, setPort] = useState(8787);
   const [basicAuthEnabled, setBasicAuthEnabled] = useState(false);
@@ -70,7 +72,6 @@ export function SettingsModal({ isOpen, onClose, onSave }: SettingsModalProps) {
 
   useEffect(() => {
     if (isOpen) {
-      // Load current settings from server
       fetch('/api/settings')
         .then(res => res.json())
         .then((data: Settings) => {
@@ -83,7 +84,6 @@ export function SettingsModal({ isOpen, onClose, onSave }: SettingsModalProps) {
           console.error('Failed to load settings:', err);
         });
 
-      // Load WebSocket stats
       loadWsStats();
     }
   }, [isOpen]);
@@ -104,8 +104,7 @@ export function SettingsModal({ isOpen, onClose, onSave }: SettingsModalProps) {
   const handleWsClear = async () => {
     setIsClearing(true);
     try {
-      const res = await fetch('/api/ws/clear', { method: 'POST' });
-      const data = await res.json();
+      await fetch('/api/ws/clear', { method: 'POST' });
       loadWsStats();
     } catch (err) {
       console.error('Failed to clear WS connections:', err);
@@ -136,32 +135,29 @@ export function SettingsModal({ isOpen, onClose, onSave }: SettingsModalProps) {
   if (!isOpen) return null;
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title" onClick={onClose}>
-      <div className="modal-content settings-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-header">
-          <h2 className="modal-title" id="settings-modal-title">{LABEL_SETTINGS}</h2>
-          <button
-            type="button"
-            className="modal-close-btn"
-            onClick={onClose}
-            aria-label="閉じる"
-          >
-            ×
-          </button>
+    <div
+      className="fixed inset-0 bg-black/50 flex items-center justify-center z-[500]"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="settings-modal-title"
+      onClick={onClose}
+    >
+      <div className="modal w-[500px]" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="m-0 text-[14px] font-semibold" id="settings-modal-title">{LABEL_SETTINGS}</h2>
+          <button type="button" className="modal-close-btn" onClick={onClose} aria-label="閉じる">×</button>
         </div>
         <form onSubmit={handleSubmit}>
-          <div className="modal-body">
-            <section className="settings-section">
-              <h3 className="settings-section-title">{LABEL_SERVER}</h3>
+          <div className="flex flex-col gap-4">
+            <section className="flex flex-col gap-3">
+              <h3 className="m-0 text-[11px] font-semibold uppercase tracking-[0.5px] text-ink-muted border-b border-border pb-2">{LABEL_SERVER}</h3>
 
-              <div className="form-group">
-                <label htmlFor="port" className="form-label">
-                  {LABEL_PORT}
-                </label>
+              <div className="flex flex-col gap-1">
+                <label htmlFor="port" className="text-xs text-ink-muted">{LABEL_PORT}</label>
                 <input
                   type="number"
                   id="port"
-                  className="form-input"
+                  className={INPUT_CLASS}
                   value={port}
                   onChange={(e) => setPort(Number(e.target.value))}
                   min={1024}
@@ -170,9 +166,9 @@ export function SettingsModal({ isOpen, onClose, onSave }: SettingsModalProps) {
                 />
               </div>
 
-              <div className="form-group">
-                <h4 className="form-subsection-title">{LABEL_AUTH}</h4>
-                <label className="checkbox-label">
+              <div className="flex flex-col gap-1">
+                <h4 className="m-0 text-xs font-semibold text-ink-muted">{LABEL_AUTH}</h4>
+                <label className="flex items-center gap-2 text-xs cursor-pointer">
                   <input
                     type="checkbox"
                     checked={basicAuthEnabled}
@@ -184,14 +180,12 @@ export function SettingsModal({ isOpen, onClose, onSave }: SettingsModalProps) {
 
               {basicAuthEnabled && (
                 <>
-                  <div className="form-group">
-                    <label htmlFor="username" className="form-label">
-                      {LABEL_USERNAME}
-                    </label>
+                  <div className="flex flex-col gap-1">
+                    <label htmlFor="username" className="text-xs text-ink-muted">{LABEL_USERNAME}</label>
                     <input
                       type="text"
                       id="username"
-                      className="form-input"
+                      className={INPUT_CLASS}
                       value={basicAuthUser}
                       onChange={(e) => setBasicAuthUser(e.target.value)}
                       required={basicAuthEnabled}
@@ -199,38 +193,34 @@ export function SettingsModal({ isOpen, onClose, onSave }: SettingsModalProps) {
                     />
                   </div>
 
-                  <div className="form-group">
-                    <label htmlFor="password" className="form-label">
-                      {LABEL_PASSWORD}
-                    </label>
+                  <div className="flex flex-col gap-1">
+                    <label htmlFor="password" className="text-xs text-ink-muted">{LABEL_PASSWORD}</label>
                     <input
                       type="password"
                       id="password"
-                      className="form-input"
+                      className={INPUT_CLASS}
                       value={basicAuthPassword}
                       onChange={(e) => setBasicAuthPassword(e.target.value)}
                       required={basicAuthEnabled}
                       minLength={12}
                       autoComplete="new-password"
                     />
-                    <p className="form-note">{LABEL_PASSWORD_NOTE}</p>
+                    <p className="m-0 text-[11px] text-muted">{LABEL_PASSWORD_NOTE}</p>
                   </div>
                 </>
               )}
             </section>
 
-            <section className="settings-section">
-              <h3 className="settings-section-title">{LABEL_WEBSOCKET}</h3>
+            <section className="flex flex-col gap-3">
+              <h3 className="m-0 text-[11px] font-semibold uppercase tracking-[0.5px] text-ink-muted border-b border-border pb-2">{LABEL_WEBSOCKET}</h3>
 
-              <div className="form-group">
-                <label htmlFor="wsLimit" className="form-label">
-                  {LABEL_WS_LIMIT}
-                </label>
-                <div className="form-row">
+              <div className="flex flex-col gap-1">
+                <label htmlFor="wsLimit" className="text-xs text-ink-muted">{LABEL_WS_LIMIT}</label>
+                <div className="flex gap-2 items-center">
                   <input
                     type="number"
                     id="wsLimit"
-                    className="form-input"
+                    className={`flex-1 ${INPUT_CLASS}`}
                     value={wsLimit}
                     onChange={(e) => setWsLimit(Number(e.target.value))}
                     min={1}
@@ -238,7 +228,7 @@ export function SettingsModal({ isOpen, onClose, onSave }: SettingsModalProps) {
                   />
                   <button
                     type="button"
-                    className="secondary-button"
+                    className="border border-border bg-transparent text-ink px-2.5 py-1 text-xs rounded-[2px] cursor-pointer hover:bg-list-hover"
                     onClick={handleWsLimitApply}
                   >
                     {LABEL_WS_APPLY}
@@ -246,26 +236,26 @@ export function SettingsModal({ isOpen, onClose, onSave }: SettingsModalProps) {
                 </div>
               </div>
 
-              <div className="form-group">
-                <label className="form-label">{LABEL_WS_CONNECTIONS}</label>
-                <div className="ws-stats">
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-ink-muted">{LABEL_WS_CONNECTIONS}</label>
+                <div className="border border-border rounded-[2px] p-2 text-xs bg-bg min-h-[40px] flex flex-col gap-1">
                   {wsStats && wsStats.connections.length > 0 ? (
                     wsStats.connections.map(({ ip, count }) => (
-                      <div key={ip} className="ws-stat-row">
-                        <span className="ws-stat-ip">{ip}</span>
-                        <span className="ws-stat-count">{count}</span>
+                      <div key={ip} className="flex justify-between items-center">
+                        <span className="font-mono text-ink">{ip}</span>
+                        <span className="font-semibold text-ink-muted">{count}</span>
                       </div>
                     ))
                   ) : (
-                    <div className="ws-stat-empty">接続なし</div>
+                    <div className="text-muted text-center">接続なし</div>
                   )}
                 </div>
               </div>
 
-              <div className="form-group">
+              <div className="flex flex-col gap-1">
                 <button
                   type="button"
-                  className="danger-button"
+                  className="bg-[#f14c4c] text-white border-0 px-3.5 py-1.5 text-[13px] font-medium rounded-[2px] cursor-pointer hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
                   onClick={handleWsClear}
                   disabled={isClearing}
                 >
@@ -274,13 +264,13 @@ export function SettingsModal({ isOpen, onClose, onSave }: SettingsModalProps) {
               </div>
             </section>
 
-            <p className="settings-restart-note">{LABEL_RESTART_NOTE}</p>
+            <p className="m-0 text-[11px] text-muted italic">{LABEL_RESTART_NOTE}</p>
           </div>
 
-          <div className="modal-footer">
+          <div className="flex justify-end gap-2 mt-4 border-t border-border pt-4">
             <button
               type="button"
-              className="ghost-button"
+              className="bg-transparent text-ink border-0 px-2 py-1 text-xs rounded-[2px] cursor-pointer hover:bg-list-hover"
               onClick={onClose}
               disabled={isSaving}
             >
@@ -288,7 +278,7 @@ export function SettingsModal({ isOpen, onClose, onSave }: SettingsModalProps) {
             </button>
             <button
               type="submit"
-              className="primary-button"
+              className="bg-accent text-white border-0 px-3.5 py-1.5 text-[13px] font-medium rounded-[2px] cursor-pointer hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
               disabled={isSaving}
             >
               {isSaving ? '保存中...' : LABEL_SAVE}

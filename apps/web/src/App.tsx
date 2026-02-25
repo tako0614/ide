@@ -483,11 +483,11 @@ export default function App() {
   const isWorkspaceEditorOpen = workspaceMode === 'editor' && Boolean(editorWorkspaceId);
 
   const workspaceView = (
-    <div className="workspace-view">
-      <div className="workspace-start">
+    <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
+      <div className="flex flex-col items-center gap-4 p-6 flex-shrink-0 border-b border-border">
         <button
           type="button"
-          className="primary-button"
+          className="bg-accent text-white border-0 px-3.5 py-1.5 text-[13px] font-medium rounded-[2px] cursor-pointer hover:opacity-90"
           onClick={openWorkspaceModal}
         >
           {'\u30ef\u30fc\u30af\u30b9\u30da\u30fc\u30b9\u8ffd\u52a0'}
@@ -593,7 +593,7 @@ export default function App() {
         onDrop={handleSplitContainerDrop}
       >
         {activeDeckIds.length === 0 ? (
-          <div className="panel empty-panel">
+          <div className="panel flex items-center justify-center text-muted text-[13px] p-5">
             {'デッキを作成してください。'}
           </div>
         ) : (
@@ -603,9 +603,9 @@ export default function App() {
             if (!deck) return null;
             return (
               <div key={deckId} className="deck-split-pane">
-                <div className="deck-split-header">
-                  {activeDeckIds.length > 1 && <span className="deck-split-title">{deck.name}</span>}
-                  <div className="deck-split-actions">
+                <div className="flex items-center justify-between px-2 py-1 border-b border-border bg-sidebar gap-2 min-h-[28px]">
+                  {activeDeckIds.length > 1 && <span className="flex-1 min-w-0 text-[11px] font-semibold text-ink-muted overflow-hidden text-ellipsis whitespace-nowrap">{deck.name}</span>}
+                  <div className="flex items-center gap-1 ml-auto">
                     <button
                       type="button"
                       className="topbar-btn-sm"
