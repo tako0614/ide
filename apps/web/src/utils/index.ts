@@ -6,7 +6,7 @@
 export { createEmptyWorkspaceState, createEmptyDeckState } from './stateUtils';
 
 // File utilities
-export { toTreeNodes, getLanguageFromPath, updateTreeNode } from './fileUtils';
+export { toTreeNodes, getLanguageFromPath, updateTreeNode, addTreeNode, removeTreeNode } from './fileUtils';
 
 // Path utilities
 export { normalizeWorkspacePath, getPathSeparator, joinPath, getParentPath } from './pathUtils';
@@ -21,6 +21,9 @@ export type { UrlState } from './urlUtils';
 // Theme utilities
 export { getInitialTheme } from './themeUtils';
 export type { ThemeMode } from './themeUtils';
+
+// Async utilities
+export { withTimeout } from './asyncUtils';
 
 // Re-export SAVED_MESSAGE from constants for backwards compatibility
 // Note: Prefer using MESSAGE_SAVED from constants directly

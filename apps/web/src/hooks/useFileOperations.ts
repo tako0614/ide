@@ -1,17 +1,7 @@
-import { useCallback, useState, useRef } from 'react';
+import { useCallback, useState } from 'react';
 import type { EditorFile, FileTreeNode, WorkspaceState } from '../types';
 import { listFiles, readFile, writeFile, createFile, deleteFile, createDirectory, deleteDirectory } from '../api';
-import { getErrorMessage, getLanguageFromPath, toTreeNodes, SAVED_MESSAGE } from '../utils';
-
-// API timeout wrapper
-const withTimeout = <T>(promise: Promise<T>, timeoutMs = 15000): Promise<T> => {
-  return Promise.race([
-    promise,
-    new Promise<T>((_, reject) =>
-      setTimeout(() => reject(new Error('Request timeout')), timeoutMs)
-    )
-  ]);
-};
+import { getErrorMessage, getLanguageFromPath, toTreeNodes, SAVED_MESSAGE, withTimeout, addTreeNode, removeTreeNode, updateTreeNode } from '../utils';
 
 interface UseFileOperationsProps {
   editorWorkspaceId: string | null;
@@ -28,27 +18,6 @@ export const useFileOperations = ({
 }: UseFileOperationsProps) => {
   const [savingFileId, setSavingFileId] = useState<string | null>(null);
 
-  const updateTreeNode = useCallback(
-    (
-      nodes: FileTreeNode[],
-      targetPath: string,
-      updater: (node: FileTreeNode) => FileTreeNode
-    ): FileTreeNode[] =>
-      nodes.map((node) => {
-        if (node.path === targetPath) {
-          return updater(node);
-        }
-        if (node.children) {
-          return {
-            ...node,
-            children: updateTreeNode(node.children, targetPath, updater)
-          };
-        }
-        return node;
-      }),
-    []
-  );
-
   const handleRefreshTree = useCallback(() => {
     if (!editorWorkspaceId) return;
     updateWorkspaceState(editorWorkspaceId, (state) => ({
@@ -56,7 +25,7 @@ export const useFileOperations = ({
       treeLoading: true,
       treeError: null
     }));
-    withTimeout(listFiles(editorWorkspaceId, ''))
+    withTimeout(listFiles(editorWorkspaceId, ''), 15000)
       .then((entries) => {
         updateWorkspaceState(editorWorkspaceId, (state) => ({
           ...state,
@@ -104,7 +73,7 @@ export const useFileOperations = ({
           loading: true
         }))
       }));
-      withTimeout(listFiles(editorWorkspaceId, node.path))
+      withTimeout(listFiles(editorWorkspaceId, node.path), 15000)
         .then((entries) => {
           updateWorkspaceState(editorWorkspaceId, (state) => ({
             ...state,
@@ -127,7 +96,7 @@ export const useFileOperations = ({
           }));
         });
     },
-    [editorWorkspaceId, updateWorkspaceState, updateTreeNode]
+    [editorWorkspaceId, updateWorkspaceState]
   );
 
   const handleOpenFile = useCallback(
@@ -160,7 +129,7 @@ export const useFileOperations = ({
         activeFileId: tempFileId
       }));
 
-      withTimeout(readFile(editorWorkspaceId, entry.path))
+      withTimeout(readFile(editorWorkspaceId, entry.path), 15000)
         .then((data) => {
           updateWorkspaceState(editorWorkspaceId, (state) => ({
             ...state,
@@ -206,7 +175,7 @@ export const useFileOperations = ({
       if (!file) return;
       setSavingFileId(fileId);
       try {
-        await withTimeout(writeFile(editorWorkspaceId, file.path, file.contents));
+        await withTimeout(writeFile(editorWorkspaceId, file.path, file.contents), 15000);
         updateWorkspaceState(editorWorkspaceId, (state) => ({
           ...state,
           files: state.files.map((item) =>
@@ -254,56 +223,12 @@ export const useFileOperations = ({
     [editorWorkspaceId, updateWorkspaceState]
   );
 
-  // Helper to remove a node from tree
-  const removeTreeNode = useCallback(
-    (nodes: FileTreeNode[], targetPath: string): FileTreeNode[] =>
-      nodes.filter((node) => {
-        if (node.path === targetPath) {
-          return false;
-        }
-        if (node.children) {
-          node.children = removeTreeNode(node.children, targetPath);
-        }
-        return true;
-      }),
-    []
-  );
-
-  // Helper to add a node to tree
-  const addTreeNode = useCallback(
-    (nodes: FileTreeNode[], parentPath: string, newNode: FileTreeNode): FileTreeNode[] => {
-      // If parent is root (empty string), add to root level
-      if (!parentPath) {
-        const updated = [...nodes, newNode];
-        return updated.sort((a, b) => {
-          if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
-          return a.name.localeCompare(b.name);
-        });
-      }
-      return nodes.map((node) => {
-        if (node.path === parentPath && node.type === 'dir') {
-          const children = node.children || [];
-          const updated = [...children, newNode].sort((a, b) => {
-            if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
-            return a.name.localeCompare(b.name);
-          });
-          return { ...node, children: updated, expanded: true };
-        }
-        if (node.children) {
-          return { ...node, children: addTreeNode(node.children, parentPath, newNode) };
-        }
-        return node;
-      });
-    },
-    []
-  );
-
   const handleCreateFile = useCallback(
     async (parentPath: string, fileName: string) => {
       if (!editorWorkspaceId) return;
       const filePath = parentPath ? `${parentPath}/${fileName}` : fileName;
       try {
-        await withTimeout(createFile(editorWorkspaceId, filePath));
+        await withTimeout(createFile(editorWorkspaceId, filePath), 15000);
         const newNode: FileTreeNode = {
           name: fileName,
           path: filePath,
@@ -320,7 +245,7 @@ export const useFileOperations = ({
         setStatusMessage(`ファイル作成に失敗しました: ${getErrorMessage(error)}`);
       }
     },
-    [editorWorkspaceId, updateWorkspaceState, setStatusMessage, addTreeNode]
+    [editorWorkspaceId, updateWorkspaceState, setStatusMessage]
   );
 
   const handleCreateDirectory = useCallback(
@@ -328,7 +253,7 @@ export const useFileOperations = ({
       if (!editorWorkspaceId) return;
       const dirPath = parentPath ? `${parentPath}/${dirName}` : dirName;
       try {
-        await withTimeout(createDirectory(editorWorkspaceId, dirPath));
+        await withTimeout(createDirectory(editorWorkspaceId, dirPath), 15000);
         const newNode: FileTreeNode = {
           name: dirName,
           path: dirPath,
@@ -346,14 +271,14 @@ export const useFileOperations = ({
         setStatusMessage(`フォルダ作成に失敗しました: ${getErrorMessage(error)}`);
       }
     },
-    [editorWorkspaceId, updateWorkspaceState, setStatusMessage, addTreeNode]
+    [editorWorkspaceId, updateWorkspaceState, setStatusMessage]
   );
 
   const handleDeleteFile = useCallback(
     async (filePath: string) => {
       if (!editorWorkspaceId) return;
       try {
-        await withTimeout(deleteFile(editorWorkspaceId, filePath));
+        await withTimeout(deleteFile(editorWorkspaceId, filePath), 15000);
         updateWorkspaceState(editorWorkspaceId, (state) => {
           // Close the file if it's open
           const newFiles = state.files.filter((f) => f.path !== filePath);
@@ -374,14 +299,14 @@ export const useFileOperations = ({
         setStatusMessage(`ファイル削除に失敗しました: ${getErrorMessage(error)}`);
       }
     },
-    [editorWorkspaceId, updateWorkspaceState, setStatusMessage, removeTreeNode]
+    [editorWorkspaceId, updateWorkspaceState, setStatusMessage]
   );
 
   const handleDeleteDirectory = useCallback(
     async (dirPath: string) => {
       if (!editorWorkspaceId) return;
       try {
-        await withTimeout(deleteDirectory(editorWorkspaceId, dirPath));
+        await withTimeout(deleteDirectory(editorWorkspaceId, dirPath), 15000);
         updateWorkspaceState(editorWorkspaceId, (state) => {
           // Close any files that were in this directory
           const newFiles = state.files.filter((f) => !f.path.startsWith(dirPath + '/') && f.path !== dirPath);
@@ -402,7 +327,7 @@ export const useFileOperations = ({
         setStatusMessage(`フォルダ削除に失敗しました: ${getErrorMessage(error)}`);
       }
     },
-    [editorWorkspaceId, updateWorkspaceState, setStatusMessage, removeTreeNode]
+    [editorWorkspaceId, updateWorkspaceState, setStatusMessage]
   );
 
   return {

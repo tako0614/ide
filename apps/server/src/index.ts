@@ -1,3 +1,6 @@
 import { createServer } from './server.js';
 
-createServer();
+createServer().catch((err) => {
+  console.error('Failed to start server:', err);
+  process.exit(1);
+});

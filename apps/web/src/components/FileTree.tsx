@@ -1,5 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import type { FileTreeNode, GitFileStatus } from '../types';
+import { FileTreeContextMenu } from './FileTreeContextMenu';
+import type { ContextMenu } from './FileTreeContextMenu';
 
 const LABEL_LOADING = '読み込み中...';
 const LABEL_FILES = 'ファイル';
@@ -60,13 +62,6 @@ const FileIcon = () => (
     />
   </svg>
 );
-
-interface ContextMenu {
-  x: number;
-  y: number;
-  node: FileTreeNode | null;
-  isRoot: boolean;
-}
 
 interface NewItemInput {
   parentPath: string;
@@ -136,12 +131,10 @@ export function FileTree({
   const handleContextMenu = useCallback((e: React.MouseEvent, node: FileTreeNode | null, isRoot = false) => {
     e.preventDefault();
     e.stopPropagation();
-    setContextMenu({
-      x: e.clientX,
-      y: e.clientY,
-      node,
-      isRoot
-    });
+    const MENU_W = 180, MENU_H = 150;
+    const x = Math.min(e.clientX, window.innerWidth - MENU_W - 4);
+    const y = Math.min(e.clientY, window.innerHeight - MENU_H - 4);
+    setContextMenu({ x, y, node, isRoot });
   }, []);
 
   const handleNewFile = useCallback((parentPath: string, depth: number) => {
@@ -296,42 +289,12 @@ export function FileTree({
 
       {/* Context Menu */}
       {contextMenu && (
-        <div
-          className="context-menu"
-          style={{ left: contextMenu.x, top: contextMenu.y }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          {(contextMenu.isRoot || contextMenu.node?.type === 'dir') && (
-            <>
-              <button
-                type="button"
-                className="context-menu-item"
-                onClick={() => handleNewFile(contextMenu.node?.path || '', contextMenu.node ? 1 : 0)}
-              >
-                新規ファイル
-              </button>
-              <button
-                type="button"
-                className="context-menu-item"
-                onClick={() => handleNewFolder(contextMenu.node?.path || '', contextMenu.node ? 1 : 0)}
-              >
-                新規フォルダ
-              </button>
-            </>
-          )}
-          {contextMenu.node && !contextMenu.isRoot && (
-            <>
-              {contextMenu.node.type === 'dir' && <div className="context-menu-separator" />}
-              <button
-                type="button"
-                className="context-menu-item delete"
-                onClick={() => handleDelete(contextMenu.node!)}
-              >
-                削除
-              </button>
-            </>
-          )}
-        </div>
+        <FileTreeContextMenu
+          contextMenu={contextMenu}
+          onNewFile={handleNewFile}
+          onNewFolder={handleNewFolder}
+          onDelete={handleDelete}
+        />
       )}
     </section>
   );

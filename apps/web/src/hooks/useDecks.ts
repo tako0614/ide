@@ -13,7 +13,6 @@ interface UseDecksProps {
   setStatusMessage: (message: string) => void;
   initializeDeckStates: (deckIds: string[]) => void;
   updateDeckState: (deckId: string, updater: (state: import('../types').DeckState) => import('../types').DeckState) => void;
-  deckStates: Record<string, import('../types').DeckState>;
   setDeckStates: React.Dispatch<React.SetStateAction<Record<string, import('../types').DeckState>>>;
   initialDeckIds?: string[];
 }
@@ -22,7 +21,6 @@ export const useDecks = ({
   setStatusMessage,
   initializeDeckStates,
   updateDeckState,
-  deckStates,
   setDeckStates,
   initialDeckIds
 }: UseDecksProps) => {
@@ -36,62 +34,36 @@ export const useDecks = ({
         if (!alive) return;
         setDecks(data);
         initializeDeckStates(data.map((deck) => deck.id));
+        // Load terminals for all decks upfront
+        data.forEach((deck) => {
+          listTerminals(deck.id)
+            .then((sessions) => {
+              if (!alive) return;
+              updateDeckState(deck.id, (state) => ({ ...state, terminals: sessions }));
+            })
+            .catch(() => undefined); // silent — deck just shows empty until retry
+        });
       })
       .catch((error: unknown) => {
         if (!alive) return;
-        setStatusMessage(
-          `デッキを取得できませんでした: ${getErrorMessage(error)}`
-        );
+        setStatusMessage(`デッキを取得できませんでした: ${getErrorMessage(error)}`);
       });
 
     return () => {
       alive = false;
     };
-  }, [setStatusMessage, initializeDeckStates]);
+  }, [setStatusMessage, initializeDeckStates, updateDeckState]);
 
   useEffect(() => {
-    // Don't do anything until decks are loaded
-    if (decks.length === 0) {
-      return;
-    }
-    // Filter out invalid deck IDs
+    if (decks.length === 0) return;
     const validIds = activeDeckIds.filter((id) => decks.some((deck) => deck.id === id));
-    // If all IDs are valid, keep them
-    if (validIds.length === activeDeckIds.length && validIds.length > 0) {
-      return;
-    }
-    // If we have some valid IDs, use them; otherwise fall back to first deck
+    if (validIds.length === activeDeckIds.length && validIds.length > 0) return;
     if (validIds.length > 0) {
       setActiveDeckIds(validIds);
     } else if (decks[0]) {
       setActiveDeckIds([decks[0].id]);
     }
   }, [decks, activeDeckIds]);
-
-  // Load terminals for all active decks
-  useEffect(() => {
-    activeDeckIds.forEach((deckId) => {
-      const current = deckStates[deckId];
-      if (current?.terminalsLoaded) return;
-      listTerminals(deckId)
-        .then((sessions) => {
-          updateDeckState(deckId, (state) => ({
-            ...state,
-            terminals: sessions,
-            terminalsLoaded: true
-          }));
-        })
-        .catch((error: unknown) => {
-          updateDeckState(deckId, (state) => ({
-            ...state,
-            terminalsLoaded: true
-          }));
-          setStatusMessage(
-            `ターミナルを取得できませんでした: ${getErrorMessage(error)}`
-          );
-        });
-    });
-  }, [activeDeckIds, deckStates, updateDeckState, setStatusMessage]);
 
   const handleCreateDeck = useCallback(
     async (name: string, workspaceId: string) => {
@@ -120,17 +92,10 @@ export const useDecks = ({
         const index = terminalsCount + 1;
         const title = customTitle || `ターミナル ${index}`;
         const session = await apiCreateTerminal(deckId, title, command);
-        updateDeckState(deckId, (state) => {
-          const terminal = {
-            id: session.id,
-            title: session.title || title
-          };
-          return {
-            ...state,
-            terminals: [...state.terminals, terminal],
-            terminalsLoaded: true
-          };
-        });
+        updateDeckState(deckId, (state) => ({
+          ...state,
+          terminals: [...state.terminals, { id: session.id, title: session.title || title }]
+        }));
       } catch (error: unknown) {
         setStatusMessage(
           `ターミナルを起動できませんでした: ${getErrorMessage(error)}`

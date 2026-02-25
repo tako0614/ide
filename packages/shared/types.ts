@@ -62,7 +62,6 @@ export interface WorkspaceState {
 
 export interface DeckState {
   terminals: TerminalSession[];
-  terminalsLoaded: boolean;
 }
 
 // API Response types
