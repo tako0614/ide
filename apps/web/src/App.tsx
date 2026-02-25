@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from 'react';
 import { DeckModal } from './components/DeckModal';
 import { SideNav } from './components/SideNav';
 import { StatusMessage } from './components/StatusMessage';
@@ -28,15 +28,57 @@ import {
 import { parseUrlState } from './utils/urlUtils';
 import { createEmptyWorkspaceState, createEmptyDeckState } from './utils/stateUtils';
 
+const MAX_ACTIVE_DECKS = 3;
+const DECK_ORDER_STORAGE_KEY = 'deck-ide.deck-order';
+
+function arraysEqual(left: string[], right: string[]) {
+  if (left.length !== right.length) return false;
+  return left.every((value, index) => value === right[index]);
+}
+
+function moveItemBefore(items: string[], source: string, target: string) {
+  const sourceIndex = items.indexOf(source);
+  const targetIndex = items.indexOf(target);
+  if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) {
+    return items;
+  }
+  const next = [...items];
+  next.splice(sourceIndex, 1);
+  const insertionIndex = next.indexOf(target);
+  next.splice(insertionIndex, 0, source);
+  return next;
+}
+
+function readDeckOrderFromStorage() {
+  if (typeof window === 'undefined') return [];
+  try {
+    const rawValue = window.localStorage.getItem(DECK_ORDER_STORAGE_KEY);
+    if (!rawValue) return [];
+    const parsed = JSON.parse(rawValue);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((value): value is string => typeof value === 'string');
+  } catch {
+    return [];
+  }
+}
+
 export default function App() {
   const initialUrlState = parseUrlState();
   const splitContainerRef = useRef<HTMLDivElement>(null);
+  const ignoreNextDeckClickRef = useRef(false);
   const [view, setView] = useState<AppView>(initialUrlState.view);
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>(
     initialUrlState.workspaceMode
   );
   const [defaultRoot, setDefaultRoot] = useState(DEFAULT_ROOT_FALLBACK);
   const [statusMessage, setStatusMessage] = useState('');
+  const [deckOrderIds, setDeckOrderIds] = useState<string[]>(() =>
+    readDeckOrderFromStorage()
+  );
+  const [draggingDeckId, setDraggingDeckId] = useState<string | null>(null);
+  const [dragOverDeckId, setDragOverDeckId] = useState<string | null>(null);
+  const [isSplitDropTargetActive, setIsSplitDropTargetActive] = useState(false);
+  const [isDesktopDragEnabled, setIsDesktopDragEnabled] = useState(false);
 
   const { theme, handleToggleTheme } = useTheme();
 
@@ -137,6 +179,17 @@ export default function App() {
     () => new Map(workspaces.map((workspace) => [workspace.id, workspace])),
     [workspaces]
   );
+  const orderedDecks = useMemo(() => {
+    const deckById = new Map(decks.map((deck) => [deck.id, deck]));
+    const inOrder = deckOrderIds
+      .map((deckId) => deckById.get(deckId))
+      .filter((deck): deck is (typeof decks)[number] => deck !== undefined);
+    if (inOrder.length === decks.length) {
+      return inOrder;
+    }
+    const inOrderSet = new Set(inOrder.map((deck) => deck.id));
+    return [...inOrder, ...decks.filter((deck) => !inOrderSet.has(deck.id))];
+  }, [decks, deckOrderIds]);
 
   useEffect(() => {
     let alive = true;
@@ -164,6 +217,53 @@ export default function App() {
       setWorkspaceMode('list');
     }
   }, [workspaceMode, editorWorkspaceId]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const mediaQuery = window.matchMedia('(pointer: fine) and (min-width: 721px)');
+    const syncDragCapability = () => setIsDesktopDragEnabled(mediaQuery.matches);
+    syncDragCapability();
+    mediaQuery.addEventListener('change', syncDragCapability);
+    return () => mediaQuery.removeEventListener('change', syncDragCapability);
+  }, []);
+
+  useEffect(() => {
+    const validDeckIds = decks.map((deck) => deck.id);
+    setDeckOrderIds((prev) => {
+      const filtered = prev.filter((deckId) => validDeckIds.includes(deckId));
+      const missing = validDeckIds.filter((deckId) => !filtered.includes(deckId));
+      const next = [...filtered, ...missing];
+      return arraysEqual(next, prev) ? prev : next;
+    });
+  }, [decks]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (deckOrderIds.length === 0) {
+      window.localStorage.removeItem(DECK_ORDER_STORAGE_KEY);
+      return;
+    }
+    window.localStorage.setItem(DECK_ORDER_STORAGE_KEY, JSON.stringify(deckOrderIds));
+  }, [deckOrderIds]);
+
+  const resetDeckDragState = useCallback(() => {
+    setDraggingDeckId(null);
+    setDragOverDeckId(null);
+    setIsSplitDropTargetActive(false);
+  }, []);
+
+  const suppressNextDeckClick = useCallback(() => {
+    ignoreNextDeckClickRef.current = true;
+    window.setTimeout(() => {
+      ignoreNextDeckClickRef.current = false;
+    }, 100);
+  }, []);
+
+  useEffect(() => {
+    if (!isDesktopDragEnabled) {
+      resetDeckDragState();
+    }
+  }, [isDesktopDragEnabled, resetDeckDragState]);
 
   // Track if we've loaded tree for current workspace
   const treeLoadedRef = useRef<string | null>(null);
@@ -271,48 +371,105 @@ export default function App() {
     [handleDeleteTerminal]
   );
 
-  const handleToggleDeck = useCallback((deckId: string, shiftKey = false) => {
+  const handleSelectDeck = useCallback((deckId: string) => {
+    if (ignoreNextDeckClickRef.current) {
+      ignoreNextDeckClickRef.current = false;
+      return;
+    }
+    setActiveDeckIds([deckId]);
+  }, [setActiveDeckIds]);
+
+  const handleSplitDeck = useCallback((deckId: string) => {
     setActiveDeckIds((prev) => {
-      if (prev.includes(deckId)) {
-        if (prev.length > 1) {
-          return prev.filter((id) => id !== deckId);
-        }
-        return prev;
-      } else if (shiftKey) {
-        if (prev.length < 3) {
-          return [...prev, deckId];
-        }
-        return [...prev.slice(1), deckId];
-      } else {
-        return [deckId];
+      const next = [...prev.filter((id) => id !== deckId), deckId];
+      if (next.length <= MAX_ACTIVE_DECKS) {
+        return next;
       }
+      return next.slice(next.length - MAX_ACTIVE_DECKS);
     });
   }, [setActiveDeckIds]);
 
   const handleCloseDeckTab = useCallback((deckId: string) => {
     setActiveDeckIds((prev) => {
       if (prev.length <= 1) {
-        const other = decks.find((d) => d.id !== deckId);
+        const other = orderedDecks.find((d) => d.id !== deckId);
         return other ? [other.id] : prev;
       }
       return prev.filter((id) => id !== deckId);
     });
-  }, [decks, setActiveDeckIds]);
+  }, [orderedDecks, setActiveDeckIds]);
 
-  const handleDeckTabMobile = useCallback((deckId: string) => {
-    const container = splitContainerRef.current;
-    if (!container) return;
-    const idx = activeDeckIds.indexOf(deckId);
-    if (idx >= 0) {
-      container.scrollTo({ left: container.clientWidth * idx, behavior: 'smooth' });
-    } else {
-      setActiveDeckIds((prev) => [...prev, deckId]);
-      requestAnimationFrame(() => {
-        const c = splitContainerRef.current;
-        if (c) c.scrollTo({ left: c.scrollWidth, behavior: 'smooth' });
-      });
+  const handleDeckTabDragStart = useCallback((event: ReactDragEvent<HTMLButtonElement>, deckId: string) => {
+    if (!isDesktopDragEnabled) {
+      event.preventDefault();
+      return;
     }
-  }, [activeDeckIds, setActiveDeckIds]);
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', deckId);
+    setDraggingDeckId(deckId);
+    setDragOverDeckId(null);
+    setIsSplitDropTargetActive(false);
+  }, [isDesktopDragEnabled]);
+
+  const handleDeckTabDragOver = useCallback((event: ReactDragEvent<HTMLButtonElement>, deckId: string) => {
+    if (!isDesktopDragEnabled || !draggingDeckId || draggingDeckId === deckId) {
+      return;
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    setDragOverDeckId(deckId);
+    setIsSplitDropTargetActive(false);
+  }, [isDesktopDragEnabled, draggingDeckId]);
+
+  const handleDeckTabDragLeave = useCallback((event: ReactDragEvent<HTMLButtonElement>, deckId: string) => {
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) {
+      return;
+    }
+    setDragOverDeckId((prev) => (prev === deckId ? null : prev));
+  }, []);
+
+  const handleDeckTabDrop = useCallback((event: ReactDragEvent<HTMLButtonElement>, deckId: string) => {
+    if (!isDesktopDragEnabled) return;
+    event.preventDefault();
+    const sourceDeckId = draggingDeckId || event.dataTransfer.getData('text/plain');
+    if (!sourceDeckId || sourceDeckId === deckId) {
+      resetDeckDragState();
+      return;
+    }
+    setDeckOrderIds((prev) => moveItemBefore(prev, sourceDeckId, deckId));
+    setActiveDeckIds((prev) => moveItemBefore(prev, sourceDeckId, deckId));
+    suppressNextDeckClick();
+    resetDeckDragState();
+  }, [draggingDeckId, isDesktopDragEnabled, resetDeckDragState, setActiveDeckIds, suppressNextDeckClick]);
+
+  const handleSplitContainerDragOver = useCallback((event: ReactDragEvent<HTMLDivElement>) => {
+    if (!isDesktopDragEnabled || !draggingDeckId) {
+      return;
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    setIsSplitDropTargetActive(true);
+  }, [isDesktopDragEnabled, draggingDeckId]);
+
+  const handleSplitContainerDragLeave = useCallback((event: ReactDragEvent<HTMLDivElement>) => {
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) {
+      return;
+    }
+    setIsSplitDropTargetActive(false);
+  }, []);
+
+  const handleSplitContainerDrop = useCallback((event: ReactDragEvent<HTMLDivElement>) => {
+    if (!isDesktopDragEnabled) return;
+    event.preventDefault();
+    const sourceDeckId = draggingDeckId || event.dataTransfer.getData('text/plain');
+    if (!sourceDeckId) {
+      resetDeckDragState();
+      return;
+    }
+    handleSplitDeck(sourceDeckId);
+    suppressNextDeckClick();
+    resetDeckDragState();
+  }, [draggingDeckId, handleSplitDeck, isDesktopDragEnabled, resetDeckDragState, suppressNextDeckClick]);
 
   const handleSelectFile = useCallback((fileId: string) => {
     if (!editorWorkspaceId) return;
@@ -387,19 +544,22 @@ export default function App() {
       <div className="terminal-topbar">
         <div className="topbar-left">
           <div className="deck-tabs">
-            {decks.map((deck) => (
+            {orderedDecks.map((deck) => (
               <button
                 key={deck.id}
                 type="button"
-                className={`deck-tab ${activeDeckIds.includes(deck.id) ? 'active' : ''}`}
-                onClick={(e) => {
-                  if (splitContainerRef.current && splitContainerRef.current.offsetWidth < splitContainerRef.current.scrollWidth + 2) {
-                    handleDeckTabMobile(deck.id);
-                  } else {
-                    handleToggleDeck(deck.id, e.shiftKey);
-                  }
-                }}
-                title={`${workspaceById.get(deck.workspaceId)?.path || deck.root}\nShift+クリックで分割表示`}
+                className={`deck-tab ${activeDeckIds.includes(deck.id) ? 'active' : ''}${draggingDeckId === deck.id ? ' is-dragging' : ''}${dragOverDeckId === deck.id ? ' is-drag-over' : ''}`}
+                onClick={() => handleSelectDeck(deck.id)}
+                draggable={isDesktopDragEnabled}
+                onDragStart={(event) => handleDeckTabDragStart(event, deck.id)}
+                onDragOver={(event) => handleDeckTabDragOver(event, deck.id)}
+                onDragLeave={(event) => handleDeckTabDragLeave(event, deck.id)}
+                onDrop={(event) => handleDeckTabDrop(event, deck.id)}
+                onDragEnd={resetDeckDragState}
+                title={isDesktopDragEnabled
+                  ? `${workspaceById.get(deck.workspaceId)?.path || deck.root}\nドラッグで並び替え / メインにドロップで分割表示`
+                  : `${workspaceById.get(deck.workspaceId)?.path || deck.root}`
+                }
               >
                 <span className="deck-tab-name">{deck.name}</span>
                 <span
@@ -423,7 +583,14 @@ export default function App() {
           </div>
         </div>
       </div>
-      <div className="terminal-split-container" ref={splitContainerRef} style={{ gridTemplateColumns: `repeat(${activeDeckIds.length}, 1fr)` }}>
+      <div
+        className={`terminal-split-container${isSplitDropTargetActive ? ' is-drop-target' : ''}`}
+        ref={splitContainerRef}
+        style={{ gridTemplateColumns: `repeat(${activeDeckIds.length}, 1fr)` }}
+        onDragOver={handleSplitContainerDragOver}
+        onDragLeave={handleSplitContainerDragLeave}
+        onDrop={handleSplitContainerDrop}
+      >
         {activeDeckIds.length === 0 ? (
           <div className="panel empty-panel">
             {'デッキを作成してください。'}
