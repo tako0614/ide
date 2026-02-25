@@ -7,7 +7,7 @@
   },
   "homepage": "https://github.com/tako0614/ide",
   "private": true,
-  "version": "2.12.4",
+  "version": "2.12.5",
   "main": "src/main.cjs",
   "scripts": {
     "dev": "electron .",
