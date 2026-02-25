@@ -33,7 +33,17 @@ jobs:
           cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci
+        shell: bash
+        run: |
+          for i in {1..5}; do
+            if npm ci; then
+              exit 0
+            fi
+            echo "npm ci failed (attempt $i/5). Retrying in 15s..."
+            sleep 15
+          done
+          echo "npm ci failed after 5 attempts"
+          exit 1
 
       - name: Build shared package
         run: npm --workspace @deck-ide/shared run build
