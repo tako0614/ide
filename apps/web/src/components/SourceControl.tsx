@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react';
+import clsx from 'clsx';
 import type { GitStatus, GitFileStatus, GitRepoInfo } from '../types';
 import type { BranchStatus, GitBranch, GitLogEntry } from '../hooks/useGitState';
 import { ChangesTab } from './git/ChangesTab';
@@ -221,7 +222,7 @@ export function SourceControl({
       <div className="git-tabs">
         <button
           type="button"
-          className={`git-tab ${activeTab === 'changes' ? 'active' : ''}`}
+          className={clsx('git-tab', activeTab === 'changes' && 'active')}
           onClick={() => handleTabChange('changes')}
         >
           {LABEL_CHANGES}
@@ -229,14 +230,14 @@ export function SourceControl({
         </button>
         <button
           type="button"
-          className={`git-tab ${activeTab === 'branches' ? 'active' : ''}`}
+          className={clsx('git-tab', activeTab === 'branches' && 'active')}
           onClick={() => handleTabChange('branches')}
         >
           {LABEL_BRANCHES}
         </button>
         <button
           type="button"
-          className={`git-tab ${activeTab === 'history' ? 'active' : ''}`}
+          className={clsx('git-tab', activeTab === 'history' && 'active')}
           onClick={() => handleTabChange('history')}
         >
           {LABEL_HISTORY}

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
+import clsx from 'clsx';
 import Editor, { type OnMount } from '@monaco-editor/react';
 import type { EditorFile } from '../types';
 import { EDITOR_FONT_FAMILY, EDITOR_FONT_SIZE } from '../constants';
@@ -150,7 +151,7 @@ export function EditorPane({
             return (
               <div
                 key={file.id}
-                className={`editor-tab ${isActive ? 'active' : ''} ${file.dirty ? 'dirty' : ''}`}
+                className={clsx('editor-tab', isActive && 'active', file.dirty && 'dirty')}
                 onClick={() => onSelectFile(file.id)}
                 onMouseDown={(e) => handleTabMiddleClick(e, file.id)}
                 role="tab"

@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
+import clsx from 'clsx';
 import type { FileTreeNode, GitFileStatus } from '../types';
 import { FileTreeContextMenu } from './FileTreeContextMenu';
 import type { ContextMenu } from './FileTreeContextMenu';
@@ -219,9 +220,7 @@ export function FileTree({
         <div key={entry.path}>
           <button
             type="button"
-            className={`tree-row ${
-              entry.type === 'dir' ? 'is-dir' : ''
-            } ${mode === 'tree' && entry.expanded ? 'is-open' : ''} ${gitClass}`}
+            className={clsx('tree-row', entry.type === 'dir' && 'is-dir', mode === 'tree' && entry.expanded && 'is-open', gitClass)}
             style={{ paddingLeft: 12 + depth * 16 }}
             onClick={() =>
               entry.type === 'dir' ? onToggleDir(entry) : onOpenFile(entry)
