@@ -1358,8 +1358,10 @@ textarea {
 .terminal-layout {
   flex: 1;
   min-height: 0;
+  min-width: 0;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 /* Terminal Top Bar */
@@ -1369,6 +1371,8 @@ textarea {
   background: var(--sidebar);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .topbar-left {
@@ -1376,6 +1380,7 @@ textarea {
   align-items: stretch;
   min-width: 0;
   flex: 1;
+  overflow: hidden;
 }
 
 /* Deck Tabs */
@@ -1384,6 +1389,7 @@ textarea {
   align-items: stretch;
   overflow-x: auto;
   flex: 1;
+  min-width: 0;
   scrollbar-width: none;
 }
 
@@ -1411,6 +1417,19 @@ textarea {
   flex-shrink: 0;
 }
 
+.deck-tab[draggable='true'] {
+  cursor: grab;
+}
+
+.deck-tab.is-dragging {
+  opacity: 0.5;
+}
+
+.deck-tab.is-drag-over {
+  background: var(--list-active);
+  color: var(--ink);
+}
+
 .deck-tab:hover {
   background: var(--list-hover);
   color: var(--ink);
@@ -1426,6 +1445,7 @@ textarea {
   overflow: hidden;
   text-overflow: ellipsis;
   flex: 1;
+  min-width: 0;
 }
 
 .deck-tab-close {
@@ -1495,15 +1515,37 @@ textarea {
 .terminal-split-container {
   flex: 1;
   min-height: 0;
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
   display: grid;
   gap: 4px;
   padding: 4px;
+  position: relative;
+}
+
+.terminal-split-container.is-drop-target::after {
+  content: 'デッキをここにドロップして分割';
+  position: absolute;
+  inset: 10px;
+  border: 2px dashed var(--accent);
+  border-radius: 6px;
+  background: rgba(0, 120, 212, 0.08);
+  color: var(--ink-muted);
+  font-size: 12px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 2;
 }
 
 .deck-split-pane {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  min-width: 0;
   border: 1px solid var(--border);
   border-radius: 4px;
   overflow: hidden;
@@ -1517,6 +1559,8 @@ textarea {
   background: var(--bg-soft);
   border-bottom: 1px solid var(--border);
   min-height: 32px;
+  min-width: 0;
+  gap: 8px;
 }
 
 .deck-split-title {
@@ -1533,6 +1577,7 @@ textarea {
   align-items: center;
   gap: 4px;
   margin-left: auto;
+  flex-shrink: 0;
 }
 
 .topbar-btn-sm {
@@ -1606,6 +1651,7 @@ textarea {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  min-width: 0;
   padding: 4px;
 }
 
@@ -1644,6 +1690,8 @@ textarea {
   display: grid;
   gap: 4px;
   min-height: 0;
+  min-width: 0;
+  width: 100%;
   flex: 1;
   overflow: hidden;
 }
@@ -2504,18 +2552,22 @@ textarea:focus-visible {
     flex-direction: row;
     width: auto;
     height: 48px;
-    justify-content: center;
+    justify-content: space-between;
+    padding: 0 max(8px, env(safe-area-inset-right, 0px)) 0 max(8px, env(safe-area-inset-left, 0px));
+    gap: 8px;
     border-top: 1px solid var(--border);
   }
 
   .activity-bar-top,
   .activity-bar-bottom {
     flex-direction: row;
+    align-items: center;
+    gap: 4px;
   }
 
   .activity-bar-bottom {
     margin-top: 0;
-    margin-left: auto;
+    margin-left: 0;
   }
 
   .app > nav.activity-bar .activity-bar-item.active::before {
@@ -2529,6 +2581,8 @@ textarea:focus-visible {
 
   .main {
     grid-row: 1;
+    min-width: 0;
+    overflow: hidden;
   }
 
   /* Mobile: horizontal swipe between decks */
@@ -2544,6 +2598,8 @@ textarea:focus-visible {
     scrollbar-width: none;
     padding: 0 !important;
     gap: 0 !important;
+    width: 100%;
+    max-width: 100%;
   }
 
   .terminal-split-container::-webkit-scrollbar {
@@ -2552,6 +2608,8 @@ textarea:focus-visible {
 
   .deck-split-pane {
     flex: 0 0 100%;
+    width: 100%;
+    max-width: 100%;
     scroll-snap-align: start;
     overflow: hidden;
     border-radius: 0;
@@ -2569,6 +2627,8 @@ textarea:focus-visible {
     touch-action: pan-y;
     scrollbar-width: none;
     padding: 0 !important;
+    width: 100%;
+    max-width: 100%;
   }
 
   .terminal-pane::-webkit-scrollbar {
@@ -2577,7 +2637,9 @@ textarea:focus-visible {
 
   /* status-float: clear bottom nav bar */
   .status-float {
-    bottom: calc(48px + 20px + env(safe-area-inset-bottom, 0px));
+    right: 12px;
+    bottom: calc(48px + 22px + env(safe-area-inset-bottom, 0px) + 8px);
+    max-width: calc(100vw - 24px);
   }
 
   .terminal-grid {
@@ -2585,6 +2647,7 @@ textarea:focus-visible {
     flex-direction: column !important;
     flex: none !important;
     min-height: 100%;
+    width: 100%;
     overflow: visible !important;
     gap: 0 !important;
     grid-template-columns: unset !important;
@@ -2594,6 +2657,8 @@ textarea:focus-visible {
   /* Each terminal fills the scroll viewport */
   .terminal-tile {
     flex: 0 0 100%;
+    width: 100%;
+    max-width: 100%;
     scroll-snap-align: start;
     border-radius: 0;
     border-left: none;
@@ -2725,6 +2790,16 @@ textarea:focus-visible {
   .workspace-editor-header {
     gap: 8px;
     padding: 0 8px;
+  }
+
+  .workspace-editor-header .sidebar-toggle-btn {
+    margin-left: auto;
+    order: 3;
+  }
+
+  .workspace-editor-header .workspace-meta {
+    min-width: 0;
+    text-align: left;
   }
 
   /* Touch targets (44px minimum for modal close, 36px for list items) */
