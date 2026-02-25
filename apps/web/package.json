@@ -11,8 +11,11 @@
   "dependencies": {
     "@deck-ide/shared": "file:../../packages/shared",
     "@monaco-editor/react": "^4.6.0",
+    "@tailwindcss/vite": "^4.2.1",
+    "clsx": "^2.1.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "tailwindcss": "^4.2.1",
     "xterm": "^5.3.0",
     "xterm-addon-fit": "^0.8.0",
     "xterm-addon-unicode11": "^0.6.0",
@@ -20,9 +23,9 @@
     "xterm-addon-webgl": "^0.16.0"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "^4.2.1",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.2.1",
     "typescript": "^5.6.3",
     "vite": "^5.2.0"
   }

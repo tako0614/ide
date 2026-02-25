@@ -1,3 +1,5 @@
+import clsx from 'clsx';
+
 type AppView = 'workspace' | 'terminal';
 type ThemeMode = 'light' | 'dark';
 
@@ -21,7 +23,7 @@ export function SideNav({
       <div className="activity-bar-top">
         <button
           type="button"
-          className={`activity-bar-item ${activeView === 'workspace' ? 'active' : ''}`}
+          className={clsx('activity-bar-item', activeView === 'workspace' && 'active')}
           onClick={() => onSelect('workspace')}
           aria-label="Explorer"
           title="Explorer (Ctrl+Shift+E)"
@@ -32,7 +34,7 @@ export function SideNav({
         </button>
         <button
           type="button"
-          className={`activity-bar-item ${activeView === 'terminal' ? 'active' : ''}`}
+          className={clsx('activity-bar-item', activeView === 'terminal' && 'active')}
           onClick={() => onSelect('terminal')}
           aria-label="Terminal"
           title="Terminal (Ctrl+`)"

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from 'react';
+import clsx from 'clsx';
 import { DeckModal } from './components/DeckModal';
 import { SideNav } from './components/SideNav';
 import { StatusMessage } from './components/StatusMessage';
@@ -548,7 +549,7 @@ export default function App() {
               <button
                 key={deck.id}
                 type="button"
-                className={`deck-tab ${activeDeckIds.includes(deck.id) ? 'active' : ''}${draggingDeckId === deck.id ? ' is-dragging' : ''}${dragOverDeckId === deck.id ? ' is-drag-over' : ''}`}
+                className={clsx('deck-tab', activeDeckIds.includes(deck.id) && 'active', draggingDeckId === deck.id && 'is-dragging', dragOverDeckId === deck.id && 'is-drag-over')}
                 onClick={() => handleSelectDeck(deck.id)}
                 draggable={isDesktopDragEnabled}
                 onDragStart={(event) => handleDeckTabDragStart(event, deck.id)}
@@ -584,7 +585,7 @@ export default function App() {
         </div>
       </div>
       <div
-        className={`terminal-split-container${isSplitDropTargetActive ? ' is-drop-target' : ''}`}
+        className={clsx('terminal-split-container', isSplitDropTargetActive && 'is-drop-target')}
         ref={splitContainerRef}
         style={{ gridTemplateColumns: `repeat(${activeDeckIds.length}, 1fr)` }}
         onDragOver={handleSplitContainerDragOver}

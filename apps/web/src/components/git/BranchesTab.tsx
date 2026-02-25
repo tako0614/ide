@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react';
+import clsx from 'clsx';
 import type { GitBranch } from '../../hooks/useGitState';
 
 const LABEL_LOADING = '読み込み中...';
@@ -94,7 +95,7 @@ export function BranchesTab({
             <button
               key={branch.name}
               type="button"
-              className={`branch-item ${branch.current ? 'current' : ''}`}
+              className={clsx('branch-item', branch.current && 'current')}
               onClick={() => !branch.current && onCheckoutBranch(branch.name)}
               disabled={branch.current}
             >

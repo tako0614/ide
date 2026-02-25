@@ -1,3 +1,4 @@
+import clsx from 'clsx';
 import type { Workspace } from '../types';
 
 interface WorkspaceListProps {
@@ -28,9 +29,7 @@ export function WorkspaceList({
           workspaces.map((workspace) => (
             <div
               key={workspace.id}
-              className={`workspace-item ${
-                workspace.id === selectedWorkspaceId ? 'is-active' : ''
-              }`}
+              className={clsx('workspace-item', workspace.id === selectedWorkspaceId && 'is-active')}
             >
               <button
                 type="button"

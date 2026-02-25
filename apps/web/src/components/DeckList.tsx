@@ -1,3 +1,5 @@
+import clsx from 'clsx';
+
 interface DeckListItem {
   id: string;
   name: string;
@@ -43,9 +45,7 @@ export function DeckList({
             <button
               key={deck.id}
               type="button"
-              className={`deck-item ${
-                deck.id === activeDeckId ? 'is-active' : ''
-              }`}
+              className={clsx('deck-item', deck.id === activeDeckId && 'is-active')}
               onClick={() => onSelect(deck.id)}
             >
               <div className="deck-name">{deck.name}</div>

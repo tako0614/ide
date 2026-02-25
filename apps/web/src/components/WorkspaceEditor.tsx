@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react';
+import clsx from 'clsx';
 import type { Workspace, WorkspaceState, SidebarPanel, FileTreeNode, GitFileStatus } from '../types';
 import type { GitState } from '../hooks/useGitState';
 import { FileTree } from './FileTree';
@@ -93,7 +94,7 @@ export function WorkspaceEditor({
   const gitChangeCount = gitState.status?.files.length ?? 0;
 
   return (
-    <div className={`workspace-editor-overlay${isSidebarOpen ? ' drawer-open' : ''}`}>
+    <div className={clsx('workspace-editor-overlay', isSidebarOpen && 'drawer-open')}>
       <div className="workspace-editor-header">
         <button
           type="button"
@@ -122,7 +123,7 @@ export function WorkspaceEditor({
         <div className="activity-bar">
           <button
             type="button"
-            className={`activity-bar-item ${sidebarPanel === 'files' ? 'active' : ''}`}
+            className={clsx('activity-bar-item', sidebarPanel === 'files' && 'active')}
             onClick={() => setSidebarPanel('files')}
             title="エクスプローラー"
           >
@@ -132,7 +133,7 @@ export function WorkspaceEditor({
           </button>
           <button
             type="button"
-            className={`activity-bar-item ${sidebarPanel === 'git' ? 'active' : ''}`}
+            className={clsx('activity-bar-item', sidebarPanel === 'git' && 'active')}
             onClick={() => {
               setSidebarPanel('git');
               onRefreshGit();
