@@ -15,6 +15,7 @@ export class PtyClient extends EventEmitter {
   private lineBuf = '';
   private _connected = false;
   private listCallback: ((terminals: DaemonTerminalInfo[]) => void) | null = null;
+  private shutdownCallback: ((ok: boolean) => void) | null = null;
   private createCallbacks = new Map<string, (err?: string) => void>();
 
   get connected(): boolean {
@@ -54,6 +55,10 @@ export class PtyClient extends EventEmitter {
       socket.on('close', () => {
         this._connected = false;
         this.socket = null;
+        if (this.shutdownCallback) {
+          this.shutdownCallback(false);
+          this.shutdownCallback = null;
+        }
         this.emit('disconnect');
       });
     });
@@ -71,6 +76,12 @@ export class PtyClient extends EventEmitter {
         const cb = this.listCallback;
         this.listCallback = null;
         cb?.(msg.terminals as DaemonTerminalInfo[]);
+        break;
+      }
+      case 'shutdown_ack': {
+        const cb = this.shutdownCallback;
+        this.shutdownCallback = null;
+        cb?.(true);
         break;
       }
       case 'created': {
@@ -164,6 +175,28 @@ export class PtyClient extends EventEmitter {
         resolve(terminals);
       };
       this.send({ type: 'list' });
+    });
+  }
+
+  /** Ask the daemon to terminate itself and all child PTYs. */
+  shutdown(timeoutMs = 2_000): Promise<boolean> {
+    if (!this.connected) {
+      return Promise.resolve(false);
+    }
+
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.shutdownCallback = null;
+        resolve(false);
+      }, timeoutMs);
+
+      this.shutdownCallback = (ok) => {
+        clearTimeout(timer);
+        this.shutdownCallback = null;
+        resolve(ok);
+      };
+
+      this.send({ type: 'shutdown' });
     });
   }
 

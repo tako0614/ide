@@ -50,6 +50,7 @@ jobs:
           name: release-windows
           path: |
             apps/desktop/dist/*.exe
+            apps/desktop/dist/*.blockmap
             apps/desktop/dist/latest.yml
 
       - name: Upload macOS artifacts
@@ -91,6 +92,7 @@ jobs:
             artifacts/**/*.dmg
             artifacts/**/*.AppImage
             artifacts/**/*.deb
+            artifacts/**/*.blockmap
             artifacts/**/*.yml
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

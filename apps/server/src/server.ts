@@ -256,43 +256,74 @@ export async function createServer() {
   }, 30_000);
   bufferPersistInterval.unref();
 
-  // Graceful shutdown - save buffers to DB, disconnect from daemon (but DO NOT kill it)
-  const onShutdown = () => {
-    clearInterval(bufferPersistInterval);
-    if (terminals.size > 0) {
-      console.log(`[SHUTDOWN] Saving ${terminals.size} terminal buffer(s)...`);
-      try { saveAllTerminalBuffers(db, terminals); } catch { /* ignore */ }
+  // Graceful shutdown - save buffers to DB and optionally terminate daemon.
+  let shutdownPromise: Promise<void> | null = null;
+  let shouldTerminateDaemon = false;
+  const onShutdown = (options: { terminateDaemon?: boolean } = {}) => {
+    if (options.terminateDaemon) {
+      shouldTerminateDaemon = true;
     }
-    ptyClient.destroy(); // Disconnect cleanly (daemon keeps running)
-    try { db.close(); } catch { /* ignore */ }
+    if (shutdownPromise) {
+      return shutdownPromise;
+    }
+
+    shutdownPromise = (async () => {
+      clearInterval(bufferPersistInterval);
+      if (terminals.size > 0) {
+        console.log(`[SHUTDOWN] Saving ${terminals.size} terminal buffer(s)...`);
+        try { saveAllTerminalBuffers(db, terminals); } catch { /* ignore */ }
+      }
+
+      if (shouldTerminateDaemon) {
+        try {
+          const stopped = await ptyClient.shutdown();
+          if (!stopped) {
+            console.warn('[SHUTDOWN] PTY daemon shutdown was not acknowledged');
+          }
+        } catch (err) {
+          console.warn('[SHUTDOWN] Failed to request PTY daemon shutdown:', err);
+        }
+      }
+
+      ptyClient.destroy();
+      try { db.close(); } catch { /* ignore */ }
+    })();
+
+    return shutdownPromise;
   };
 
   process.on('SIGINT', () => {
     console.log('\n[SHUTDOWN] Received SIGINT, saving state...');
-    onShutdown();
-    process.exit(0);
+    void onShutdown({ terminateDaemon: true }).finally(() => process.exit(0));
   });
 
   process.on('SIGTERM', () => {
     console.log('[SHUTDOWN] Received SIGTERM, saving state...');
-    onShutdown();
-    process.exit(0);
+    void onShutdown({ terminateDaemon: true }).finally(() => process.exit(0));
   });
 
   process.on('SIGHUP', () => {
     console.log('[SHUTDOWN] Received SIGHUP, saving state...');
-    onShutdown();
-    process.exit(0);
+    void onShutdown({ terminateDaemon: true }).finally(() => process.exit(0));
   });
 
   // HTTP shutdown endpoint — allows cross-platform graceful shutdown from Electron
-  app.post('/api/shutdown', (c) => {
+  app.post('/api/shutdown', async (c) => {
+    let terminateDaemon = false;
+    try {
+      const body = await c.req.json<{ terminateDaemon?: boolean }>();
+      terminateDaemon = body?.terminateDaemon === true;
+    } catch {
+      // Body is optional; default is false.
+    }
+
     setTimeout(() => {
-      console.log('[SHUTDOWN] Shutdown requested via HTTP API');
-      onShutdown();
-      process.exit(0);
+      console.log(
+        `[SHUTDOWN] Shutdown requested via HTTP API${terminateDaemon ? ' (terminate daemon)' : ''}`
+      );
+      void onShutdown({ terminateDaemon }).finally(() => process.exit(0));
     }, 50);
-    return c.json({ ok: true });
+    return c.json({ ok: true, terminateDaemon });
   });
 
   const originalExceptionHandler = process.listeners('uncaughtException')[0] as ((err: Error) => void) | undefined;
@@ -303,13 +334,14 @@ export async function createServer() {
       return;
     }
     console.error('[SHUTDOWN] Uncaught exception, saving state before exit...');
-    onShutdown();
-    if (originalExceptionHandler) {
-      originalExceptionHandler(error);
-    } else {
-      console.error('Uncaught exception:', error);
-      process.exit(1);
-    }
+    void onShutdown({ terminateDaemon: true }).finally(() => {
+      if (originalExceptionHandler) {
+        originalExceptionHandler(error);
+      } else {
+        console.error('Uncaught exception:', error);
+        process.exit(1);
+      }
+    });
   });
 
   return server;

@@ -11,12 +11,14 @@
  *   { type:"kill",   id }
  *   { type:"attach", id, bufferOffset }  -- start streaming data for this terminal
  *   { type:"list" }                       -- list active terminal IDs
+ *   { type:"shutdown" }                   -- terminate daemon and all PTYs
  *
  * Protocol (Daemon → Server):
  *   { type:"created",     id }
  *   { type:"data",        id, data }      -- only for attached terminals
  *   { type:"exit",        id, code }
  *   { type:"list_result", terminals: [{id, bufferLength}] }
+ *   { type:"shutdown_ack" }
  *   { type:"error",       id?, message }
  */
 import net from 'node:net';
@@ -42,6 +44,7 @@ const sessions = new Map<string, DaemonSession>();
 // IDs the server is currently subscribed to (receives live data for)
 const attached = new Set<string>();
 let serverSocket: net.Socket | null = null;
+let shuttingDown = false;
 
 function appendBuffer(session: DaemonSession, data: string): void {
   const combined = session.buffer + data;
@@ -158,6 +161,15 @@ function handleMessage(msg: any): void {
       break;
     }
 
+    case 'shutdown': {
+      sendToServer({ type: 'shutdown_ack' });
+      // ackを送信しきるため少し待ってから終了
+      setTimeout(() => {
+        shutdown();
+      }, 10);
+      break;
+    }
+
     default:
       console.warn(`[pty-daemon] Unknown message type: ${msg.type}`);
   }
@@ -217,11 +229,17 @@ tcpServer.listen(0, '127.0.0.1', () => {
 });
 
 function shutdown(): void {
+  if (shuttingDown) {
+    return;
+  }
+  shuttingDown = true;
   console.log('[pty-daemon] Shutting down...');
   sessions.forEach(({ term }) => {
     try { term.kill(); } catch { /* ignore */ }
   });
   sessions.clear();
+  try { serverSocket?.destroy(); } catch { /* ignore */ }
+  try { tcpServer.close(); } catch { /* ignore */ }
   try { fs.unlinkSync(DAEMON_INFO_PATH!); } catch { /* ignore */ }
   process.exit(0);
 }

@@ -3,7 +3,7 @@
  * Electronアプリケーションの起動とIPCハンドラーの登録
  */
 
-const { app, ipcMain, shell } = require('electron');
+const { app, ipcMain, shell, autoUpdater: nativeAutoUpdater } = require('electron');
 const path = require('path');
 
 const serverManager = require('./server-manager.cjs');
@@ -54,6 +54,12 @@ app.whenReady().then(() => {
   // サーバーを起動
   serverManager.start();
 
+  // 更新適用時はcloseイベントの最小化を無効化して終了を許可する
+  nativeAutoUpdater.on('before-quit-for-update', () => {
+    windowManager.setQuitting(true);
+    void serverManager.stop({ terminateDaemon: true });
+  });
+
   // アップデートをチェック（起動後5秒待機）
   setTimeout(() => {
     autoUpdater.checkForUpdates();
@@ -65,7 +71,7 @@ app.whenReady().then(() => {
  */
 app.on('before-quit', () => {
   windowManager.setQuitting(true);
-  serverManager.stop();
+  void serverManager.stop({ terminateDaemon: true });
 });
 
 /**
@@ -110,8 +116,8 @@ ipcMain.handle('server-start', () => {
 });
 
 // サーバーを停止
-ipcMain.handle('server-stop', () => {
-  serverManager.stop();
+ipcMain.handle('server-stop', async () => {
+  await serverManager.stop({ terminateDaemon: false });
   return serverManager.getStatus();
 });
 
@@ -133,14 +139,12 @@ ipcMain.handle('config-get', () => {
 });
 
 // 設定を保存してサーバーを再起動
-ipcMain.handle('config-save', (_, config) => {
+ipcMain.handle('config-save', async (_, config) => {
   const success = saveConfig(config);
   if (success) {
     // サーバーを再起動して新しい設定を反映
-    serverManager.stop();
-    setTimeout(() => {
-      serverManager.start();
-    }, 500);
+    await serverManager.stop({ terminateDaemon: false });
+    serverManager.start();
   }
   return { success, status: serverManager.getStatus() };
 });
@@ -161,7 +165,27 @@ ipcMain.handle('update-check', () => {
   return autoUpdater.getStatus();
 });
 
+// アプリを終了（update-downloaded 後は autoInstallOnAppQuit で適用）
+ipcMain.handle('app-quit', () => {
+  windowManager.quit();
+  return { success: true };
+});
+
 // アップデートをインストールして再起動
-ipcMain.handle('update-install', () => {
-  autoUpdater.quitAndInstall();
+ipcMain.handle('update-install', async () => {
+  try {
+    windowManager.setQuitting(true);
+    const stopped = await serverManager.stop({ terminateDaemon: true });
+    if (!stopped) {
+      console.warn('[AutoUpdater] Server stop timed out, continuing with quitAndInstall');
+    }
+    autoUpdater.quitAndInstall();
+    return { success: true };
+  } catch (error) {
+    windowManager.setQuitting(false);
+    return {
+      success: false,
+      error: error?.message || String(error)
+    };
+  }
 });

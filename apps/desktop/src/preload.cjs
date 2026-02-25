@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('api', {
   getUpdateStatus: () => ipcRenderer.invoke('update-status'),
   checkForUpdates: () => ipcRenderer.invoke('update-check'),
   installUpdate: () => ipcRenderer.invoke('update-install'),
+  quitApp: () => ipcRenderer.invoke('app-quit'),
   onStatus: (callback) => {
     ipcRenderer.removeAllListeners('server-status');
     ipcRenderer.on('server-status', (_, status) => callback(status));

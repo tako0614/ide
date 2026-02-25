@@ -10,7 +10,8 @@ const {
   resolveServerEntry,
   resolveNodeBinary,
   getServerEnvironment,
-  getAutoStartEnabled
+  getAutoStartEnabled,
+  loadConfig
 } = require('./config-manager.cjs');
 const logManager = require('./log-manager.cjs');
 
@@ -20,6 +21,7 @@ class ServerManager {
     this.serverUrl = SERVER_URL_FALLBACK;
     this.lastError = '';
     this.mainWindow = null;
+    this._stopPromise = null;
   }
 
   /**
@@ -135,34 +137,77 @@ class ServerManager {
    * サーバープロセスを停止
    * SIGINTを送って graceful shutdown を試み、タイムアウト後に強制終了
    */
-  stop() {
-    if (!this.serverProcess) {
-      return;
+  async stop(options = {}) {
+    if (this._stopPromise) {
+      return this._stopPromise;
     }
 
+    if (!this.serverProcess) {
+      return false;
+    }
+
+    const terminateDaemon = options.terminateDaemon === true;
     const proc = this.serverProcess;
     this.serverProcess = null;
-    logManager.appendLog('\nStop requested, saving state...\n');
+    logManager.appendLog(
+      `\nStop requested, saving state${terminateDaemon ? ' and terminating PTY daemon' : ''}...\n`
+    );
     this.broadcastStatus();
 
     // ストリームを先に破棄してデータイベントを止める
     try { proc.stdout.destroy(); } catch {}
     try { proc.stderr.destroy(); } catch {}
 
-    // Force kill fallback after 3 seconds
-    const forceKillTimeout = setTimeout(() => {
-      try { proc.kill('SIGKILL'); } catch {}
-    }, 3000);
-    proc.once('exit', () => clearTimeout(forceKillTimeout));
+    this._stopPromise = new Promise((resolve) => {
+      let settled = false;
+      let forceKillTimeout = null;
+      let settleTimeout = null;
+      const currentConfig = loadConfig();
+      const headers = { 'content-type': 'application/json' };
+      if (currentConfig?.basicAuth?.enabled) {
+        const credentials = `${currentConfig.basicAuth.username || ''}:${currentConfig.basicAuth.password || ''}`;
+        headers.Authorization = `Basic ${Buffer.from(credentials, 'utf8').toString('base64')}`;
+      }
 
-    // HTTP経由でgraceful shutdown（Windowsを含む全プラットフォームで確実に動作）
-    fetch(this.serverUrl + '/api/shutdown', {
-      method: 'POST',
-      signal: AbortSignal.timeout(1500)
-    }).catch(() => {
-      // HTTPが失敗した場合（サーバーがすでに停止中など）はシグナルでフォールバック
-      try { proc.kill('SIGINT'); } catch {}
+      const settle = (stopped) => {
+        if (settled) return;
+        settled = true;
+        if (forceKillTimeout) clearTimeout(forceKillTimeout);
+        if (settleTimeout) clearTimeout(settleTimeout);
+        resolve(stopped);
+      };
+
+      proc.once('exit', () => settle(true));
+
+      // Force kill fallback after 3 seconds
+      forceKillTimeout = setTimeout(() => {
+        try { proc.kill('SIGKILL'); } catch {}
+      }, 3000);
+
+      // 念のため停止処理の待機上限を設定（ハング防止）
+      settleTimeout = setTimeout(() => {
+        settle(false);
+      }, 4500);
+
+      // HTTP経由でgraceful shutdown（Windowsを含む全プラットフォームで確実に動作）
+      fetch(this.serverUrl + '/api/shutdown', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ terminateDaemon }),
+        signal: AbortSignal.timeout(1500)
+      }).then((response) => {
+        if (!response.ok) {
+          throw new Error(`Shutdown API failed with status ${response.status}`);
+        }
+      }).catch(() => {
+        // HTTPが失敗した場合（サーバーがすでに停止中など）はシグナルでフォールバック
+        try { proc.kill('SIGINT'); } catch {}
+      });
+    }).finally(() => {
+      this._stopPromise = null;
     });
+
+    return this._stopPromise;
   }
 
   /**
