@@ -15,7 +15,7 @@ const translations = {
     killPort: 'Kill Port',
     saveSettings: 'Save Settings',
     checkUpdate: 'Check',
-    installUpdate: 'Install Update & Restart',
+    installUpdate: 'Quit & Apply Update',
     clear: 'Clear',
 
     // Labels
@@ -33,7 +33,7 @@ const translations = {
     latestVersion: 'You are using the latest version',
     updateAvailable: 'Update v{version} available, downloading...',
     downloading: 'Downloading v{version}... {percent}%',
-    updateReady: 'Update v{version} ready to install',
+    updateReady: 'Update v{version} ready. It will be applied when app quits',
     updateError: 'Error: {error}',
 
     // Dialogs
@@ -41,7 +41,7 @@ const translations = {
     invalidPort: 'Please enter a valid port number (1024-65535)',
     settingsSaved: 'Settings saved! Server is restarting...',
     settingsFailed: 'Failed to save settings',
-    installConfirm: 'Install update and restart the application?',
+    installConfirm: 'Quit now and apply the downloaded update?',
     killing: 'Killing...',
   },
   ja: {
@@ -56,7 +56,7 @@ const translations = {
     killPort: 'ポートを解放',
     saveSettings: '設定を保存',
     checkUpdate: '確認',
-    installUpdate: 'アップデートして再起動',
+    installUpdate: '終了してアップデート適用',
     clear: 'クリア',
 
     // Labels
@@ -74,7 +74,7 @@ const translations = {
     latestVersion: '最新バージョンです',
     updateAvailable: 'v{version} をダウンロード中...',
     downloading: 'v{version} をダウンロード中... {percent}%',
-    updateReady: 'v{version} のインストール準備完了',
+    updateReady: 'v{version} の準備完了（終了時に適用）',
     updateError: 'エラー: {error}',
 
     // Dialogs
@@ -82,7 +82,7 @@ const translations = {
     invalidPort: '有効なポート番号を入力してください (1024-65535)',
     settingsSaved: '設定を保存しました。サーバーを再起動中...',
     settingsFailed: '設定の保存に失敗しました',
-    installConfirm: 'アップデートをインストールして再起動しますか？',
+    installConfirm: 'アプリを終了して、ダウンロード済みアップデートを適用しますか？',
     killing: '終了中...',
   }
 };
@@ -341,7 +341,13 @@ checkUpdateBtn.addEventListener('click', async () => {
 
 installUpdateBtn.addEventListener('click', async () => {
   if (confirm(t('installConfirm'))) {
-    await window.api.installUpdate();
+    try {
+      installUpdateBtn.disabled = true;
+      await window.api.quitApp();
+    } catch (error) {
+      installUpdateBtn.disabled = false;
+      alert(t('updateError', { error: error.message || String(error) }));
+    }
   }
 });
 

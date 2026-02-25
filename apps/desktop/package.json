@@ -7,7 +7,7 @@
   },
   "homepage": "https://github.com/tako0614/ide",
   "private": true,
-  "version": "2.12.2",
+  "version": "2.12.3",
   "main": "src/main.cjs",
   "scripts": {
     "dev": "electron .",
@@ -69,17 +69,27 @@
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "differentialPackage": true
     },
     "mac": {
       "target": [
-        { "target": "dmg", "arch": ["x64", "arm64"] }
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
       ],
       "artifactName": "Deck-IDE-${version}-${arch}.${ext}",
       "category": "public.app-category.developer-tools"
     },
     "linux": {
-      "target": ["AppImage", "deb"],
+      "target": [
+        "AppImage",
+        "deb"
+      ],
       "artifactName": "Deck-IDE-${version}-${arch}.${ext}",
       "category": "Development",
       "maintainer": "Deck IDE <tako0614@users.noreply.github.com>"

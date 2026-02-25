@@ -15,7 +15,8 @@ class AutoUpdaterManager {
       downloaded: false,
       error: null,
       progress: null,
-      version: null
+      version: null,
+      installing: false
     };
 
     // ログ出力を有効化
@@ -24,6 +25,7 @@ class AutoUpdaterManager {
     // 自動ダウンロードを有効化
     autoUpdater.autoDownload = true;
     autoUpdater.autoInstallOnAppQuit = true;
+    autoUpdater.disableDifferentialDownload = false;
 
     this.setupEventHandlers();
   }
@@ -43,7 +45,11 @@ class AutoUpdaterManager {
       this.updateStatus = {
         ...this.updateStatus,
         checking: true,
-        error: null
+        error: null,
+        downloaded: false,
+        progress: null,
+        version: null,
+        installing: false
       };
       this.broadcastStatus();
       console.log('[AutoUpdater] Checking for update...');
@@ -54,7 +60,10 @@ class AutoUpdaterManager {
         ...this.updateStatus,
         checking: false,
         available: true,
-        version: info.version
+        version: info.version,
+        downloaded: false,
+        progress: null,
+        installing: false
       };
       this.broadcastStatus();
       console.log(`[AutoUpdater] Update available: ${info.version}`);
@@ -64,7 +73,11 @@ class AutoUpdaterManager {
       this.updateStatus = {
         ...this.updateStatus,
         checking: false,
-        available: false
+        available: false,
+        downloaded: false,
+        progress: null,
+        version: info?.version || null,
+        installing: false
       };
       this.broadcastStatus();
       console.log('[AutoUpdater] Update not available');
@@ -74,7 +87,9 @@ class AutoUpdaterManager {
       this.updateStatus = {
         ...this.updateStatus,
         checking: false,
-        error: err.message
+        error: err.message,
+        progress: null,
+        installing: false
       };
       this.broadcastStatus();
       console.error('[AutoUpdater] Error:', err);
@@ -103,7 +118,8 @@ class AutoUpdaterManager {
         ...this.updateStatus,
         downloaded: true,
         progress: null,
-        version: info.version
+        version: info.version,
+        installing: false
       };
       this.broadcastStatus();
       console.log(`[AutoUpdater] Update downloaded: ${info.version}`);
@@ -133,6 +149,12 @@ class AutoUpdaterManager {
    * アップデートをインストールして再起動
    */
   quitAndInstall() {
+    this.updateStatus = {
+      ...this.updateStatus,
+      installing: true,
+      error: null
+    };
+    this.broadcastStatus();
     autoUpdater.quitAndInstall();
   }
 
