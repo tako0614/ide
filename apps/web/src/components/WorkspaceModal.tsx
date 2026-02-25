@@ -109,15 +109,16 @@ export const WorkspaceModal = ({
   if (!isOpen) return null;
 
   return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="workspace-modal-title">
+    <div className="fixed inset-0 bg-black/50 grid place-items-center z-[500]" role="dialog" aria-modal="true" aria-labelledby="workspace-modal-title">
       <form className="modal" ref={formRef} onSubmit={handleSubmit}>
-        <div className="modal-title" id="workspace-modal-title">
+        <div className="text-[14px] font-semibold mb-3" id="workspace-modal-title">
           {'\u30ef\u30fc\u30af\u30b9\u30da\u30fc\u30b9\u8ffd\u52a0'}
         </div>
-        <label className="field">
+        <label className="grid gap-1 text-xs">
           <span>{'\u30d1\u30b9'}</span>
           <input
             type="text"
+            className="bg-panel border border-border rounded-[2px] px-2 py-1.5 text-[13px] font-mono text-ink focus:outline-none focus:border-focus"
             value={workspacePathDraft}
             placeholder={defaultRoot || ''}
             required
@@ -125,7 +126,7 @@ export const WorkspaceModal = ({
             onChange={(event) => setWorkspacePathDraft(event.target.value)}
           />
         </label>
-        <div className="modal-explorer">
+        <div className="h-[280px] mt-3">
           <FileTree
             root={previewRoot}
             entries={previewTree}
@@ -139,11 +140,20 @@ export const WorkspaceModal = ({
             onRefresh={handlePreviewRefresh}
           />
         </div>
-        <div className="modal-actions">
-          <button type="button" className="ghost-button" onClick={onClose} disabled={isSubmitting}>
+        <div className="flex justify-end gap-2 mt-4">
+          <button
+            type="button"
+            className="bg-transparent text-ink border-0 px-2 py-1 text-xs rounded-[2px] cursor-pointer hover:bg-list-hover"
+            onClick={onClose}
+            disabled={isSubmitting}
+          >
             {'\u30ad\u30e3\u30f3\u30bb\u30eb'}
           </button>
-          <button type="submit" className="primary-button" disabled={isSubmitting}>
+          <button
+            type="submit"
+            className="bg-accent text-white border-0 px-3.5 py-1.5 text-[13px] font-medium rounded-[2px] cursor-pointer hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+            disabled={isSubmitting}
+          >
             {isSubmitting ? '\u8ffd\u52a0\u4e2d...' : '\u8ffd\u52a0'}
           </button>
         </div>

@@ -51,6 +51,9 @@ interface SourceControlProps {
   onLoadLogs: () => void;
 }
 
+const CHIP_CLASS = 'border border-border bg-transparent text-ink px-2.5 py-1 text-xs rounded-[2px] cursor-pointer hover:bg-list-hover disabled:opacity-50 disabled:cursor-not-allowed';
+const EMPTY_STATE_CLASS = 'flex items-center justify-center h-full text-muted text-[13px] p-5';
+
 export function SourceControl({
   status,
   loading,
@@ -103,12 +106,12 @@ export function SourceControl({
 
   if (!workspaceId) {
     return (
-      <section className="panel source-control">
+      <section className="panel">
         <div className="panel-header">
           <div className="panel-title">{LABEL_SOURCE_CONTROL}</div>
         </div>
         <div className="panel-body">
-          <div className="empty-state">{LABEL_SELECT_WORKSPACE}</div>
+          <div className={EMPTY_STATE_CLASS}>{LABEL_SELECT_WORKSPACE}</div>
         </div>
       </section>
     );
@@ -116,12 +119,12 @@ export function SourceControl({
 
   if (loading) {
     return (
-      <section className="panel source-control">
+      <section className="panel">
         <div className="panel-header">
           <div className="panel-title">{LABEL_SOURCE_CONTROL}</div>
         </div>
         <div className="panel-body">
-          <div className="empty-state">{LABEL_LOADING}</div>
+          <div className={EMPTY_STATE_CLASS}>{LABEL_LOADING}</div>
         </div>
       </section>
     );
@@ -129,15 +132,15 @@ export function SourceControl({
 
   if (error) {
     return (
-      <section className="panel source-control">
+      <section className="panel">
         <div className="panel-header">
           <div className="panel-title">{LABEL_SOURCE_CONTROL}</div>
-          <button type="button" className="chip" onClick={onRefresh}>
+          <button type="button" className={CHIP_CLASS} onClick={onRefresh}>
             {LABEL_REFRESH}
           </button>
         </div>
         <div className="panel-body">
-          <div className="empty-state error">{error}</div>
+          <div className="flex items-center justify-center h-full text-[#f14c4c] text-[13px] p-5">{error}</div>
         </div>
       </section>
     );
@@ -145,15 +148,15 @@ export function SourceControl({
 
   if (!status?.isGitRepo) {
     return (
-      <section className="panel source-control">
+      <section className="panel">
         <div className="panel-header">
           <div className="panel-title">{LABEL_SOURCE_CONTROL}</div>
-          <button type="button" className="chip" onClick={onRefresh}>
+          <button type="button" className={CHIP_CLASS} onClick={onRefresh}>
             {LABEL_REFRESH}
           </button>
         </div>
         <div className="panel-body">
-          <div className="empty-state">{LABEL_NOT_GIT_REPO}</div>
+          <div className={EMPTY_STATE_CLASS}>{LABEL_NOT_GIT_REPO}</div>
         </div>
       </section>
     );
@@ -163,12 +166,12 @@ export function SourceControl({
   const hasMultipleRepos = repos.length > 1;
 
   return (
-    <section className="panel source-control">
+    <section className="panel">
       <div className="panel-header">
         <div>
           <div className="panel-title">{LABEL_SOURCE_CONTROL}</div>
-          <div className="panel-subtitle git-branch">
-            <svg viewBox="0 0 24 24" className="git-branch-icon" aria-hidden="true">
+          <div className="panel-subtitle flex items-center gap-1.5">
+            <svg viewBox="0 0 24 24" className="w-3.5 h-3.5 flex-shrink-0" aria-hidden="true">
               <path
                 d="M6 3v12M18 9a3 3 0 1 1 0 6 3 3 0 0 1 0-6zM6 21a3 3 0 1 1 0-6 3 3 0 0 1 0 6z"
                 fill="none"
@@ -186,15 +189,15 @@ export function SourceControl({
             {status.branch}
           </div>
         </div>
-        <button type="button" className="chip" onClick={onRefresh}>
+        <button type="button" className={CHIP_CLASS} onClick={onRefresh}>
           {LABEL_REFRESH}
         </button>
       </div>
 
       {/* Repository selector - only show when multiple repos exist */}
       {hasMultipleRepos && (
-        <div className="repo-selector">
-          <svg className="repo-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-sidebar text-xs">
+          <svg className="w-3.5 h-3.5 text-muted flex-shrink-0" viewBox="0 0 24 24" aria-hidden="true">
             <path
               d="M3 7v10a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-6l-2-2H5a2 2 0 0 0-2 2z"
               fill="none"
@@ -205,7 +208,7 @@ export function SourceControl({
             />
           </svg>
           <select
-            className="repo-select"
+            className="flex-1 min-w-0 bg-panel border border-border rounded-[2px] px-2 py-1 text-[12px] font-mono text-ink focus:outline-none focus:border-focus"
             value={selectedRepoPath || ''}
             onChange={(e) => onSelectRepo(e.target.value)}
           >
@@ -215,7 +218,7 @@ export function SourceControl({
               </option>
             ))}
           </select>
-          <span className="repo-count">{repos.length} repos</span>
+          <span className="text-[11px] text-muted font-mono flex-shrink-0">{repos.length} repos</span>
         </div>
       )}
 
@@ -226,7 +229,11 @@ export function SourceControl({
           onClick={() => handleTabChange('changes')}
         >
           {LABEL_CHANGES}
-          {hasChanges && <span className="git-tab-count">{status.files.length}</span>}
+          {hasChanges && (
+            <span className="text-[10px] font-semibold bg-accent/20 text-accent rounded-full px-1.5 py-0.5 leading-none">
+              {status.files.length}
+            </span>
+          )}
         </button>
         <button
           type="button"
@@ -244,7 +251,7 @@ export function SourceControl({
         </button>
       </div>
 
-      <div className="panel-body source-control-body">
+      <div className="panel-body">
         {activeTab === 'changes' && (
           <ChangesTab
             status={status}
