@@ -107,9 +107,12 @@ export function setupWebSocketServer(
 
   const WS_ALLOWED_ORIGINS = new Set([
     `http://localhost:${PORT}`,
-    'http://localhost:5173',
-    'http://localhost:3000',
   ]);
+  // Add dev origins only in development mode
+  if (NODE_ENV !== 'production') {
+    WS_ALLOWED_ORIGINS.add('http://localhost:5173');
+    WS_ALLOWED_ORIGINS.add('http://localhost:3000');
+  }
   // Allow configured CORS origin for WebSocket too
   if (CORS_ORIGIN && CORS_ORIGIN !== '*') {
     WS_ALLOWED_ORIGINS.add(CORS_ORIGIN);

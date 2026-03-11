@@ -317,8 +317,8 @@ if (command === 'auth') {
     const genUser = user || 'admin';
     const genPassword = password || crypto.randomBytes(16).toString('base64url');
 
-    if (password && password.length < 8) {
-      console.error('Error: password must be at least 8 characters.');
+    if (password && password.length < 12) {
+      console.error('Error: password must be at least 12 characters.');
       process.exit(1);
     }
 
@@ -370,13 +370,14 @@ if (command === 'logs') {
   if (follow) {
     const tail = spawn('tail', ['-f', logFile], { stdio: 'inherit' });
     tail.on('exit', () => process.exit(0));
+    await new Promise(() => {}); // Block until tail exits
   } else {
     const lines = fs.readFileSync(logFile, 'utf-8');
     // Show last 50 lines
     const arr = lines.split('\n');
     console.log(arr.slice(-51).join('\n'));
+    process.exit(0);
   }
-  if (!args.includes('-f') && !args.includes('--follow')) process.exit(0);
 }
 
 // ── deckide stop ──
