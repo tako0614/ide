@@ -456,7 +456,7 @@ export default function App() {
 
   const workspaceView = (
     <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
-      <div className="flex flex-col items-center gap-4 p-6 flex-shrink-0 border-b border-border">
+      <div className="flex flex-col items-center gap-4 p-6 flex-shrink-0">
         <button
           type="button"
           className="bg-accent text-white border-0 px-3.5 py-1.5 text-[13px] font-medium rounded-[2px] cursor-pointer hover:opacity-90"
