@@ -101,8 +101,12 @@ export function TerminalTile({
       webglAddonRef.current = null;
     }
 
+    // Track whether we're replaying buffer (suppress query responses during replay)
+    let replayingBuffer = true;
+
     // Register terminal query handlers to prevent TUI apps from hanging
     const sendResponse = (response: string) => {
+      if (replayingBuffer) return; // Don't respond during buffer replay
       const socket = socketRef.current;
       if (socket && socket.readyState === WebSocket.OPEN) {
         socket.send(response);
@@ -417,6 +421,7 @@ export function TerminalTile({
     // Fetch WebSocket token and connect
     const connect = async (isReconnect = false) => {
       if (cancelled) return;
+      replayingBuffer = true;
 
       try {
         // Get a one-time token for WebSocket authentication
@@ -437,6 +442,9 @@ export function TerminalTile({
         socket.addEventListener('open', () => {
           reconnectAttempts = 0;
           hasConnectedOnce = true;
+          // Buffer messages are queued and delivered synchronously after open.
+          // Use setTimeout to clear replayingBuffer after they've been processed.
+          setTimeout(() => { replayingBuffer = false; }, 0);
           sendResize();
           if (!isReconnect) {
             term.write(`\r\n${TEXT_CONNECTED}\r\n\r\n`);

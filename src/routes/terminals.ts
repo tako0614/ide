@@ -22,10 +22,13 @@ export function createTerminalRouter(
 
   function appendToTerminalBuffer(session: TerminalSession, data: string): void {
     const newBuffer = session.buffer + data;
-    session.buffer =
-      newBuffer.length > TERMINAL_BUFFER_LIMIT
-        ? newBuffer.slice(newBuffer.length - TERMINAL_BUFFER_LIMIT)
-        : newBuffer;
+    if (newBuffer.length > TERMINAL_BUFFER_LIMIT) {
+      const excess = newBuffer.length - TERMINAL_BUFFER_LIMIT;
+      session.buffer = newBuffer.slice(excess);
+      session.bufferBase += excess;
+    } else {
+      session.buffer = newBuffer;
+    }
   }
 
   function getNextTerminalIndex(deckId: string): number {
@@ -133,6 +136,7 @@ export function createTerminalRouter(
       createdAt,
       sockets: new Set(),
       buffer: '',
+      bufferBase: 0,
       lastActive: Date.now(),
       write: (data) => { try { term.write(data); } catch { /* terminal may be dying */ } },
       resize: (cols, rows) => { try { term.resize(cols, rows); } catch { /* terminal may be dying */ } },
