@@ -127,9 +127,35 @@ export function saveTerminal(
   createdAt: string
 ): void {
   const stmt = db.prepare(
-    'INSERT OR REPLACE INTO terminals (id, deck_id, title, command, created_at) VALUES (?, ?, ?, ?, ?)'
+    'INSERT OR REPLACE INTO terminals (id, deck_id, title, command, buffer, created_at) VALUES (?, ?, ?, ?, ?, ?)'
   );
-  stmt.run(id, deckId, title, command, createdAt);
+  stmt.run(id, deckId, title, command, '', createdAt);
+}
+
+export function updateTerminalBuffer(db: DatabaseSync, id: string, buffer: string): void {
+  const stmt = db.prepare('UPDATE terminals SET buffer = ? WHERE id = ?');
+  stmt.run(buffer, id);
+}
+
+export function loadTerminals(db: DatabaseSync): Array<{
+  id: string;
+  deckId: string;
+  title: string;
+  command: string | null;
+  buffer: string;
+  createdAt: string;
+}> {
+  const rows = db.prepare(
+    'SELECT id, deck_id, title, command, buffer, created_at FROM terminals ORDER BY created_at ASC'
+  ).all();
+  return rows.map((row) => ({
+    id: String(row.id),
+    deckId: String(row.deck_id),
+    title: String(row.title),
+    command: row.command ? String(row.command) : null,
+    buffer: String(row.buffer ?? ''),
+    createdAt: String(row.created_at),
+  }));
 }
 
 export function deleteTerminal(db: DatabaseSync, id: string): void {
