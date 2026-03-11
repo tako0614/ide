@@ -18,7 +18,7 @@ export const corsMiddleware: MiddlewareHandler = async (c, next) => {
       c.header('Access-Control-Allow-Origin', `http://localhost:${PORT}`);
     }
   }
-  c.header('Access-Control-Allow-Methods', 'GET,POST,PUT,OPTIONS');
+  c.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
   c.header('Access-Control-Allow-Headers', 'Content-Type,Authorization');
   if (c.req.method === 'OPTIONS') {
     return c.body(null, 204);
