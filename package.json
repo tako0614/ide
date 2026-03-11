@@ -1,6 +1,6 @@
 {
   "name": "deckide",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "description": "Deck IDE - Browser-based IDE with terminal, file explorer, and git integration",
   "type": "module",
   "bin": {
@@ -38,6 +38,9 @@
     "ws": "^8.17.0",
     "zod": "^4.0.0"
   },
+  "bundledDependencies": [
+    "@deck-ide/shared"
+  ],
   "devDependencies": {
     "@monaco-editor/react": "^4.6.0",
     "@tailwindcss/vite": "^4.2.1",
