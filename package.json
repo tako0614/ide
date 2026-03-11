@@ -1,21 +1,77 @@
 {
-  "name": "deck-ide",
-  "private": true,
+  "name": "deckide",
+  "version": "2.13.0",
+  "description": "Deck IDE - Browser-based IDE with terminal, file explorer, and git integration",
+  "type": "module",
+  "bin": {
+    "deckide": "bin/deckide.js"
+  },
+  "files": [
+    "bin/",
+    "apps/server/dist/",
+    "apps/server/package.json",
+    "apps/web/dist/",
+    "packages/shared/dist/",
+    "packages/shared/package.json"
+  ],
   "workspaces": [
-    "apps/*",
+    "apps/server",
+    "apps/web",
     "packages/*"
   ],
   "scripts": {
     "dev:web": "npm --workspace apps/web run dev",
     "dev:server": "npm --workspace apps/server run dev",
-    "dev:desktop": "npm --workspace apps/desktop run dev",
+    "build:shared": "npm --workspace @deck-ide/shared run build",
     "build:server": "npm --workspace apps/server run build",
     "build:web": "npm --workspace apps/web run build",
-    "build:desktop": "npm run build:web && npm run build:server && npm --workspace apps/desktop run build",
-    "build:desktop:win": "npm run build:web && npm run build:server && npm --workspace apps/desktop run build:win",
-    "build:desktop:mac": "npm run build:web && npm run build:server && npm --workspace apps/desktop run build:mac",
-    "build:desktop:linux": "npm run build:web && npm run build:server && npm --workspace apps/desktop run build:linux",
-    "build": "npm run build:web",
-    "serve": "npm run build:web && npm run build:server && npm --workspace apps/server run serve"
-  }
+    "build": "npm run build:shared && npm run build:web && npm run build:server",
+    "serve": "npm run build && npm --workspace apps/server run serve",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@deck-ide/shared": "file:packages/shared",
+    "@hono/node-server": "^1.12.2",
+    "hono": "^4.5.10",
+    "node-pty": "^1.0.0",
+    "simple-git": "^3.27.0",
+    "ws": "^8.17.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@monaco-editor/react": "^4.6.0",
+    "@tailwindcss/vite": "^4.2.1",
+    "@types/node": "^24.10.9",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.2.1",
+    "clsx": "^2.1.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tailwindcss": "^4.2.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vite": "^5.2.0",
+    "xterm": "^5.3.0",
+    "xterm-addon-fit": "^0.8.0",
+    "xterm-addon-unicode11": "^0.6.0",
+    "xterm-addon-web-links": "^0.9.0",
+    "xterm-addon-webgl": "^0.16.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tako0614/ide.git"
+  },
+  "keywords": [
+    "ide",
+    "editor",
+    "terminal",
+    "web-ide",
+    "developer-tools"
+  ],
+  "author": "tako0614",
+  "license": "MIT"
 }

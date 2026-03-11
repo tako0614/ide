@@ -1,4 +1,4 @@
-name: Build and Release
+name: Publish to npm
 
 on:
   push:
@@ -9,18 +9,9 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    strategy:
-      matrix:
-        include:
-          - os: windows-latest
-            build_cmd: npm run build:desktop:win
-          - os: macos-latest
-            build_cmd: npm run build:desktop:mac
-          - os: ubuntu-latest
-            build_cmd: npm run build:desktop:linux
-
-    runs-on: ${{ matrix.os }}
+  publish:
+    runs-on: ubuntu-latest
+    environment: NPM_TOKEN
 
     steps:
       - name: Checkout
@@ -31,6 +22,7 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
+          registry-url: 'https://registry.npmjs.org'
 
       - name: Install dependencies
         shell: bash
@@ -45,64 +37,17 @@ jobs:
           echo "npm ci failed after 5 attempts"
           exit 1
 
-      - name: Build shared package
-        run: npm --workspace @deck-ide/shared run build
+      - name: Build
+        run: npm run build
 
-      - name: Build desktop app
-        run: ${{ matrix.build_cmd }}
+      - name: Publish to npm
+        run: npm publish --access public
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: Upload Windows artifacts
-        if: matrix.os == 'windows-latest'
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-windows
-          path: |
-            apps/desktop/dist/*.exe
-            apps/desktop/dist/*.blockmap
-            apps/desktop/dist/latest.yml
-
-      - name: Upload macOS artifacts
-        if: matrix.os == 'macos-latest'
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-macos
-          path: |
-            apps/desktop/dist/*.dmg
-            apps/desktop/dist/latest-mac.yml
-
-      - name: Upload Linux artifacts
-        if: matrix.os == 'ubuntu-latest'
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-linux
-          path: |
-            apps/desktop/dist/*.AppImage
-            apps/desktop/dist/*.deb
-            apps/desktop/dist/latest-linux.yml
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: List artifacts
-        run: find artifacts -type f
-
-      - name: Upload to Release
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
-          files: |
-            artifacts/**/*.exe
-            artifacts/**/*.dmg
-            artifacts/**/*.AppImage
-            artifacts/**/*.deb
-            artifacts/**/*.blockmap
-            artifacts/**/*.yml
+          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

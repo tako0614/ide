@@ -4,7 +4,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const SETTINGS_FILE = path.join(__dirname, '..', '..', 'settings.json');
+
+// When running as a global CLI (`deckide`), DECKIDE_DATA_DIR is set to ~/.deckide/
+const globalDataDir = process.env.DECKIDE_DATA_DIR;
+export const SETTINGS_FILE = globalDataDir
+  ? path.join(globalDataDir, 'settings.json')
+  : path.join(__dirname, '..', '..', 'settings.json');
 
 // Load settings from file if exists
 interface Settings {
@@ -50,7 +55,9 @@ export const hasStatic = fsSync.existsSync(distDir);
 
 const packagedDataDir = path.resolve(__dirname, '..', 'data');
 const devDataDir = path.resolve(__dirname, '..', '..', 'data');
-export const dataDir = fsSync.existsSync(path.dirname(packagedDataDir)) && !fsSync.existsSync(devDataDir) ? packagedDataDir : devDataDir;
+export const dataDir = globalDataDir
+  ? globalDataDir
+  : fsSync.existsSync(path.dirname(packagedDataDir)) && !fsSync.existsSync(devDataDir) ? packagedDataDir : devDataDir;
 export const dbPath = process.env.DB_PATH || path.join(dataDir, 'deck-ide.db');
 
 // Validate critical configuration

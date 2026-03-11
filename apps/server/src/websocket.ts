@@ -105,9 +105,23 @@ export function setupWebSocketServer(
 ): WebSocketServer {
   const wss = new WebSocketServer({ server });
 
+  const WS_ALLOWED_ORIGINS = [
+    `http://localhost:${PORT}`,
+    'http://localhost:5173',
+    'http://localhost:3000',
+  ];
+
   wss.on('connection', (socket: WebSocket, req) => {
     const socketId = crypto.randomUUID();
     const clientIP = getClientIP(req);
+
+    // Validate Origin header to prevent Cross-Site WebSocket Hijacking
+    const origin = req.headers['origin'];
+    if (origin && !WS_ALLOWED_ORIGINS.includes(origin)) {
+      logSecurityEvent('WS_INVALID_ORIGIN', { ip: clientIP, origin });
+      socket.close(1008, 'Invalid origin');
+      return;
+    }
 
     // Add error handler for socket
     socket.on('error', (error) => {

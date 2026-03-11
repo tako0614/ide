@@ -48,6 +48,17 @@ export function isBasicAuthEnabled(): boolean {
   return Boolean(BASIC_AUTH_USER && BASIC_AUTH_PASSWORD);
 }
 
+function timingSafeEqual(a: string, b: string): boolean {
+  const aBuf = Buffer.from(a);
+  const bBuf = Buffer.from(b);
+  if (aBuf.length !== bBuf.length) {
+    // Dummy comparison to prevent length-based timing leak
+    crypto.timingSafeEqual(aBuf, aBuf);
+    return false;
+  }
+  return crypto.timingSafeEqual(aBuf, bBuf);
+}
+
 export function verifyWebSocketAuth(req: import('http').IncomingMessage): boolean {
   if (!BASIC_AUTH_USER || !BASIC_AUTH_PASSWORD) {
     return true;
@@ -73,5 +84,5 @@ export function verifyWebSocketAuth(req: import('http').IncomingMessage): boolea
   }
   const username = credentials.substring(0, colonIndex);
   const password = credentials.substring(colonIndex + 1);
-  return username === BASIC_AUTH_USER && password === BASIC_AUTH_PASSWORD;
+  return timingSafeEqual(username, BASIC_AUTH_USER) && timingSafeEqual(password, BASIC_AUTH_PASSWORD);
 }

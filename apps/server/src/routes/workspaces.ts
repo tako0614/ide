@@ -54,8 +54,6 @@ export function createWorkspaceRouter(
       path: resolvedPath,
       createdAt: new Date().toISOString()
     };
-    workspaces.set(workspace.id, workspace);
-    workspacePathIndex.set(key, workspace.id);
     insertWorkspace.run(
       workspace.id,
       workspace.name,
@@ -63,6 +61,8 @@ export function createWorkspaceRouter(
       key,
       workspace.createdAt
     );
+    workspaces.set(workspace.id, workspace);
+    workspacePathIndex.set(key, workspace.id);
     return workspace;
   }
 

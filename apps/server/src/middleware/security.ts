@@ -11,6 +11,8 @@ export const securityHeaders: MiddlewareHandler = async (c, next) => {
   c.header('X-Content-Type-Options', 'nosniff');
   c.header('X-XSS-Protection', '1; mode=block');
   c.header('Referrer-Policy', 'strict-origin-when-cross-origin');
+  c.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  c.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   // Allow Monaco Editor from CDN, Google Fonts, and blob: for workers
   c.header('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net blob:; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; font-src 'self' https://cdn.jsdelivr.net https://fonts.gstatic.com data:; img-src 'self' data: blob:; connect-src 'self' ws: wss:; worker-src 'self' blob:;");
   await next();
