@@ -83,6 +83,25 @@ export function createWorkspaceRouter(
     }
   });
 
+  const deleteWorkspace = db.prepare('DELETE FROM workspaces WHERE id = ?');
+
+  router.delete('/:id', (c) => {
+    try {
+      const id = c.req.param('id');
+      const workspace = workspaces.get(id);
+      if (!workspace) {
+        throw createHttpError('Workspace not found', 404);
+      }
+      const key = getWorkspaceKey(workspace.path);
+      deleteWorkspace.run(id);
+      workspaces.delete(id);
+      workspacePathIndex.delete(key);
+      return c.json({ deleted: true });
+    } catch (error) {
+      return handleError(c, error);
+    }
+  });
+
   return router;
 }
 

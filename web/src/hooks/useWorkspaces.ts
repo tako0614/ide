@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { Workspace } from '../types';
-import { listWorkspaces, createWorkspace as apiCreateWorkspace } from '../api';
+import { listWorkspaces, createWorkspace as apiCreateWorkspace, deleteWorkspace as apiDeleteWorkspace } from '../api';
 import { getErrorMessage, normalizeWorkspacePath, createEmptyWorkspaceState } from '../utils';
 
 interface UseWorkspacesProps {
@@ -84,10 +84,31 @@ export const useWorkspaces = ({
     [workspaces, defaultRoot, setStatusMessage, setWorkspaceStates]
   );
 
+  const handleDeleteWorkspace = useCallback(
+    async (workspaceId: string) => {
+      try {
+        await apiDeleteWorkspace(workspaceId);
+        setWorkspaces((prev) => prev.filter((w) => w.id !== workspaceId));
+        setEditorWorkspaceId((prev) => (prev === workspaceId ? null : prev));
+        setWorkspaceStates((prev) => {
+          const next = { ...prev };
+          delete next[workspaceId];
+          return next;
+        });
+      } catch (error: unknown) {
+        setStatusMessage(
+          `\u30ef\u30fc\u30af\u30b9\u30da\u30fc\u30b9\u3092\u524a\u9664\u3067\u304d\u307e\u305b\u3093\u3067\u3057\u305f: ${getErrorMessage(error)}`
+        );
+      }
+    },
+    [setStatusMessage, setWorkspaceStates]
+  );
+
   return {
     workspaces,
     editorWorkspaceId,
     setEditorWorkspaceId,
-    handleCreateWorkspace
+    handleCreateWorkspace,
+    handleDeleteWorkspace
   };
 };

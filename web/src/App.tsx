@@ -78,7 +78,7 @@ export default function App() {
   const { deckStates, setDeckStates, updateDeckState, initializeDeckStates } =
     useDeckState();
 
-  const { workspaces, editorWorkspaceId, setEditorWorkspaceId, handleCreateWorkspace } =
+  const { workspaces, editorWorkspaceId, setEditorWorkspaceId, handleCreateWorkspace, handleDeleteWorkspace } =
     useWorkspaces({
       setStatusMessage,
       defaultRoot,
@@ -468,6 +468,7 @@ export default function App() {
           workspaces={workspaces}
           selectedWorkspaceId={editorWorkspaceId}
           onSelect={handleSelectWorkspace}
+          onDelete={handleDeleteWorkspace}
         />
       </div>
       {isWorkspaceEditorOpen && (

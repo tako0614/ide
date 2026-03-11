@@ -71,6 +71,15 @@ export function createWorkspace(path: string): Promise<Workspace> {
 }
 
 /**
+ * Deletes a workspace
+ */
+export function deleteWorkspace(workspaceId: string): Promise<{ deleted: boolean }> {
+  return request<{ deleted: boolean }>(`/api/workspaces/${workspaceId}`, {
+    method: HTTP_METHOD_DELETE
+  });
+}
+
+/**
  * Fetches all decks
  */
 export function listDecks(): Promise<Deck[]> {
