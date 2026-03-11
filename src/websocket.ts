@@ -4,7 +4,7 @@ import type { Server as HttpsServer } from 'node:https';
 import type { IncomingMessage } from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { TerminalSession } from './types.js';
-import { PORT, TRUST_PROXY } from './config.js';
+import { PORT, TRUST_PROXY, CORS_ORIGIN, NODE_ENV } from './config.js';
 import { logSecurityEvent } from './middleware/security.js';
 import { verifyWebSocketAuth } from './middleware/auth.js';
 
@@ -105,11 +105,15 @@ export function setupWebSocketServer(
 ): WebSocketServer {
   const wss = new WebSocketServer({ server });
 
-  const WS_ALLOWED_ORIGINS = [
+  const WS_ALLOWED_ORIGINS = new Set([
     `http://localhost:${PORT}`,
     'http://localhost:5173',
     'http://localhost:3000',
-  ];
+  ]);
+  // Allow configured CORS origin for WebSocket too
+  if (CORS_ORIGIN && CORS_ORIGIN !== '*') {
+    WS_ALLOWED_ORIGINS.add(CORS_ORIGIN);
+  }
 
   wss.on('connection', (socket: WebSocket, req) => {
     const socketId = crypto.randomUUID();
@@ -117,7 +121,7 @@ export function setupWebSocketServer(
 
     // Validate Origin header to prevent Cross-Site WebSocket Hijacking
     const origin = req.headers['origin'];
-    if (origin && !WS_ALLOWED_ORIGINS.includes(origin)) {
+    if (origin && CORS_ORIGIN !== '*' && !WS_ALLOWED_ORIGINS.has(origin)) {
       logSecurityEvent('WS_INVALID_ORIGIN', { ip: clientIP, origin });
       socket.close(1008, 'Invalid origin');
       return;
