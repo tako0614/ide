@@ -89,6 +89,26 @@ export function createDeck(name: string, workspaceId: string): Promise<Deck> {
 }
 
 /**
+ * Deletes a deck
+ */
+export function deleteDeck(deckId: string): Promise<{ deleted: boolean }> {
+  return request<{ deleted: boolean }>(`/api/decks/${deckId}`, {
+    method: HTTP_METHOD_DELETE
+  });
+}
+
+/**
+ * Saves deck order
+ */
+export function saveDeckOrder(deckIds: string[]): Promise<{ success: boolean }> {
+  return request<{ success: boolean }>('/api/decks/order', {
+    method: HTTP_METHOD_PUT,
+    headers: { 'Content-Type': CONTENT_TYPE_JSON },
+    body: JSON.stringify({ deckIds })
+  });
+}
+
+/**
  * Lists files in a workspace directory
  */
 export function listFiles(

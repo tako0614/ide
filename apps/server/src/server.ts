@@ -36,7 +36,6 @@ import {
   initializeDatabase,
   loadPersistedState,
   loadPersistedTerminals,
-  saveAllTerminalBuffers,
 } from './utils/database.js';
 import { createWorkspaceRouter, getConfigHandler } from './routes/workspaces.js';
 import { createDeckRouter } from './routes/decks.js';
@@ -236,7 +235,7 @@ export async function createServer() {
     console.log(`Health: ${baseUrl}/health`);
     console.log('');
     console.log('Security Status:');
-    console.log(`  - Basic Auth: ${BASIC_AUTH_USER && BASIC_AUTH_PASSWORD ? 'enabled (user: ' + BASIC_AUTH_USER + ')' : 'DISABLED'}`);
+    console.log(`  - Basic Auth: ${BASIC_AUTH_USER && BASIC_AUTH_PASSWORD ? 'enabled' : 'DISABLED'}`);
     console.log(`  - Max File Size: ${Math.round(MAX_FILE_SIZE / 1024 / 1024)}MB`);
     console.log(`  - Max Request Body: ${Math.round(MAX_REQUEST_BODY_SIZE / 1024)}KB`);
     console.log(`  - Trust Proxy: ${TRUST_PROXY ? 'enabled' : 'disabled'}`);
@@ -244,19 +243,7 @@ export async function createServer() {
     console.log(`  - Environment: ${NODE_ENV}`);
   });
 
-  // Periodic buffer persistence (mirrors daemon buffer to DB every 30s)
-  const bufferPersistInterval = setInterval(() => {
-    if (terminals.size > 0) {
-      try {
-        saveAllTerminalBuffers(db, terminals);
-      } catch (err) {
-        console.error('[TERMINAL] Failed to periodically save terminal buffers:', err);
-      }
-    }
-  }, 30_000);
-  bufferPersistInterval.unref();
-
-  // Graceful shutdown - save buffers to DB and optionally terminate daemon.
+  // Graceful shutdown - optionally terminate daemon.
   let shutdownPromise: Promise<void> | null = null;
   let shouldTerminateDaemon = false;
   const onShutdown = (options: { terminateDaemon?: boolean } = {}) => {
@@ -268,12 +255,6 @@ export async function createServer() {
     }
 
     shutdownPromise = (async () => {
-      clearInterval(bufferPersistInterval);
-      if (terminals.size > 0) {
-        console.log(`[SHUTDOWN] Saving ${terminals.size} terminal buffer(s)...`);
-        try { saveAllTerminalBuffers(db, terminals); } catch { /* ignore */ }
-      }
-
       if (shouldTerminateDaemon) {
         try {
           const stopped = await ptyClient.shutdown();

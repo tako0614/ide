@@ -8,7 +8,6 @@ export type PersistedTerminal = {
   deckId: string;
   title: string;
   command: string | null;
-  buffer: string;
   createdAt: string;
 };
 
@@ -38,7 +37,7 @@ export function handleDatabaseCorruption(dbPath: string): void {
 export function initializeDatabase(db: DatabaseSync): void {
   // Enable WAL mode for better concurrent access
   db.exec('PRAGMA journal_mode = WAL;');
-  db.exec('PRAGMA synchronous = NORMAL;');
+  db.exec('PRAGMA synchronous = FULL;');
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS workspaces (
@@ -69,6 +68,13 @@ export function initializeDatabase(db: DatabaseSync): void {
       created_at TEXT NOT NULL
     );
   `);
+
+  // Migration: add sort_order column to decks
+  try {
+    db.exec('ALTER TABLE decks ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0');
+  } catch {
+    // column already exists
+  }
 
   // Create indexes for better query performance
   db.exec(`CREATE INDEX IF NOT EXISTS idx_decks_workspace_id ON decks(workspace_id);`);
@@ -103,7 +109,7 @@ export function loadPersistedState(
 
   const deckRows = db
     .prepare(
-      'SELECT id, name, root, workspace_id, created_at FROM decks ORDER BY created_at ASC'
+      'SELECT id, name, root, workspace_id, created_at FROM decks ORDER BY sort_order ASC, created_at ASC'
     )
     .all();
   deckRows.forEach((row) => {
@@ -124,7 +130,7 @@ export function loadPersistedState(
 export function loadPersistedTerminals(db: DatabaseSync, decks: Map<string, Deck>): PersistedTerminal[] {
   const rows = db
     .prepare(
-      'SELECT id, deck_id, title, command, buffer, created_at FROM terminals ORDER BY created_at ASC'
+      'SELECT id, deck_id, title, command, created_at FROM terminals ORDER BY created_at ASC'
     )
     .all();
 
@@ -142,7 +148,6 @@ export function loadPersistedTerminals(db: DatabaseSync, decks: Map<string, Deck
       deckId,
       title: String(row.title),
       command: row.command ? String(row.command) : null,
-      buffer: String(row.buffer || ''),
       createdAt: String(row.created_at)
     });
   });
@@ -159,36 +164,13 @@ export function saveTerminal(
   createdAt: string
 ): void {
   const stmt = db.prepare(
-    'INSERT OR REPLACE INTO terminals (id, deck_id, title, command, buffer, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+    'INSERT OR REPLACE INTO terminals (id, deck_id, title, command, created_at) VALUES (?, ?, ?, ?, ?)'
   );
-  stmt.run(id, deckId, title, command, '', createdAt);
-}
-
-export function updateTerminalBuffer(db: DatabaseSync, id: string, buffer: string): void {
-  const stmt = db.prepare('UPDATE terminals SET buffer = ? WHERE id = ?');
-  stmt.run(buffer, id);
+  stmt.run(id, deckId, title, command, createdAt);
 }
 
 export function deleteTerminal(db: DatabaseSync, id: string): void {
   const stmt = db.prepare('DELETE FROM terminals WHERE id = ?');
   stmt.run(id);
-}
-
-export function saveAllTerminalBuffers(
-  db: DatabaseSync,
-  terminals: Map<string, { id: string; buffer: string }>
-): void {
-  if (terminals.size === 0) return;
-  const stmt = db.prepare('UPDATE terminals SET buffer = ? WHERE id = ?');
-  db.exec('BEGIN TRANSACTION');
-  try {
-    terminals.forEach((session) => {
-      stmt.run(session.buffer, session.id);
-    });
-    db.exec('COMMIT');
-  } catch (err) {
-    db.exec('ROLLBACK');
-    throw err;
-  }
 }
 

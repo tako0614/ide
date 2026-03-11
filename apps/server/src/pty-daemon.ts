@@ -27,7 +27,7 @@ import { spawn } from 'node-pty';
 import type { IPty } from 'node-pty';
 
 const DAEMON_INFO_PATH = process.env.DAEMON_INFO_PATH;
-const BUFFER_LIMIT = Number(process.env.TERMINAL_BUFFER_LIMIT || 50000);
+const BUFFER_LIMIT = Number(process.env.TERMINAL_BUFFER_LIMIT || 500000);
 
 if (!DAEMON_INFO_PATH) {
   console.error('[pty-daemon] DAEMON_INFO_PATH env var is required');
