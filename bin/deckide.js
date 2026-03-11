@@ -60,38 +60,79 @@ function getRunningPid() {
   }
 }
 
-/** Stop server: try HTTP shutdown on common ports, then fall back to killing the PID */
+/** Wait for a process to exit, returns true if it exited */
+function waitForExit(pid, timeoutMs = 5000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try { process.kill(pid, 0); } catch { return true; }
+    execSync('sleep 0.2', { stdio: 'ignore' });
+  }
+  return false;
+}
+
+/** Build curl auth flags from settings */
+function getAuthFlags() {
+  const s = loadSettings();
+  if (s.basicAuthEnabled && s.basicAuthUser && s.basicAuthPassword) {
+    return `-u '${s.basicAuthUser}:${s.basicAuthPassword}'`;
+  }
+  return '';
+}
+
+/** Try HTTP shutdown on a specific port */
+function tryHttpShutdown(port) {
+  const auth = getAuthFlags();
+  try {
+    execSync(`curl -sf ${auth} -X POST http://localhost:${port}/api/shutdown -H "Content-Type: application/json" -d '{}'`, {
+      timeout: 5000, stdio: 'ignore',
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Stop server: try HTTP shutdown, SIGTERM, then SIGKILL as last resort */
 function stopServer() {
   const port = getPort();
-  // Try HTTP shutdown on configured port
-  if (isServerRunningOnPort(port)) {
-    try {
-      execSync(`curl -sf -X POST http://localhost:${port}/api/shutdown -H "Content-Type: application/json" -d '{}'`, {
-        timeout: 5000, stdio: 'ignore',
-      });
-      try { fs.unlinkSync(pidFile); } catch {}
-      return true;
-    } catch {}
-  }
-  // Try default port 8787 if different
-  if (port !== 8787 && isServerRunningOnPort(8787)) {
-    try {
-      execSync(`curl -sf -X POST http://localhost:8787/api/shutdown -H "Content-Type: application/json" -d '{}'`, {
-        timeout: 5000, stdio: 'ignore',
-      });
-      try { fs.unlinkSync(pidFile); } catch {}
-      return true;
-    } catch {}
-  }
-  // Fall back to killing by PID
   const pid = getRunningPid();
+
+  // Try HTTP shutdown on configured port
+  if (isServerRunningOnPort(port) && tryHttpShutdown(port)) {
+    if (pid) waitForExit(pid, 5000);
+    try { fs.unlinkSync(pidFile); } catch {}
+    return true;
+  }
+
+  // Try default port 8787 if different
+  if (port !== 8787 && isServerRunningOnPort(8787) && tryHttpShutdown(8787)) {
+    if (pid) waitForExit(pid, 5000);
+    try { fs.unlinkSync(pidFile); } catch {}
+    return true;
+  }
+
+  // Fall back to killing by PID
   if (pid) {
     try {
       process.kill(pid, 'SIGTERM');
+      if (waitForExit(pid, 5000)) {
+        try { fs.unlinkSync(pidFile); } catch {}
+        return true;
+      }
+      // SIGKILL as last resort
+      process.kill(pid, 'SIGKILL');
+      waitForExit(pid, 2000);
       try { fs.unlinkSync(pidFile); } catch {}
       return true;
-    } catch {}
+    } catch {
+      // Process already gone
+      try { fs.unlinkSync(pidFile); } catch {}
+      return true;
+    }
   }
+
+  // No PID but clean up stale pid file
+  try { fs.unlinkSync(pidFile); } catch {}
   return false;
 }
 
@@ -413,7 +454,6 @@ const oldPid = getRunningPid();
 if (oldPid) {
   console.log('Stopping old server...');
   stopServer();
-  await new Promise(r => setTimeout(r, 1000));
 }
 
 // ── Background mode (default) ──
