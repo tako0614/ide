@@ -110,11 +110,11 @@ export const WorkspaceModal = ({
 
   return (
     <div className="fixed inset-0 bg-black/50 grid place-items-center z-[500]" role="dialog" aria-modal="true" aria-labelledby="workspace-modal-title">
-      <form className="modal" ref={formRef} onSubmit={handleSubmit}>
-        <div className="text-[14px] font-semibold mb-3" id="workspace-modal-title">
+      <form className="modal flex flex-col !overflow-hidden" ref={formRef} onSubmit={handleSubmit}>
+        <div className="text-[14px] font-semibold mb-3 shrink-0" id="workspace-modal-title">
           {'\u30ef\u30fc\u30af\u30b9\u30da\u30fc\u30b9\u8ffd\u52a0'}
         </div>
-        <label className="grid gap-1 text-xs">
+        <label className="grid gap-1 text-xs shrink-0">
           <span>{'\u30d1\u30b9'}</span>
           <input
             type="text"
@@ -126,7 +126,7 @@ export const WorkspaceModal = ({
             onChange={(event) => setWorkspacePathDraft(event.target.value)}
           />
         </label>
-        <div className="h-[280px] mt-3">
+        <div className="flex-1 min-h-0 mt-3">
           <FileTree
             root={previewRoot}
             entries={previewTree}
@@ -140,7 +140,7 @@ export const WorkspaceModal = ({
             onRefresh={handlePreviewRefresh}
           />
         </div>
-        <div className="flex justify-end gap-2 mt-4">
+        <div className="flex justify-end gap-2 mt-4 shrink-0">
           <button
             type="button"
             className="bg-transparent text-ink border-0 px-2 py-1 text-xs rounded-[2px] cursor-pointer hover:bg-list-hover"
