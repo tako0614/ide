@@ -120,8 +120,10 @@ export function setupWebSocketServer(
     const clientIP = getClientIP(req);
 
     // Validate Origin header to prevent Cross-Site WebSocket Hijacking
+    // Skip check if CORS_ORIGIN is '*' or unset in development mode
+    const skipOriginCheck = CORS_ORIGIN === '*' || (!CORS_ORIGIN && NODE_ENV !== 'production');
     const origin = req.headers['origin'];
-    if (origin && CORS_ORIGIN !== '*' && !WS_ALLOWED_ORIGINS.has(origin)) {
+    if (origin && !skipOriginCheck && !WS_ALLOWED_ORIGINS.has(origin)) {
       logSecurityEvent('WS_INVALID_ORIGIN', { ip: clientIP, origin });
       socket.close(1008, 'Invalid origin');
       return;
