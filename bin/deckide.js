@@ -269,12 +269,12 @@ if (command === 'port') {
   const wasRunning = isServerRunningOnPort(currentPort) || getRunningPid();
   if (wasRunning) {
     stopServer();
-    await new Promise(r => setTimeout(r, 1000));
     // Re-exec as start (background, no open)
     const child = spawn(process.execPath, [fileURLToPath(import.meta.url), 'start', '--no-open'], {
       stdio: 'inherit',
     });
-    child.on('exit', (code) => process.exit(code));
+    child.on('exit', (code) => process.exit(code ?? 0));
+    await new Promise(() => {});
   } else {
     process.exit(0);
   }
@@ -400,15 +400,15 @@ if (command === 'restart') {
     if (stopServer()) {
       console.log('Server stopped.');
     }
-    // Wait a moment for port to free
-    await new Promise(r => setTimeout(r, 1000));
   }
   // Re-exec as start (background)
   const restartArgs = ['start', ...args.slice(1)];
   const child = spawn(process.execPath, [fileURLToPath(import.meta.url), ...restartArgs], {
     stdio: 'inherit',
   });
-  child.on('exit', (code) => process.exit(code));
+  child.on('exit', (code) => process.exit(code ?? 0));
+  // Prevent fall-through to unknown command check
+  await new Promise(() => {});
 }
 
 // ── deckide / deckide start ──
