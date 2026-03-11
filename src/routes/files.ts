@@ -49,18 +49,6 @@ export function createFileRouter(workspaces: Map<string, Workspace>) {
       const requestedPath = c.req.query('subpath') || '';
       const rootPath = normalizeWorkspacePath(rootInput);
 
-      // When workspaces exist, allow browsing within workspaces and ancestor directories
-      if (workspaces.size > 0) {
-        const isAllowed = [...workspaces.values()].some(ws =>
-          rootPath === ws.path ||
-          rootPath.startsWith(ws.path + path.sep) ||
-          ws.path.startsWith(rootPath + path.sep)
-        );
-        if (!isAllowed) {
-          throw createHttpError('Path outside registered workspaces', 403);
-        }
-      }
-
       const target = await resolveSafePath(rootPath, requestedPath);
       const stats = await fs.stat(target);
       if (!stats.isDirectory()) {
