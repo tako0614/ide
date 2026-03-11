@@ -8,7 +8,7 @@ import { WorkspaceList } from './components/WorkspaceList';
 import { WorkspaceModal } from './components/WorkspaceModal';
 import { WorkspaceEditor } from './components/WorkspaceEditor';
 import { SettingsModal } from './components/SettingsModal';
-import { getConfig, getWsBase } from './api';
+import { getConfig, getWsBase, saveDeckOrder } from './api';
 import { useWorkspaceState } from './hooks/useWorkspaceState';
 import { useDeckState } from './hooks/useDeckState';
 import { useWorkspaces } from './hooks/useWorkspaces';
@@ -30,13 +30,6 @@ import { parseUrlState } from './utils/urlUtils';
 import { createEmptyWorkspaceState, createEmptyDeckState } from './utils/stateUtils';
 
 const MAX_ACTIVE_DECKS = 3;
-const DECK_ORDER_STORAGE_KEY = 'deck-ide.deck-order';
-
-function arraysEqual(left: string[], right: string[]) {
-  if (left.length !== right.length) return false;
-  return left.every((value, index) => value === right[index]);
-}
-
 function moveItemBefore(items: string[], source: string, target: string) {
   const sourceIndex = items.indexOf(source);
   const targetIndex = items.indexOf(target);
@@ -50,19 +43,6 @@ function moveItemBefore(items: string[], source: string, target: string) {
   return next;
 }
 
-function readDeckOrderFromStorage() {
-  if (typeof window === 'undefined') return [];
-  try {
-    const rawValue = window.localStorage.getItem(DECK_ORDER_STORAGE_KEY);
-    if (!rawValue) return [];
-    const parsed = JSON.parse(rawValue);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((value): value is string => typeof value === 'string');
-  } catch {
-    return [];
-  }
-}
-
 export default function App() {
   const initialUrlState = parseUrlState();
   const splitContainerRef = useRef<HTMLDivElement>(null);
@@ -73,13 +53,11 @@ export default function App() {
   );
   const [defaultRoot, setDefaultRoot] = useState(DEFAULT_ROOT_FALLBACK);
   const [statusMessage, setStatusMessage] = useState('');
-  const [deckOrderIds, setDeckOrderIds] = useState<string[]>(() =>
-    readDeckOrderFromStorage()
-  );
   const [draggingDeckId, setDraggingDeckId] = useState<string | null>(null);
   const [dragOverDeckId, setDragOverDeckId] = useState<string | null>(null);
   const [isSplitDropTargetActive, setIsSplitDropTargetActive] = useState(false);
   const [isDesktopDragEnabled, setIsDesktopDragEnabled] = useState(false);
+  const [deckContextMenu, setDeckContextMenu] = useState<{ deckId: string; x: number; y: number } | null>(null);
 
   const { theme, handleToggleTheme } = useTheme();
 
@@ -108,7 +86,7 @@ export default function App() {
       setWorkspaceStates
     });
 
-  const { decks, activeDeckIds, setActiveDeckIds, handleCreateDeck, handleCreateTerminal, handleDeleteTerminal } =
+  const { decks, activeDeckIds, setActiveDeckIds, handleCreateDeck, handleDeleteDeck, handleReorderDecks, handleCreateTerminal, handleDeleteTerminal } =
     useDecks({
       setStatusMessage,
       initializeDeckStates,
@@ -180,17 +158,7 @@ export default function App() {
     () => new Map(workspaces.map((workspace) => [workspace.id, workspace])),
     [workspaces]
   );
-  const orderedDecks = useMemo(() => {
-    const deckById = new Map(decks.map((deck) => [deck.id, deck]));
-    const inOrder = deckOrderIds
-      .map((deckId) => deckById.get(deckId))
-      .filter((deck): deck is (typeof decks)[number] => deck !== undefined);
-    if (inOrder.length === decks.length) {
-      return inOrder;
-    }
-    const inOrderSet = new Set(inOrder.map((deck) => deck.id));
-    return [...inOrder, ...decks.filter((deck) => !inOrderSet.has(deck.id))];
-  }, [decks, deckOrderIds]);
+  const orderedDecks = decks;
 
   useEffect(() => {
     let alive = true;
@@ -227,25 +195,6 @@ export default function App() {
     mediaQuery.addEventListener('change', syncDragCapability);
     return () => mediaQuery.removeEventListener('change', syncDragCapability);
   }, []);
-
-  useEffect(() => {
-    const validDeckIds = decks.map((deck) => deck.id);
-    setDeckOrderIds((prev) => {
-      const filtered = prev.filter((deckId) => validDeckIds.includes(deckId));
-      const missing = validDeckIds.filter((deckId) => !filtered.includes(deckId));
-      const next = [...filtered, ...missing];
-      return arraysEqual(next, prev) ? prev : next;
-    });
-  }, [decks]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    if (deckOrderIds.length === 0) {
-      window.localStorage.removeItem(DECK_ORDER_STORAGE_KEY);
-      return;
-    }
-    window.localStorage.setItem(DECK_ORDER_STORAGE_KEY, JSON.stringify(deckOrderIds));
-  }, [deckOrderIds]);
 
   const resetDeckDragState = useCallback(() => {
     setDraggingDeckId(null);
@@ -400,6 +349,24 @@ export default function App() {
     });
   }, [orderedDecks, setActiveDeckIds]);
 
+  const handleDeckContextMenu = useCallback((e: React.MouseEvent, deckId: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDeckContextMenu({ deckId, x: e.clientX, y: e.clientY });
+  }, []);
+
+  const handleDeleteDeckFromMenu = useCallback(() => {
+    if (!deckContextMenu) return;
+    const { deckId } = deckContextMenu;
+    setDeckContextMenu(null);
+    if (!window.confirm('\u3053\u306e\u30c7\u30c3\u30ad\u3092\u5b8c\u5168\u306b\u524a\u9664\u3057\u307e\u3059\u304b\uff1f\n\u30bf\u30fc\u30df\u30ca\u30eb\u3082\u3059\u3079\u3066\u524a\u9664\u3055\u308c\u307e\u3059\u3002')) return;
+    handleDeleteDeck(deckId);
+  }, [deckContextMenu, handleDeleteDeck]);
+
+  const closeDeckContextMenu = useCallback(() => {
+    setDeckContextMenu(null);
+  }, []);
+
   const handleDeckTabDragStart = useCallback((event: ReactDragEvent<HTMLButtonElement>, deckId: string) => {
     if (!isDesktopDragEnabled) {
       event.preventDefault();
@@ -437,11 +404,16 @@ export default function App() {
       resetDeckDragState();
       return;
     }
-    setDeckOrderIds((prev) => moveItemBefore(prev, sourceDeckId, deckId));
+    handleReorderDecks((prev) => {
+      const ids = prev.map((d) => d.id);
+      const reordered = moveItemBefore(ids, sourceDeckId, deckId);
+      const deckById = new Map(prev.map((d) => [d.id, d]));
+      return reordered.map((id) => deckById.get(id)!);
+    });
     setActiveDeckIds((prev) => moveItemBefore(prev, sourceDeckId, deckId));
     suppressNextDeckClick();
     resetDeckDragState();
-  }, [draggingDeckId, isDesktopDragEnabled, resetDeckDragState, setActiveDeckIds, suppressNextDeckClick]);
+  }, [draggingDeckId, isDesktopDragEnabled, resetDeckDragState, setActiveDeckIds, suppressNextDeckClick, handleReorderDecks]);
 
   const handleSplitContainerDragOver = useCallback((event: ReactDragEvent<HTMLDivElement>) => {
     if (!isDesktopDragEnabled || !draggingDeckId) {
@@ -551,6 +523,7 @@ export default function App() {
                 type="button"
                 className={clsx('deck-tab', activeDeckIds.includes(deck.id) && 'active', draggingDeckId === deck.id && 'is-dragging', dragOverDeckId === deck.id && 'is-drag-over')}
                 onClick={() => handleSelectDeck(deck.id)}
+                onContextMenu={(e) => handleDeckContextMenu(e, deck.id)}
                 draggable={isDesktopDragEnabled}
                 onDragStart={(event) => handleDeckTabDragStart(event, deck.id)}
                 onDragOver={(event) => handleDeckTabDragOver(event, deck.id)}
@@ -676,6 +649,23 @@ export default function App() {
         onClose={closeSettingsModal}
         onSave={handleSaveSettings}
       />
+      {deckContextMenu && (
+        <>
+          <div className="fixed inset-0 z-[999]" onClick={closeDeckContextMenu} onContextMenu={(e) => { e.preventDefault(); closeDeckContextMenu(); }} />
+          <div
+            className="fixed z-[1000] bg-panel border border-border shadow-lg rounded-[2px] py-1 min-w-[140px]"
+            style={{ left: deckContextMenu.x, top: deckContextMenu.y }}
+          >
+            <button
+              type="button"
+              className="w-full text-left px-3 py-1.5 text-[13px] text-red-400 bg-transparent border-0 cursor-pointer hover:bg-list-hover"
+              onClick={handleDeleteDeckFromMenu}
+            >
+              {'\u30c7\u30c3\u30ad\u3092\u524a\u9664'}
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }

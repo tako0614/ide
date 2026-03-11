@@ -20,12 +20,11 @@ export function createDeckRouter(
     const workspace = requireWorkspace(workspaces, workspaceId);
     const deck: Deck = {
       id: crypto.randomUUID(),
-      name: name || `Deck ${decks.size + 1}`,
+      name: name || `${workspace.name} ${Array.from(decks.values()).filter((d) => d.workspaceId === workspaceId).length + 1}`,
       root: workspace.path,
       workspaceId,
       createdAt: new Date().toISOString()
     };
-    decks.set(deck.id, deck);
     insertDeck.run(
       deck.id,
       deck.name,
@@ -33,6 +32,7 @@ export function createDeckRouter(
       deck.workspaceId,
       deck.createdAt
     );
+    decks.set(deck.id, deck);
     return deck;
   }
 
@@ -49,6 +49,63 @@ export function createDeckRouter(
       }
       const deck = createDeck(body?.name, workspaceId);
       return c.json(deck, 201);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  });
+
+  const updateSortOrderStmt = db.prepare('UPDATE decks SET sort_order = ? WHERE id = ?');
+
+  router.put('/order', async (c) => {
+    try {
+      const body = await readJson<{ deckIds?: string[] }>(c);
+      const deckIds = body?.deckIds;
+      if (!Array.isArray(deckIds)) {
+        throw createHttpError('deckIds array is required', 400);
+      }
+      db.exec('BEGIN TRANSACTION');
+      try {
+        deckIds.forEach((id, index) => {
+          updateSortOrderStmt.run(index, id);
+        });
+        db.exec('COMMIT');
+      } catch (err) {
+        db.exec('ROLLBACK');
+        throw err;
+      }
+      // Re-order the in-memory map to match
+      const entries = deckIds
+        .filter((id) => decks.has(id))
+        .map((id) => [id, decks.get(id)!] as const);
+      // Add any decks not in the list at the end
+      for (const [id, deck] of decks) {
+        if (!deckIds.includes(id)) {
+          entries.push([id, deck]);
+        }
+      }
+      decks.clear();
+      for (const [id, deck] of entries) {
+        decks.set(id, deck);
+      }
+      return c.json({ success: true });
+    } catch (error) {
+      return handleError(c, error);
+    }
+  });
+
+  const deleteDeckStmt = db.prepare('DELETE FROM decks WHERE id = ?');
+  const deleteTerminalsByDeckStmt = db.prepare('DELETE FROM terminals WHERE deck_id = ?');
+
+  router.delete('/:id', (c) => {
+    try {
+      const deckId = c.req.param('id');
+      if (!decks.has(deckId)) {
+        throw createHttpError('Deck not found', 404);
+      }
+      deleteTerminalsByDeckStmt.run(deckId);
+      deleteDeckStmt.run(deckId);
+      decks.delete(deckId);
+      return c.json({ deleted: true });
     } catch (error) {
       return handleError(c, error);
     }

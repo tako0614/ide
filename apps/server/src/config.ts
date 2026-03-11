@@ -23,16 +23,22 @@ try {
   // No settings file, use environment variables
 }
 
+function parseIntEnv(val: string | number | undefined, defaultVal: number): number {
+  if (typeof val === 'number') return Number.isFinite(val) ? Math.floor(val) : defaultVal;
+  const n = parseInt(val ?? '', 10);
+  return Number.isFinite(n) ? n : defaultVal;
+}
+
 export const DEFAULT_ROOT = process.env.DEFAULT_ROOT || os.homedir();
-export const PORT = Number(process.env.PORT || fileSettings.port || 8787);
+export const PORT = parseIntEnv(process.env.PORT ?? fileSettings.port, 8787);
 export const HOST = process.env.HOST || '0.0.0.0';
 export const BASIC_AUTH_USER = process.env.BASIC_AUTH_USER || (fileSettings.basicAuthEnabled ? fileSettings.basicAuthUser : undefined);
 export const BASIC_AUTH_PASSWORD = process.env.BASIC_AUTH_PASSWORD || (fileSettings.basicAuthEnabled ? fileSettings.basicAuthPassword : undefined);
 export const CORS_ORIGIN = process.env.CORS_ORIGIN;
 export const NODE_ENV = process.env.NODE_ENV || 'development';
-export const MAX_FILE_SIZE = Number(process.env.MAX_FILE_SIZE || 10 * 1024 * 1024);
-export const TERMINAL_BUFFER_LIMIT = Number(process.env.TERMINAL_BUFFER_LIMIT || 50000);
-export const MAX_REQUEST_BODY_SIZE = Number(process.env.MAX_REQUEST_BODY_SIZE || 1024 * 1024); // 1MB default
+export const MAX_FILE_SIZE = parseIntEnv(process.env.MAX_FILE_SIZE, 10 * 1024 * 1024);
+export const TERMINAL_BUFFER_LIMIT = parseIntEnv(process.env.TERMINAL_BUFFER_LIMIT, 500_000);
+export const MAX_REQUEST_BODY_SIZE = parseIntEnv(process.env.MAX_REQUEST_BODY_SIZE, 1024 * 1024); // 1MB default
 export const TRUST_PROXY = process.env.TRUST_PROXY === 'true'; // Only trust proxy headers if explicitly enabled
 
 // In packaged app: server is at app.asar.unpacked/server/, web is at app.asar.unpacked/web/dist/

@@ -3,6 +3,8 @@ import type { Deck } from '../types';
 import {
   listDecks,
   createDeck as apiCreateDeck,
+  deleteDeck as apiDeleteDeck,
+  saveDeckOrder as apiSaveDeckOrder,
   createTerminal as apiCreateTerminal,
   deleteTerminal as apiDeleteTerminal,
   listTerminals
@@ -86,6 +88,37 @@ export const useDecks = ({
     [setStatusMessage, setDeckStates]
   );
 
+  const handleDeleteDeck = useCallback(
+    async (deckId: string) => {
+      try {
+        await apiDeleteDeck(deckId);
+        setDecks((prev) => prev.filter((d) => d.id !== deckId));
+        setActiveDeckIds((prev) => prev.filter((id) => id !== deckId));
+        setDeckStates((prev) => {
+          const next = { ...prev };
+          delete next[deckId];
+          return next;
+        });
+      } catch (error: unknown) {
+        setStatusMessage(
+          `\u30c7\u30c3\u30ad\u306e\u524a\u9664\u306b\u5931\u6557\u3057\u307e\u3057\u305f: ${getErrorMessage(error)}`
+        );
+      }
+    },
+    [setStatusMessage, setDeckStates]
+  );
+
+  const handleReorderDecks = useCallback(
+    (reorder: (prev: Deck[]) => Deck[]) => {
+      setDecks((prev) => {
+        const next = reorder(prev);
+        apiSaveDeckOrder(next.map((d) => d.id)).catch(() => undefined);
+        return next;
+      });
+    },
+    []
+  );
+
   const handleCreateTerminal = useCallback(
     async (deckId: string, terminalsCount: number, command?: string, customTitle?: string) => {
       try {
@@ -127,6 +160,8 @@ export const useDecks = ({
     activeDeckIds,
     setActiveDeckIds,
     handleCreateDeck,
+    handleDeleteDeck,
+    handleReorderDecks,
     handleCreateTerminal,
     handleDeleteTerminal
   };

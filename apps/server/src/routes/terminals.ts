@@ -239,7 +239,7 @@ export function createTerminalRouter(
           command: persisted.command,
           createdAt: persisted.createdAt,
           sockets: new Set(),
-          buffer: persisted.buffer,
+          buffer: '',
           lastActive: Date.now(),
           write: (data) => ptyClient.input(persisted.id, data),
           resize: (cols, rows) => ptyClient.resize(persisted.id, cols, rows),
@@ -247,7 +247,8 @@ export function createTerminalRouter(
         };
 
         terminals.set(persisted.id, session);
-        ptyClient.attach(persisted.id, persisted.buffer.length);
+        // Attach with offset 0 to get the full buffer from daemon
+        ptyClient.attach(persisted.id, 0);
       } catch (err) {
         console.error(`[TERMINAL] Failed to restore terminal ${daemonInfo.id}:`, err);
       }
