@@ -32,6 +32,7 @@ import {
   handleDatabaseCorruption,
   initializeDatabase,
   loadPersistedState,
+  updateTerminalBuffer,
 } from './utils/database.js';
 import { createWorkspaceRouter, getConfigHandler } from './routes/workspaces.js';
 import { createDeckRouter } from './routes/decks.js';
@@ -177,8 +178,9 @@ export async function createServer() {
     if (shutdownPromise) return shutdownPromise;
 
     shutdownPromise = (async () => {
-      // Kill all terminals
+      // Save terminal buffers and kill all terminals
       terminals.forEach((session) => {
+        try { updateTerminalBuffer(db, session.id, session.buffer); } catch { /* ignore */ }
         session.sockets.forEach((socket) => {
           try { socket.close(1000, 'Server shutting down'); } catch { /* ignore */ }
         });
