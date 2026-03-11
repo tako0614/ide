@@ -168,7 +168,7 @@ export function setupWebSocketServer(
     const session = terminals.get(id);
     if (!session) {
       untrackConnection(clientIP, socket);
-      socket.close(1002, 'Terminal not found');
+      socket.close(1000, 'Terminal not found');
       return;
     }
 

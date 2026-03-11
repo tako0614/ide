@@ -442,9 +442,9 @@ export function TerminalTile({
         socket.addEventListener('open', () => {
           reconnectAttempts = 0;
           hasConnectedOnce = true;
-          // Buffer messages are queued and delivered synchronously after open.
-          // Use setTimeout to clear replayingBuffer after they've been processed.
-          setTimeout(() => { replayingBuffer = false; }, 0);
+          // Safety fallback: clear replay flag after 300ms (covers idle terminals
+          // where no buffer/data message arrives to clear the flag)
+          setTimeout(() => { replayingBuffer = false; }, 300);
           sendResize();
           if (!isReconnect) {
             term.write(`\r\n${TEXT_CONNECTED}\r\n\r\n`);
@@ -455,6 +455,10 @@ export function TerminalTile({
           if (typeof event.data === 'string') {
             dataReceivedRef.current += event.data.length;
             term.write(event.data);
+            // Clear replay flag AFTER term.write() has processed escape sequences.
+            // This ensures query responses are suppressed during buffer replay,
+            // regardless of network latency (unlike setTimeout which races).
+            replayingBuffer = false;
           }
         });
         socket.addEventListener('close', (event) => {
