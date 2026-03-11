@@ -32,8 +32,7 @@ function getPort() {
   return loadSettings().port || 8787;
 }
 
-function isServerRunning() {
-  const port = getPort();
+function isServerRunningOnPort(port) {
   try {
     execSync(`curl -sf -o /dev/null http://localhost:${port}/health`, {
       timeout: 2000, stdio: 'ignore',
@@ -42,6 +41,58 @@ function isServerRunning() {
   } catch {
     return false;
   }
+}
+
+function isServerRunning() {
+  return isServerRunningOnPort(getPort());
+}
+
+/** Get PID from pid file, or null if stale/missing */
+function getRunningPid() {
+  if (!fs.existsSync(pidFile)) return null;
+  try {
+    const pid = parseInt(fs.readFileSync(pidFile, 'utf-8').trim(), 10);
+    process.kill(pid, 0); // throws if not running
+    return pid;
+  } catch {
+    try { fs.unlinkSync(pidFile); } catch {}
+    return null;
+  }
+}
+
+/** Stop server: try HTTP shutdown on common ports, then fall back to killing the PID */
+function stopServer() {
+  const port = getPort();
+  // Try HTTP shutdown on configured port
+  if (isServerRunningOnPort(port)) {
+    try {
+      execSync(`curl -sf -X POST http://localhost:${port}/api/shutdown -H "Content-Type: application/json" -d '{}'`, {
+        timeout: 5000, stdio: 'ignore',
+      });
+      try { fs.unlinkSync(pidFile); } catch {}
+      return true;
+    } catch {}
+  }
+  // Try default port 8787 if different
+  if (port !== 8787 && isServerRunningOnPort(8787)) {
+    try {
+      execSync(`curl -sf -X POST http://localhost:8787/api/shutdown -H "Content-Type: application/json" -d '{}'`, {
+        timeout: 5000, stdio: 'ignore',
+      });
+      try { fs.unlinkSync(pidFile); } catch {}
+      return true;
+    } catch {}
+  }
+  // Fall back to killing by PID
+  const pid = getRunningPid();
+  if (pid) {
+    try {
+      process.kill(pid, 'SIGTERM');
+      try { fs.unlinkSync(pidFile); } catch {}
+      return true;
+    } catch {}
+  }
+  return false;
 }
 
 // ─── CLI ────────────────────────────────────────────────────────
@@ -68,23 +119,23 @@ Usage:
   deckide status                 Show server status
   deckide logs                   Show server logs
 
-  deckide config                 Show all settings
-  deckide config set <key> <val> Set a config value
-  deckide config get <key>       Get a config value
-  deckide config reset           Reset all settings
+  deckide port                   Show current port
+  deckide port <number>          Change port (auto-restarts)
 
   deckide auth on [user] [pass]  Enable basic auth
   deckide auth off               Disable basic auth
   deckide auth status            Show auth status
+
+  deckide config                 Show all settings
+  deckide config set <key> <val> Set a config value
+  deckide config get <key>       Get a config value
+  deckide config reset           Reset all settings
 
 Options (for start):
   -p, --port <port>              Port (default: 8787)
   --host <host>                  Host (default: 0.0.0.0)
   --no-open                      Don't open browser
   --fg                           Run in foreground
-
-Config keys:
-  port, host, cors, maxFileSize, trustProxy
 `);
   process.exit(0);
 }
@@ -131,6 +182,7 @@ if (command === 'config') {
     settings[key] = value;
     saveSettings(settings);
     console.log(`${key} = ${key === 'basicAuthPassword' ? '********' : value}`);
+    if (isServerRunning() || getRunningPid()) console.log('Run "deckide restart" to apply.');
     process.exit(0);
   }
 
@@ -142,6 +194,49 @@ if (command === 'config') {
 
   console.error(`Unknown config command: ${sub}`);
   process.exit(1);
+}
+
+// ── deckide port ──
+if (command === 'port') {
+  const newPort = args[1];
+  const settings = loadSettings();
+  const currentPort = settings.port || 8787;
+
+  // Show current port
+  if (!newPort) {
+    console.log(`port: ${currentPort}`);
+    process.exit(0);
+  }
+
+  const parsed = parseInt(newPort, 10);
+  if (!Number.isFinite(parsed) || parsed < 1 || parsed > 65535) {
+    console.error('Error: port must be 1-65535');
+    process.exit(1);
+  }
+
+  if (parsed === currentPort) {
+    console.log(`Already using port ${parsed}`);
+    process.exit(0);
+  }
+
+  // Save new port
+  settings.port = parsed;
+  saveSettings(settings);
+  console.log(`port: ${currentPort} → ${parsed}`);
+
+  // Auto-restart if server is running
+  const wasRunning = isServerRunningOnPort(currentPort) || getRunningPid();
+  if (wasRunning) {
+    stopServer();
+    await new Promise(r => setTimeout(r, 1000));
+    // Re-exec as start (background, no open)
+    const child = spawn(process.execPath, [fileURLToPath(import.meta.url), 'start', '--no-open'], {
+      stdio: 'inherit',
+    });
+    child.on('exit', (code) => process.exit(code));
+  } else {
+    process.exit(0);
+  }
 }
 
 // ── deckide auth ──
@@ -211,29 +306,14 @@ if (command === 'status') {
   console.log(`  port:   ${port}`);
   console.log(`  auth:   ${settings.basicAuthEnabled ? 'enabled' : 'disabled'}`);
 
+  const pid = getRunningPid();
   if (isServerRunning()) {
     console.log(`  server: \x1b[32mrunning\x1b[0m → http://localhost:${port}`);
+    if (pid) console.log(`  pid:    ${pid}`);
+  } else if (pid) {
+    console.log(`  server: \x1b[33mprocess alive (pid ${pid}) but not responding on port ${port}\x1b[0m`);
   } else {
     console.log('  server: \x1b[31mstopped\x1b[0m');
-  }
-
-  // Check PID file
-  if (fs.existsSync(pidFile)) {
-    try {
-      const pid = parseInt(fs.readFileSync(pidFile, 'utf-8').trim(), 10);
-      process.kill(pid, 0); // Check if process exists
-      console.log(`  pid:    ${pid}`);
-    } catch {
-      // stale pid file
-    }
-  }
-
-  const daemonInfoPath = path.join(dataDir, 'pty-daemon.json');
-  if (fs.existsSync(daemonInfoPath)) {
-    try {
-      const info = JSON.parse(fs.readFileSync(daemonInfoPath, 'utf-8'));
-      console.log(`  pty:    pid ${info.pid}, port ${info.port}`);
-    } catch {}
   }
 
   process.exit(0);
@@ -260,19 +340,14 @@ if (command === 'logs') {
 
 // ── deckide stop ──
 if (command === 'stop') {
-  if (!isServerRunning()) {
+  const pid = getRunningPid();
+  if (!isServerRunning() && !pid) {
     console.log('Server is not running.');
     process.exit(0);
   }
-  const port = getPort();
-  try {
-    execSync(`curl -sf -X POST http://localhost:${port}/api/shutdown -H "Content-Type: application/json" -d '{"terminateDaemon":true}'`, {
-      timeout: 5000, stdio: 'ignore',
-    });
-    // Clean up pid file
-    try { fs.unlinkSync(pidFile); } catch {}
+  if (stopServer()) {
     console.log('Server stopped.');
-  } catch {
+  } else {
     console.error('Failed to stop server.');
   }
   process.exit(0);
@@ -280,15 +355,10 @@ if (command === 'stop') {
 
 // ── deckide restart ──
 if (command === 'restart') {
-  if (isServerRunning()) {
-    const port = getPort();
-    try {
-      execSync(`curl -sf -X POST http://localhost:${port}/api/shutdown -H "Content-Type: application/json" -d '{"terminateDaemon":true}'`, {
-        timeout: 5000, stdio: 'ignore',
-      });
-      try { fs.unlinkSync(pidFile); } catch {}
+  if (isServerRunning() || getRunningPid()) {
+    if (stopServer()) {
       console.log('Server stopped.');
-    } catch {}
+    }
     // Wait a moment for port to free
     await new Promise(r => setTimeout(r, 1000));
   }
@@ -332,10 +402,18 @@ const settings = loadSettings();
 const port = startOptions.port || settings.port || 8787;
 const host = startOptions.host || settings.host || '0.0.0.0';
 
-// Check if already running
-if (isServerRunning()) {
+// Check if already running on the target port
+if (isServerRunningOnPort(port)) {
   console.log(`Server is already running on http://localhost:${port}`);
   process.exit(0);
+}
+
+// Kill old server if running on a different port
+const oldPid = getRunningPid();
+if (oldPid) {
+  console.log('Stopping old server...');
+  stopServer();
+  await new Promise(r => setTimeout(r, 1000));
 }
 
 // ── Background mode (default) ──

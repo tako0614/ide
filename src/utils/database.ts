@@ -3,14 +3,6 @@ import { DatabaseSync } from 'node:sqlite';
 import type { Workspace, Deck } from '../types.js';
 import { getWorkspaceKey } from './path.js';
 
-export type PersistedTerminal = {
-  id: string;
-  deckId: string;
-  title: string;
-  command: string | null;
-  createdAt: string;
-};
-
 export function checkDatabaseIntegrity(dbPath: string): boolean {
   try {
     const tempDb = new DatabaseSync(dbPath);
@@ -124,35 +116,6 @@ export function loadPersistedState(
     };
     decks.set(deck.id, deck);
   });
-}
-
-// Terminal persistence functions
-export function loadPersistedTerminals(db: DatabaseSync, decks: Map<string, Deck>): PersistedTerminal[] {
-  const rows = db
-    .prepare(
-      'SELECT id, deck_id, title, command, created_at FROM terminals ORDER BY created_at ASC'
-    )
-    .all();
-
-  const terminals: PersistedTerminal[] = [];
-  rows.forEach((row) => {
-    const deckId = String(row.deck_id);
-    // Only load terminals for existing decks
-    if (!decks.has(deckId)) {
-      // Clean up orphaned terminal
-      db.prepare('DELETE FROM terminals WHERE id = ?').run(String(row.id));
-      return;
-    }
-    terminals.push({
-      id: String(row.id),
-      deckId,
-      title: String(row.title),
-      command: row.command ? String(row.command) : null,
-      createdAt: String(row.created_at)
-    });
-  });
-
-  return terminals;
 }
 
 export function saveTerminal(

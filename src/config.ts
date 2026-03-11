@@ -88,5 +88,3 @@ if (!Number.isFinite(MAX_FILE_SIZE) || MAX_FILE_SIZE < 1024) {
 // Ensure data directory exists
 fsSync.mkdirSync(path.dirname(dbPath), { recursive: true });
 
-// PTY daemon info file - written by daemon on startup so server can find its port
-export const daemonInfoPath = path.join(path.dirname(dbPath), 'pty-daemon.json');
