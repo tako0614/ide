@@ -48,8 +48,15 @@ jobs:
             delete pkg.workspaces;
             delete pkg.scripts;
             delete pkg.devDependencies;
+            delete pkg.dependencies['@deck-ide/shared'];
+            delete pkg.bundledDependencies;
+            // Include resolved @deck-ide/shared in the package
+            if (!pkg.files.includes('node_modules/@deck-ide/')) {
+              pkg.files.push('node_modules/@deck-ide/');
+            }
             fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
           "
+          # Resolve workspace symlink to real files for node_modules inclusion
           cp -rL node_modules/@deck-ide node_modules/@deck-ide-resolved 2>/dev/null || true
           rm -rf node_modules/@deck-ide
           mv node_modules/@deck-ide-resolved node_modules/@deck-ide 2>/dev/null || true

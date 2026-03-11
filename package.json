@@ -1,6 +1,6 @@
 {
   "name": "deckide",
-  "version": "3.0.2",
+  "version": "3.0.3",
   "description": "Deck IDE - Browser-based IDE with terminal, file explorer, and git integration",
   "type": "module",
   "bin": {
