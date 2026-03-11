@@ -449,11 +449,14 @@ if (isServerRunningOnPort(port)) {
   process.exit(0);
 }
 
-// Kill old server if running on a different port
-const oldPid = getRunningPid();
-if (oldPid) {
-  console.log('Stopping old server...');
-  stopServer();
+// Kill old server if running on a different port (only in background mode,
+// FG mode is always spawned by background mode which already handles this)
+if (!startOptions.fg) {
+  const oldPid = getRunningPid();
+  if (oldPid) {
+    console.log('Stopping old server...');
+    stopServer();
+  }
 }
 
 // ── Background mode (default) ──
