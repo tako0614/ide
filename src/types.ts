@@ -9,6 +9,8 @@ export type TerminalSession = {
   createdAt: string;
   sockets: Set<import('ws').WebSocket>;
   buffer: string;
+  /** Absolute character count dropped from buffer start (for offset tracking). */
+  bufferBase: number;
   lastActive: number;
   /** Send keyboard input to the PTY. */
   write: (data: string) => void;

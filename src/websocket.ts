@@ -176,14 +176,27 @@ export function setupWebSocketServer(
     session.lastActive = Date.now();
 
     // Send buffer content if available
-    // bufferOffset: client sends how many bytes it already received, so we only send the delta
+    // bufferOffset: absolute character count the client already received
+    // bufferBase: absolute position of buffer[0] (chars dropped from start)
     const offsetParam = url.searchParams.get('bufferOffset');
-    const clientBufferOffset = offsetParam ? Math.max(0, parseInt(offsetParam, 10) || 0) : 0;
+    const clientOffset = offsetParam ? Math.max(0, parseInt(offsetParam, 10) || 0) : 0;
     if (session.buffer) {
       try {
-        const bufferToSend = clientBufferOffset > 0
-          ? session.buffer.slice(clientBufferOffset)
-          : session.buffer;
+        const bufferStart = session.bufferBase;
+        const bufferEnd = session.bufferBase + session.buffer.length;
+        let bufferToSend: string;
+
+        if (clientOffset <= bufferStart) {
+          // Client's last position is before (or at) what we have — send everything
+          bufferToSend = session.buffer;
+        } else if (clientOffset >= bufferEnd) {
+          // Client is fully up to date
+          bufferToSend = '';
+        } else {
+          // Send only the delta
+          bufferToSend = session.buffer.slice(clientOffset - bufferStart);
+        }
+
         if (bufferToSend) {
           socket.send(bufferToSend);
         }
