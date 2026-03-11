@@ -5,7 +5,7 @@ import { NODE_ENV } from '../config.js';
 import {
   createHttpError as sharedCreateHttpError,
   getErrorMessage as sharedGetErrorMessage
-} from '@deck-ide/shared/utils-node';
+} from '../shared/utils-node.js';
 
 export type { HttpError };
 

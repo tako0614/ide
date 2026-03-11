@@ -1,7 +1,8 @@
 node_modules/
 dist/
+web/dist/
+data/
 .env
 .env.local
 .DS_Store
 Thumbs.db
-apps/data/

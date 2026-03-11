@@ -7,9 +7,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // When running as a global CLI (`deckide`), DECKIDE_DATA_DIR is set to ~/.deckide/
 const globalDataDir = process.env.DECKIDE_DATA_DIR;
+// New flat structure: dist/ is at root, settings.json is at root
 export const SETTINGS_FILE = globalDataDir
   ? path.join(globalDataDir, 'settings.json')
-  : path.join(__dirname, '..', '..', 'settings.json');
+  : path.join(__dirname, '..', 'settings.json');
 
 // Load settings from file if exists
 interface Settings {
@@ -46,18 +47,12 @@ export const TERMINAL_BUFFER_LIMIT = parseIntEnv(process.env.TERMINAL_BUFFER_LIM
 export const MAX_REQUEST_BODY_SIZE = parseIntEnv(process.env.MAX_REQUEST_BODY_SIZE, 1024 * 1024); // 1MB default
 export const TRUST_PROXY = process.env.TRUST_PROXY === 'true'; // Only trust proxy headers if explicitly enabled
 
-// In packaged app: server is at app.asar.unpacked/server/, web is at app.asar.unpacked/web/dist/
-// In development: server is at apps/server/dist/, web is at apps/web/dist/
-const packagedDistDir = path.resolve(__dirname, '..', 'web', 'dist');
-const devDistDir = path.resolve(__dirname, '..', '..', 'web', 'dist');
-export const distDir = fsSync.existsSync(packagedDistDir) ? packagedDistDir : devDistDir;
+// Flat structure: dist/ and web/dist/ are siblings at project root
+export const distDir = path.resolve(__dirname, '..', 'web', 'dist');
 export const hasStatic = fsSync.existsSync(distDir);
 
-const packagedDataDir = path.resolve(__dirname, '..', 'data');
-const devDataDir = path.resolve(__dirname, '..', '..', 'data');
-export const dataDir = globalDataDir
-  ? globalDataDir
-  : fsSync.existsSync(path.dirname(packagedDataDir)) && !fsSync.existsSync(devDataDir) ? packagedDataDir : devDataDir;
+const localDataDir = path.resolve(__dirname, '..', 'data');
+export const dataDir = globalDataDir || localDataDir;
 export const dbPath = process.env.DB_PATH || path.join(dataDir, 'deck-ide.db');
 
 // Validate critical configuration

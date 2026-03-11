@@ -6,7 +6,7 @@ import { MAX_FILE_SIZE, DEFAULT_ROOT } from '../config.js';
 import { createHttpError, handleError, readJson } from '../utils/error.js';
 import { resolveSafePath, normalizeWorkspacePath } from '../utils/path.js';
 import { requireWorkspace } from './workspaces.js';
-import { sortFileEntries } from '@deck-ide/shared/utils-node';
+import { sortFileEntries } from '../shared/utils-node.js';
 
 function mapFileEntry(entry: { name: string; isDirectory(): boolean }, normalizedBase: string) {
   const entryPath = normalizedBase ? `${normalizedBase}/${entry.name}` : entry.name;

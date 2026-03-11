@@ -3,4 +3,4 @@
  * Re-exports from shared package
  */
 
-export { getErrorMessage, createHttpError } from '@deck-ide/shared/utils';
+export { getErrorMessage, createHttpError } from '@shared/utils';

@@ -1,6 +1,6 @@
 {
   "name": "deckide",
-  "version": "3.0.3",
+  "version": "3.1.0",
   "description": "Deck IDE - Browser-based IDE with terminal, file explorer, and git integration",
   "type": "module",
   "bin": {
@@ -8,29 +8,19 @@
   },
   "files": [
     "bin/",
-    "apps/server/dist/",
-    "apps/server/package.json",
-    "apps/web/dist/",
-    "packages/shared/dist/",
-    "packages/shared/package.json"
-  ],
-  "workspaces": [
-    "apps/server",
-    "apps/web",
-    "packages/*"
+    "dist/",
+    "web/dist/"
   ],
   "scripts": {
-    "dev:web": "npm --workspace apps/web run dev",
-    "dev:server": "npm --workspace apps/server run dev",
-    "build:shared": "npm --workspace @deck-ide/shared run build",
-    "build:server": "npm --workspace apps/server run build",
-    "build:web": "npm --workspace apps/web run build",
-    "build": "npm run build:shared && npm run build:web && npm run build:server",
-    "serve": "npm run build && npm --workspace apps/server run serve",
+    "dev:web": "cd web && npx vite",
+    "dev:server": "npx tsx src/index.ts",
+    "build:web": "cd web && npx vite build",
+    "build:server": "tsc",
+    "build": "npm run build:web && npm run build:server",
+    "serve": "node dist/index.js",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@deck-ide/shared": "file:packages/shared",
     "@hono/node-server": "^1.12.2",
     "hono": "^4.5.10",
     "node-pty": "^1.0.0",
@@ -38,9 +28,6 @@
     "ws": "^8.17.0",
     "zod": "^4.0.0"
   },
-  "bundledDependencies": [
-    "@deck-ide/shared"
-  ],
   "devDependencies": {
     "@monaco-editor/react": "^4.6.0",
     "@tailwindcss/vite": "^4.2.1",
@@ -62,7 +49,7 @@
     "xterm-addon-webgl": "^0.16.0"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.5.0"
   },
   "repository": {
     "type": "git",

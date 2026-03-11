@@ -28,7 +28,7 @@ export type {
   GitRepoInfo,
   GitFileStatusWithRepo,
   MultiRepoGitStatus
-} from '@deck-ide/shared/types';
+} from '@shared/types';
 
 export type AppView = 'workspace' | 'terminal';
 export type WorkspaceMode = 'list' | 'editor';

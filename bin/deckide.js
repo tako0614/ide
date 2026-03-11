@@ -54,8 +54,7 @@ process.env.PORT = String(options.port);
 process.env.HOST = options.host;
 
 // Import and start the server
-const serverPath = path.join(__dirname, '..', 'apps', 'server', 'dist', 'index.js');
-const { createServer } = await import(path.join(__dirname, '..', 'apps', 'server', 'dist', 'server.js'));
+const { createServer } = await import(path.join(__dirname, '..', 'dist', 'server.js'));
 
 const server = await createServer();
 

@@ -6,7 +6,7 @@ import {
   normalizeWorkspacePath as sharedNormalizeWorkspacePath,
   getWorkspaceKey as sharedGetWorkspaceKey,
   getWorkspaceName as sharedGetWorkspaceName
-} from '@deck-ide/shared/utils-node';
+} from '../shared/utils-node.js';
 
 export function normalizeWorkspacePath(inputPath = ''): string {
   return sharedNormalizeWorkspacePath(inputPath || '', DEFAULT_ROOT);

@@ -3,7 +3,7 @@
  */
 
 import type { FileSystemEntry, FileTreeNode } from '../types';
-import { getLanguageFromPath as sharedGetLanguageFromPath } from '@deck-ide/shared/utils';
+import { getLanguageFromPath as sharedGetLanguageFromPath } from '@shared/utils';
 
 /**
  * Converts FileSystemEntry array to FileTreeNode array
