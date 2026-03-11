@@ -8,7 +8,7 @@ import type { Deck, TerminalSession } from '../types.js';
 import { TERMINAL_BUFFER_LIMIT } from '../config.js';
 import { createHttpError, handleError, readJson } from '../utils/error.js';
 import { getDefaultShell } from '../utils/shell.js';
-import { saveTerminal, deleteTerminal as deleteTerminalFromDb, updateTerminalBuffer, loadTerminals } from '../utils/database.js';
+import { saveTerminal, deleteTerminal as deleteTerminalFromDb } from '../utils/database.js';
 
 // Track terminal index per deck for unique naming
 const deckTerminalCounters = new Map<string, number>();
@@ -155,101 +155,6 @@ export function createTerminalRouter(
 
     return session;
   }
-
-  // Restore persisted terminals from database (re-spawn PTY processes)
-  function restoreTerminals(): void {
-    const saved = loadTerminals(db);
-    for (const row of saved) {
-      if (!decks.has(row.deckId)) {
-        // Deck no longer exists, clean up
-        deleteTerminalFromDb(db, row.id);
-        continue;
-      }
-      const deck = decks.get(row.deckId)!;
-
-      let shell: string;
-      let shellArgs: string[] = [];
-      if (row.command) {
-        shell = getDefaultShell();
-        if (process.platform === 'win32') {
-          if (shell.toLowerCase().includes('powershell')) {
-            shellArgs = ['-NoExit', '-Command', row.command];
-          } else {
-            shellArgs = ['/K', row.command];
-          }
-        } else {
-          shellArgs = ['-c', row.command];
-        }
-      } else {
-        shell = getDefaultShell();
-      }
-
-      const env: Record<string, string> = {};
-      for (const [key, value] of Object.entries(process.env)) {
-        if (value !== undefined) env[key] = value;
-      }
-      env.TERM = env.TERM || 'xterm-256color';
-      env.COLORTERM = 'truecolor';
-      env.TERM_PROGRAM = 'xterm.js';
-      env.TERM_PROGRAM_VERSION = '5.0.0';
-      env.LANG = env.LANG || 'en_US.UTF-8';
-      env.LC_ALL = env.LC_ALL || 'en_US.UTF-8';
-      env.LC_CTYPE = env.LC_CTYPE || 'en_US.UTF-8';
-
-      try {
-        const isWindows = process.platform === 'win32';
-        const term: IPty = spawn(shell, shellArgs, {
-          cwd: deck.root,
-          cols: 120,
-          rows: 32,
-          env,
-          encoding: 'utf8',
-          ...(isWindows ? { useConpty: true } : {}),
-        } as any);
-
-        const session: TerminalSession = {
-          id: row.id,
-          deckId: row.deckId,
-          title: row.title,
-          command: row.command,
-          createdAt: row.createdAt,
-          sockets: new Set(),
-          buffer: row.buffer,
-          lastActive: Date.now(),
-          write: (data) => { try { term.write(data); } catch { /* terminal may be dying */ } },
-          resize: (cols, rows) => { try { term.resize(cols, rows); } catch { /* terminal may be dying */ } },
-          kill: () => { try { term.kill(); } catch { /* already dead */ } },
-        };
-
-        term.onData((data: string) => {
-          appendToTerminalBuffer(session, data);
-          session.lastActive = Date.now();
-          broadcastToSockets(session, data);
-        });
-
-        term.onExit(() => {
-          handleTerminalExit(row.id);
-        });
-
-        terminals.set(row.id, session);
-        console.log(`[TERMINAL] Restored terminal ${row.id}: shell=${shell}, cwd=${deck.root}, pid=${term.pid}`);
-      } catch (error) {
-        console.error(`[TERMINAL] Failed to restore terminal ${row.id}:`, error);
-        deleteTerminalFromDb(db, row.id);
-      }
-    }
-  }
-
-  restoreTerminals();
-
-  // Periodically save terminal buffers to database
-  const bufferSaveInterval = setInterval(() => {
-    terminals.forEach((session) => {
-      try {
-        updateTerminalBuffer(db, session.id, session.buffer);
-      } catch { /* ignore */ }
-    });
-  }, 10_000); // Every 10 seconds
 
   router.get('/', (c) => {
     const deckId = c.req.query('deckId');

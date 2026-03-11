@@ -73,6 +73,12 @@ export function initializeDatabase(db: DatabaseSync): void {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_terminals_deck_id ON terminals(deck_id);`);
 }
 
+export function clearOrphanedTerminals(db: DatabaseSync): void {
+  try {
+    db.exec('DELETE FROM terminals');
+  } catch { /* table may not exist yet */ }
+}
+
 export function loadPersistedState(
   db: DatabaseSync,
   workspaces: Map<string, Workspace>,
