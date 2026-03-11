@@ -2,7 +2,6 @@ import fsSync from 'node:fs';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import childProcess from 'node:child_process';
 import type { Server } from 'node:http';
 import type { MiddlewareHandler } from 'hono';
 import { Hono } from 'hono';
@@ -21,11 +20,9 @@ import {
   MAX_FILE_SIZE,
   MAX_REQUEST_BODY_SIZE,
   TRUST_PROXY,
-  TERMINAL_BUFFER_LIMIT,
   hasStatic,
   distDir,
   dbPath,
-  daemonInfoPath,
 } from './config.js';
 import { securityHeaders } from './middleware/security.js';
 import { corsMiddleware } from './middleware/cors.js';
@@ -35,7 +32,6 @@ import {
   handleDatabaseCorruption,
   initializeDatabase,
   loadPersistedState,
-  loadPersistedTerminals,
 } from './utils/database.js';
 import { createWorkspaceRouter, getConfigHandler } from './routes/workspaces.js';
 import { createDeckRouter } from './routes/decks.js';
@@ -50,7 +46,6 @@ import {
   getConnectionStats,
   clearAllConnections,
 } from './websocket.js';
-import { PtyClient } from './pty-client.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -74,59 +69,6 @@ const requestIdMiddleware: MiddlewareHandler = async (c, next) => {
   }
 };
 
-/** Wait for the daemon to write its info file after startup. */
-async function waitForDaemonInfo(maxWaitMs = 8000): Promise<{ pid: number; port: number }> {
-  const start = Date.now();
-  while (Date.now() - start < maxWaitMs) {
-    if (fsSync.existsSync(daemonInfoPath)) {
-      try {
-        return JSON.parse(fsSync.readFileSync(daemonInfoPath, 'utf-8'));
-      } catch {
-        // File may be partially written, retry
-      }
-    }
-    await new Promise((r) => setTimeout(r, 100));
-  }
-  throw new Error('PTY daemon did not start within 8 seconds');
-}
-
-/** Connect to an existing daemon or spawn a new one. Returns a connected PtyClient. */
-async function ensureDaemon(): Promise<PtyClient> {
-  const client = new PtyClient();
-
-  // Try connecting to an existing daemon
-  if (fsSync.existsSync(daemonInfoPath)) {
-    try {
-      const info = JSON.parse(fsSync.readFileSync(daemonInfoPath, 'utf-8'));
-      await client.connect(info.port);
-      console.log(`[SERVER] Connected to existing PTY daemon on port ${info.port} (pid ${info.pid})`);
-      return client;
-    } catch {
-      console.log('[SERVER] Existing PTY daemon is gone, starting a new one...');
-      try { fsSync.unlinkSync(daemonInfoPath); } catch { /* ignore */ }
-    }
-  }
-
-  // Spawn a new daemon process (detached so it survives server restarts)
-  const daemonScript = path.join(__dirname, 'pty-daemon.js');
-  const child = childProcess.spawn(process.execPath, [daemonScript], {
-    detached: true,
-    stdio: 'ignore',
-    windowsHide: true,
-    env: {
-      ...process.env,
-      DAEMON_INFO_PATH: daemonInfoPath,
-      TERMINAL_BUFFER_LIMIT: String(TERMINAL_BUFFER_LIMIT),
-    },
-  });
-  child.unref(); // Don't keep this process alive
-
-  const info = await waitForDaemonInfo();
-  await client.connect(info.port);
-  console.log(`[SERVER] Started PTY daemon on port ${info.port} (pid ${info.pid})`);
-  return client;
-}
-
 export async function createServer() {
   // Check database integrity before opening
   if (fsSync.existsSync(dbPath) && !checkDatabaseIntegrity(dbPath)) {
@@ -143,9 +85,6 @@ export async function createServer() {
   const terminals = new Map<string, TerminalSession>();
 
   loadPersistedState(db, workspaces, workspacePathIndex, decks);
-
-  // Start or reconnect to the PTY daemon
-  const ptyClient = await ensureDaemon();
 
   // Create Hono app
   const app = new Hono();
@@ -172,20 +111,9 @@ export async function createServer() {
   app.route('/api/workspaces', createWorkspaceRouter(db, workspaces, workspacePathIndex));
   app.route('/api/decks', createDeckRouter(db, workspaces, decks));
 
-  const { router: terminalRouter, restoreTerminals } = createTerminalRouter(db, decks, terminals, ptyClient);
+  const terminalRouter = createTerminalRouter(db, decks, terminals);
   app.route('/api/terminals', terminalRouter);
   app.route('/api/git', createGitRouter(workspaces));
-
-  // Restore terminals: daemon is the source of truth for existence, DB provides metadata
-  const daemonTerminals = await ptyClient.list();
-  const persistedTerminals = loadPersistedTerminals(db, decks);
-  if (daemonTerminals.length > 0 || persistedTerminals.length > 0) {
-    console.log(
-      `[TERMINAL] Restoring ${daemonTerminals.length} live terminal(s) ` +
-      `(${persistedTerminals.length} DB entries)...`
-    );
-    await restoreTerminals(persistedTerminals, daemonTerminals);
-  }
 
   app.get('/api/config', getConfigHandler());
 
@@ -243,30 +171,21 @@ export async function createServer() {
     console.log(`  - Environment: ${NODE_ENV}`);
   });
 
-  // Graceful shutdown - optionally terminate daemon.
+  // Graceful shutdown
   let shutdownPromise: Promise<void> | null = null;
-  let shouldTerminateDaemon = false;
-  const onShutdown = (options: { terminateDaemon?: boolean } = {}) => {
-    if (options.terminateDaemon) {
-      shouldTerminateDaemon = true;
-    }
-    if (shutdownPromise) {
-      return shutdownPromise;
-    }
+  const onShutdown = () => {
+    if (shutdownPromise) return shutdownPromise;
 
     shutdownPromise = (async () => {
-      if (shouldTerminateDaemon) {
-        try {
-          const stopped = await ptyClient.shutdown();
-          if (!stopped) {
-            console.warn('[SHUTDOWN] PTY daemon shutdown was not acknowledged');
-          }
-        } catch (err) {
-          console.warn('[SHUTDOWN] Failed to request PTY daemon shutdown:', err);
-        }
-      }
+      // Kill all terminals
+      terminals.forEach((session) => {
+        session.sockets.forEach((socket) => {
+          try { socket.close(1000, 'Server shutting down'); } catch { /* ignore */ }
+        });
+        session.kill();
+      });
+      terminals.clear();
 
-      ptyClient.destroy();
       try { db.close(); } catch { /* ignore */ }
     })();
 
@@ -274,37 +193,27 @@ export async function createServer() {
   };
 
   process.on('SIGINT', () => {
-    console.log('\n[SHUTDOWN] Received SIGINT, saving state...');
-    void onShutdown({ terminateDaemon: true }).finally(() => process.exit(0));
+    console.log('\n[SHUTDOWN] Received SIGINT...');
+    void onShutdown().finally(() => process.exit(0));
   });
 
   process.on('SIGTERM', () => {
-    console.log('[SHUTDOWN] Received SIGTERM, saving state...');
-    void onShutdown({ terminateDaemon: true }).finally(() => process.exit(0));
+    console.log('[SHUTDOWN] Received SIGTERM...');
+    void onShutdown().finally(() => process.exit(0));
   });
 
   process.on('SIGHUP', () => {
-    console.log('[SHUTDOWN] Received SIGHUP, saving state...');
-    void onShutdown({ terminateDaemon: true }).finally(() => process.exit(0));
+    console.log('[SHUTDOWN] Received SIGHUP...');
+    void onShutdown().finally(() => process.exit(0));
   });
 
-  // HTTP shutdown endpoint — allows cross-platform graceful shutdown from Electron
+  // HTTP shutdown endpoint
   app.post('/api/shutdown', async (c) => {
-    let terminateDaemon = false;
-    try {
-      const body = await c.req.json<{ terminateDaemon?: boolean }>();
-      terminateDaemon = body?.terminateDaemon === true;
-    } catch {
-      // Body is optional; default is false.
-    }
-
     setTimeout(() => {
-      console.log(
-        `[SHUTDOWN] Shutdown requested via HTTP API${terminateDaemon ? ' (terminate daemon)' : ''}`
-      );
-      void onShutdown({ terminateDaemon }).finally(() => process.exit(0));
+      console.log('[SHUTDOWN] Shutdown requested via HTTP API');
+      void onShutdown().finally(() => process.exit(0));
     }, 50);
-    return c.json({ ok: true, terminateDaemon });
+    return c.json({ ok: true });
   });
 
   const originalExceptionHandler = process.listeners('uncaughtException')[0] as ((err: Error) => void) | undefined;
@@ -314,8 +223,8 @@ export async function createServer() {
       console.log('[node-pty] AttachConsole error suppressed');
       return;
     }
-    console.error('[SHUTDOWN] Uncaught exception, saving state before exit...');
-    void onShutdown({ terminateDaemon: true }).finally(() => {
+    console.error('[SHUTDOWN] Uncaught exception...');
+    void onShutdown().finally(() => {
       if (originalExceptionHandler) {
         originalExceptionHandler(error);
       } else {
