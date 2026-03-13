@@ -523,11 +523,16 @@
   transition: background 0.1s, color 0.1s; flex-shrink: 0;
 }
 .terminal-close-btn:hover { background: #404040; color: #fff; }
-.terminal-tile-body { flex: 1; min-height: 0; overflow: hidden; overflow-anchor: none; overscroll-behavior: contain; }
+.terminal-tile-body { flex: 1; min-height: 0; overflow: hidden; overflow-anchor: none; overscroll-behavior: contain; touch-action: pan-y; }
 .terminal-tile-body .xterm,
 .terminal-tile-body .xterm-viewport,
 .terminal-tile-body .xterm-screen {
   overflow-anchor: none;
+}
+.terminal-tile-body .xterm-viewport {
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
 }
 
 /* ── Git Status Colors ── */
@@ -644,12 +649,15 @@
   .terminal-pane::-webkit-scrollbar { display: none; }
   .terminal-grid {
     display: flex !important; flex-direction: column !important;
-    flex: 1 0 auto !important; min-height: 100%; height: auto; width: 100%;
+    flex: 0 0 auto !important; min-height: 0; height: auto; width: 100%;
     overflow: visible !important; gap: 0 !important;
     grid-template-columns: unset !important; grid-template-rows: unset !important;
   }
   .terminal-tile {
-    flex: 0 0 auto; min-height: 100%; height: auto; width: 100%; max-width: 100%;
+    flex: 0 0 auto;
+    min-height: clamp(18rem, calc(100svh - 10rem), 32rem);
+    height: clamp(18rem, calc(100svh - 10rem), 32rem);
+    width: 100%; max-width: 100%;
     scroll-snap-align: none; border-radius: 0; border-left: none; border-right: none;
   }
   .status-float {

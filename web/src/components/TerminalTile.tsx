@@ -489,16 +489,26 @@ export function TerminalTile({
     };
 
     const handlePointerFocus = () => {
-      window.requestAnimationFrame(() => {
-        if (!cancelled) {
-          focusTerminalWithoutScroll();
-        }
-      });
+      if (!cancelled) {
+        focusTerminalWithoutScroll();
+      }
     };
 
-    containerRef.current.addEventListener('pointerdown', handlePointerFocus, { passive: true });
+    const handleFocusIn = () => {
+      if (!cancelled) {
+        focusTerminalWithoutScroll();
+      }
+    };
+
+    containerRef.current.addEventListener('pointerdown', handlePointerFocus, { passive: true, capture: true });
+    containerRef.current.addEventListener('mousedown', handlePointerFocus, { passive: true, capture: true });
+    containerRef.current.addEventListener('touchstart', handlePointerFocus, { passive: true, capture: true });
+    containerRef.current.addEventListener('focusin', handleFocusIn, true);
     pointerFocusCleanup = () => {
-      containerRef.current?.removeEventListener('pointerdown', handlePointerFocus);
+      containerRef.current?.removeEventListener('pointerdown', handlePointerFocus, true);
+      containerRef.current?.removeEventListener('mousedown', handlePointerFocus, true);
+      containerRef.current?.removeEventListener('touchstart', handlePointerFocus, true);
+      containerRef.current?.removeEventListener('focusin', handleFocusIn, true);
     };
 
     // Fetch WebSocket token and connect
