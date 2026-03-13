@@ -475,11 +475,37 @@ export function TerminalTile({
     let dataDisposable: IDisposable | null = null;
     let binaryDisposable: IDisposable | null = null;
     let focusDisposable: IDisposable | null = null;
+    let pointerFocusCleanup: (() => void) | null = null;
     let cancelled = false;
     let reconnectAttempts = 0;
     let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
     let isIntentionalClose = false;
     let hasConnectedOnce = false;
+
+    const focusTerminalWithoutScroll = () => {
+      const helper = containerRef.current?.querySelector('.xterm-helper-textarea');
+      if (!(helper instanceof HTMLTextAreaElement)) {
+        return;
+      }
+      try {
+        helper.focus({ preventScroll: true });
+      } catch {
+        helper.focus();
+      }
+    };
+
+    const handlePointerFocus = () => {
+      window.requestAnimationFrame(() => {
+        if (!cancelled) {
+          focusTerminalWithoutScroll();
+        }
+      });
+    };
+
+    containerRef.current.addEventListener('pointerdown', handlePointerFocus, { passive: true });
+    pointerFocusCleanup = () => {
+      containerRef.current?.removeEventListener('pointerdown', handlePointerFocus);
+    };
 
     // Fetch WebSocket token and connect
     const connect = async (isReconnect = false) => {
@@ -650,6 +676,9 @@ export function TerminalTile({
       }
       if (focusDisposable) {
         focusDisposable.dispose();
+      }
+      if (pointerFocusCleanup) {
+        pointerFocusCleanup();
       }
       if (socket) {
         socket.close();

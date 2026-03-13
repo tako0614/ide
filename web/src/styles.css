@@ -523,7 +523,12 @@
   transition: background 0.1s, color 0.1s; flex-shrink: 0;
 }
 .terminal-close-btn:hover { background: #404040; color: #fff; }
-.terminal-tile-body { flex: 1; min-height: 0; overflow: hidden; overflow-anchor: none; }
+.terminal-tile-body { flex: 1; min-height: 0; overflow: hidden; overflow-anchor: none; overscroll-behavior: contain; }
+.terminal-tile-body .xterm,
+.terminal-tile-body .xterm-viewport,
+.terminal-tile-body .xterm-screen {
+  overflow-anchor: none;
+}
 
 /* ── Git Status Colors ── */
 .git-modified   { color: var(--color-git-modified); }
@@ -618,7 +623,7 @@
   .terminal-split-container {
     display: flex !important; flex-direction: row !important;
     overflow-x: scroll; overflow-y: hidden;
-    scroll-snap-type: x mandatory; -webkit-overflow-scrolling: touch;
+    scroll-snap-type: none; -webkit-overflow-scrolling: touch;
     overscroll-behavior-x: contain; touch-action: pan-x;
     scrollbar-width: none; padding: 0 !important; gap: 0 !important;
     width: 100%; max-width: 100%;
@@ -632,7 +637,7 @@
   /* Mobile: vertical swipe between terminals */
   .terminal-pane {
     height: 100%; overflow-y: scroll; overflow-x: hidden;
-    scroll-snap-type: y mandatory; -webkit-overflow-scrolling: touch;
+    scroll-snap-type: none; -webkit-overflow-scrolling: touch;
     overscroll-behavior-y: contain; touch-action: pan-y;
     scrollbar-width: none; padding: 0 !important; width: 100%; max-width: 100%;
   }
@@ -645,7 +650,7 @@
   }
   .terminal-tile {
     flex: 0 0 auto; height: 100%; width: 100%; max-width: 100%;
-    scroll-snap-align: start; border-radius: 0; border-left: none; border-right: none;
+    scroll-snap-align: none; border-radius: 0; border-left: none; border-right: none;
   }
   .status-float {
     right: 12px;
