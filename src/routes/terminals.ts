@@ -10,8 +10,8 @@ import { createHttpError, handleError, readJson } from '../utils/error.js';
 import { getDefaultShell } from '../utils/shell.js';
 import { saveTerminal, deleteTerminal as deleteTerminalFromDb } from '../utils/database.js';
 
-// Track terminal index per deck for unique naming
-const deckTerminalCounters = new Map<string, number>();
+const DEFAULT_TERMINAL_TITLE = 'ターミナル';
+const MAX_SOCKET_BUFFERED_AMOUNT = 1024 * 1024;
 
 export function createTerminalRouter(
   db: DatabaseSync,
@@ -20,38 +20,101 @@ export function createTerminalRouter(
 ) {
   const router = new Hono();
 
-  function appendToTerminalBuffer(session: TerminalSession, data: string): void {
-    const newBuffer = session.buffer + data;
-    if (newBuffer.length > TERMINAL_BUFFER_LIMIT) {
-      const excess = newBuffer.length - TERMINAL_BUFFER_LIMIT;
-      session.buffer = newBuffer.slice(excess);
-      session.bufferBase += excess;
-    } else {
-      session.buffer = newBuffer;
+  function toBuffer(data: Buffer | string): Buffer {
+    return Buffer.isBuffer(data) ? data : Buffer.from(data, 'utf8');
+  }
+
+  function appendToTerminalBuffer(session: TerminalSession, data: Buffer | string): void {
+    const chunk = toBuffer(data);
+    if (chunk.length === 0) {
+      return;
+    }
+
+    if (chunk.length >= TERMINAL_BUFFER_LIMIT) {
+      const retainedChunk = Buffer.from(chunk.subarray(chunk.length - TERMINAL_BUFFER_LIMIT));
+      session.bufferBase += session.bufferLength + (chunk.length - TERMINAL_BUFFER_LIMIT);
+      session.bufferChunks = [retainedChunk];
+      session.bufferLength = retainedChunk.length;
+      return;
+    }
+
+    session.bufferChunks.push(Buffer.from(chunk));
+    session.bufferLength += chunk.length;
+
+    while (session.bufferLength > TERMINAL_BUFFER_LIMIT && session.bufferChunks.length > 0) {
+      const overflow = session.bufferLength - TERMINAL_BUFFER_LIMIT;
+      const firstChunk = session.bufferChunks[0];
+
+      if (firstChunk.length <= overflow) {
+        session.bufferChunks.shift();
+        session.bufferBase += firstChunk.length;
+        session.bufferLength -= firstChunk.length;
+        continue;
+      }
+
+      session.bufferChunks[0] = Buffer.from(firstChunk.subarray(overflow));
+      session.bufferBase += overflow;
+      session.bufferLength -= overflow;
     }
   }
 
-  function getNextTerminalIndex(deckId: string): number {
-    const current = deckTerminalCounters.get(deckId) ?? 0;
-    const next = current + 1;
-    deckTerminalCounters.set(deckId, next);
-    return next;
+  function getUniqueTerminalTitle(deckId: string, requestedTitle?: string): string {
+    const trimmedTitle = requestedTitle?.trim();
+    const baseTitle = trimmedTitle && trimmedTitle.length > 0 ? trimmedTitle : null;
+    const existingTitles = new Set(
+      Array.from(terminals.values())
+        .filter((session) => session.deckId === deckId)
+        .map((session) => session.title)
+    );
+
+    if (!baseTitle) {
+      let index = 1;
+      while (existingTitles.has(`${DEFAULT_TERMINAL_TITLE} ${index}`)) {
+        index++;
+      }
+      return `${DEFAULT_TERMINAL_TITLE} ${index}`;
+    }
+
+    if (!existingTitles.has(baseTitle)) {
+      return baseTitle;
+    }
+
+    let suffix = 2;
+    while (existingTitles.has(`${baseTitle} ${suffix}`)) {
+      suffix++;
+    }
+    return `${baseTitle} ${suffix}`;
   }
 
-  function broadcastToSockets(session: TerminalSession, data: string): void {
+  function broadcastToSockets(session: TerminalSession, data: Buffer | string): void {
+    const payload = toBuffer(data);
     const deadSockets = new Set<WebSocket>();
     session.sockets.forEach((socket) => {
       try {
-        if (socket.readyState === 1) {
-          socket.send(data);
-        } else if (socket.readyState > 1) {
+        if (socket.readyState !== 1) {
           deadSockets.add(socket);
+          return;
         }
+        if (socket.bufferedAmount > MAX_SOCKET_BUFFERED_AMOUNT) {
+          try { socket.close(1009, 'Terminal output overflow'); } catch { /* ignore */ }
+          deadSockets.add(socket);
+          return;
+        }
+        socket.send(payload, { binary: true }, (error) => {
+          if (error) {
+            try { socket.close(1011, 'Terminal stream error'); } catch { /* ignore */ }
+          }
+        });
       } catch {
         deadSockets.add(socket);
       }
     });
-    deadSockets.forEach((s) => session.sockets.delete(s));
+    deadSockets.forEach((s) => {
+      session.sockets.delete(s);
+      if (session.resizeOwner === s) {
+        session.resizeOwner = null;
+      }
+    });
   }
 
   function handleTerminalExit(id: string): void {
@@ -66,6 +129,7 @@ export function createTerminalRouter(
       try { socket.close(1000, 'Terminal exited'); } catch { /* ignore */ }
     });
     session.sockets.clear();
+    session.resizeOwner = null;
   }
 
   function createTerminalSession(
@@ -119,13 +183,13 @@ export function createTerminalRouter(
       cols: 120,
       rows: 32,
       env,
-      encoding: 'utf8',
+      encoding: null,
       ...(isWindows ? { useConpty: true } : {}),
     } as any);
 
     console.log(`[TERMINAL] Created terminal ${id}: shell=${shell}, cwd=${deck.root}, pid=${term.pid}`);
 
-    const resolvedTitle = title || `Terminal ${getNextTerminalIndex(deck.id)}`;
+    const resolvedTitle = getUniqueTerminalTitle(deck.id, title);
     const createdAt = new Date().toISOString();
 
     const session: TerminalSession = {
@@ -135,16 +199,21 @@ export function createTerminalRouter(
       command: command || null,
       createdAt,
       sockets: new Set(),
-      buffer: '',
+      resizeOwner: null,
+      bufferChunks: [],
+      bufferLength: 0,
       bufferBase: 0,
       lastActive: Date.now(),
-      write: (data) => { try { term.write(data); } catch { /* terminal may be dying */ } },
+      write: (data) => {
+        const payload = Buffer.isBuffer(data) ? data : Buffer.from(data);
+        try { term.write(payload); } catch { /* terminal may be dying */ }
+      },
       resize: (cols, rows) => { try { term.resize(cols, rows); } catch { /* terminal may be dying */ } },
       kill: () => { try { term.kill(); } catch { /* already dead */ } },
     };
 
     // Wire up PTY output → buffer + WebSocket broadcast
-    term.onData((data: string) => {
+    (term as unknown as { on(eventName: 'data', listener: (data: Buffer | string) => void): void }).on('data', (data) => {
       appendToTerminalBuffer(session, data);
       session.lastActive = Date.now();
       broadcastToSockets(session, data);
@@ -202,6 +271,7 @@ export function createTerminalRouter(
         try { socket.close(1000, 'Terminal deleted'); } catch { /* ignore */ }
       });
       session.sockets.clear();
+      session.resizeOwner = null;
 
       session.kill();
 

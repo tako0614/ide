@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { Hono } from 'hono';
 import type { DatabaseSync } from 'node:sqlite';
+import type { WebSocket } from 'ws';
 import type { Workspace, Deck } from '../types.js';
 import { createHttpError, handleError, readJson } from '../utils/error.js';
 import { requireWorkspace } from './workspaces.js';
@@ -8,7 +9,8 @@ import { requireWorkspace } from './workspaces.js';
 export function createDeckRouter(
   db: DatabaseSync,
   workspaces: Map<string, Workspace>,
-  decks: Map<string, Deck>
+  decks: Map<string, Deck>,
+  terminals: Map<string, import('../types.js').TerminalSession>
 ) {
   const router = new Hono();
 
@@ -96,12 +98,33 @@ export function createDeckRouter(
   const deleteDeckStmt = db.prepare('DELETE FROM decks WHERE id = ?');
   const deleteTerminalsByDeckStmt = db.prepare('DELETE FROM terminals WHERE deck_id = ?');
 
+  function closeDeckTerminalSockets(sockets: Set<WebSocket>, reason: string): void {
+    sockets.forEach((socket) => {
+      try { socket.close(1000, reason); } catch { /* ignore */ }
+    });
+    sockets.clear();
+  }
+
   router.delete('/:id', (c) => {
     try {
       const deckId = c.req.param('id');
       if (!decks.has(deckId)) {
         throw createHttpError('Deck not found', 404);
       }
+
+      const deckTerminalIds = Array.from(terminals.values())
+        .filter((session) => session.deckId === deckId)
+        .map((session) => session.id);
+
+      deckTerminalIds.forEach((terminalId) => {
+        const session = terminals.get(terminalId);
+        if (!session) return;
+        terminals.delete(terminalId);
+        session.resizeOwner = null;
+        closeDeckTerminalSockets(session.sockets, 'Deck deleted');
+        session.kill();
+      });
+
       deleteTerminalsByDeckStmt.run(deckId);
       deleteDeckStmt.run(deckId);
       decks.delete(deckId);

@@ -120,14 +120,12 @@ export const useDecks = ({
   );
 
   const handleCreateTerminal = useCallback(
-    async (deckId: string, terminalsCount: number, command?: string, customTitle?: string) => {
+    async (deckId: string, _terminalsCount: number, command?: string, customTitle?: string) => {
       try {
-        const index = terminalsCount + 1;
-        const title = customTitle || `ターミナル ${index}`;
-        const session = await apiCreateTerminal(deckId, title, command);
+        const session = await apiCreateTerminal(deckId, customTitle, command);
         updateDeckState(deckId, (state) => ({
           ...state,
-          terminals: [...state.terminals, { id: session.id, title: session.title || title }]
+          terminals: [...state.terminals, { id: session.id, title: session.title }]
         }));
       } catch (error: unknown) {
         setStatusMessage(
@@ -155,6 +153,16 @@ export const useDecks = ({
     [updateDeckState, setStatusMessage]
   );
 
+  const handleRemoveTerminalLocal = useCallback(
+    (deckId: string, terminalId: string) => {
+      updateDeckState(deckId, (state) => ({
+        ...state,
+        terminals: state.terminals.filter((t) => t.id !== terminalId)
+      }));
+    },
+    [updateDeckState]
+  );
+
   return {
     decks,
     activeDeckIds,
@@ -163,6 +171,7 @@ export const useDecks = ({
     handleDeleteDeck,
     handleReorderDecks,
     handleCreateTerminal,
-    handleDeleteTerminal
+    handleDeleteTerminal,
+    handleRemoveTerminalLocal
   };
 };

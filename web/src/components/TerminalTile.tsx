@@ -18,31 +18,54 @@ interface TerminalTileProps {
   session: TerminalSession;
   wsUrl: string;
   onDelete: () => void;
+  onExit: () => void;
 }
 
-const TEXT_BOOT = 'ターミナルを起動しました: ';
-const TEXT_CONNECTED = '接続しました。';
 const TEXT_CLOSED = '接続が終了しました。';
-const RESIZE_MESSAGE_PREFIX = '\u0000resize:';
 const MAX_RECONNECT_ATTEMPTS = 5;
 const RECONNECT_BASE_DELAY_MS = 1000;
+const TERMINAL_REMOVED_REASONS = new Set([
+  'Deck deleted',
+  'Terminal deleted',
+  'Terminal exited',
+  'Terminal not found'
+]);
+
+type ServerControlMessage =
+  | { type: 'sync'; offsetBase: number; reset: boolean }
+  | { type: 'ready' };
+
+type ClientControlMessage =
+  | { type: 'claim' }
+  | { type: 'resize'; cols: number; rows: number };
+
+const textEncoder = new TextEncoder();
+
+function encodeBinaryInput(data: string): Uint8Array {
+  const bytes = new Uint8Array(data.length);
+  for (let i = 0; i < data.length; i++) {
+    bytes[i] = data.charCodeAt(i) & 0xff;
+  }
+  return bytes;
+}
 
 export function TerminalTile({
   session,
   wsUrl,
-  onDelete
+  onDelete,
+  onExit
 }: TerminalTileProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const webglAddonRef = useRef<WebglAddon | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
-  const dataReceivedRef = useRef<number>(0);
+  const processedOffsetRef = useRef<number>(0);
 
   useEffect(() => {
     if (!containerRef.current) {
       return;
     }
-    dataReceivedRef.current = 0;
+    processedOffsetRef.current = 0;
     containerRef.current.innerHTML = '';
     const term = new Terminal({
       cursorBlink: true,
@@ -103,13 +126,22 @@ export function TerminalTile({
 
     // Track whether we're replaying buffer (suppress query responses during replay)
     let replayingBuffer = true;
+    let replayReady = false;
+    let pendingWrites = 0;
 
     // Register terminal query handlers to prevent TUI apps from hanging
+    const sendControlMessage = (message: ClientControlMessage) => {
+      const socket = socketRef.current;
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify(message));
+      }
+    };
+
     const sendResponse = (response: string) => {
       if (replayingBuffer) return; // Don't respond during buffer replay
       const socket = socketRef.current;
       if (socket && socket.readyState === WebSocket.OPEN) {
-        socket.send(response);
+        socket.send(textEncoder.encode(response));
       }
     };
 
@@ -134,11 +166,8 @@ export function TerminalTile({
 
     // DA1 (Primary Device Attributes) - CSI c
     term.parser.registerCsiHandler({ final: 'c' }, (params) => {
-      // Respond as VT220 with rich extensions:
-      // 1 = 132 columns, 2 = printer, 4 = sixel, 6 = selective erase
-      // 7 = soft character set, 8 = user-defined keys, 9 = national replacement character sets
-      // 15 = technical character set, 18 = windowing capability, 22 = ANSI color, 29 = ANSI text locator
-      sendResponse('\x1b[?62;1;2;4;6;7;8;9;15;22c');
+      // Keep the device attributes conservative: no sixel/windowing claims.
+      sendResponse('\x1b[?62;1;6;22c');
       return true;
     });
 
@@ -152,34 +181,20 @@ export function TerminalTile({
     // DECRQM (Request Mode) - CSI ? Ps $ p
     term.parser.registerCsiHandler({ prefix: '?', final: 'p', intermediates: '$' }, (params) => {
       const mode = (params[0] as number) || 0;
+      const modes = term.modes;
 
-      // Respond appropriately for common modes
       // 0 = not recognized, 1 = set, 2 = reset, 3 = permanently set, 4 = permanently reset
-      let response = 0; // Default: not recognized
-
-      // Modes we support (report as "set" = 1)
-      const supportedModes = [
-        1,    // DECCKM - Cursor keys mode
-        25,   // DECTCEM - Text cursor enable
-        1049, // Alternate screen + save cursor
-        2004, // Bracketed paste mode - REPORT AS SET for rich TUI
-        1004, // Focus in/out events - REPORT AS SET
-        1006, // SGR mouse mode - REPORT AS SET
-        1002, // Button event mouse tracking - REPORT AS SET
-      ];
-
-      // Modes we recognize but report as "reset" (2)
-      const recognizedModes = [
-        2026, // Synchronized output (not fully supported)
-        1000, // X10 mouse mode
-        1003, // Any-event mouse tracking
-      ];
-
-      if (supportedModes.includes(mode)) {
-        response = 1; // Set
-      } else if (recognizedModes.includes(mode)) {
-        response = 2; // Reset (recognized but not enabled)
-      }
+      let response = 0;
+      if (mode === 1) response = modes.applicationCursorKeysMode ? 1 : 2;
+      else if (mode === 25) response = 1;
+      else if (mode === 1000) response = modes.mouseTrackingMode === 'x10' ? 1 : 2;
+      else if (mode === 1002) response = modes.mouseTrackingMode === 'drag' ? 1 : 2;
+      else if (mode === 1003) response = modes.mouseTrackingMode === 'any' ? 1 : 2;
+      else if (mode === 1004) response = modes.sendFocusMode ? 1 : 2;
+      else if (mode === 1006) response = modes.mouseTrackingMode !== 'none' ? 1 : 2;
+      else if (mode === 1049) response = term.buffer.active.type === 'alternate' ? 1 : 2;
+      else if (mode === 2004) response = modes.bracketedPasteMode ? 1 : 2;
+      else if (mode === 2026) response = 2;
 
       sendResponse(`\x1b[?${mode};${response}$y`);
       return true;
@@ -276,8 +291,7 @@ export function TerminalTile({
     term.parser.registerCsiHandler({ prefix: '?', final: 'm' }, (params) => {
       const param = params[0] as number;
       if (param === 4) {
-        // Report as level 1 enabled (enhanced keyboard mode)
-        sendResponse('\x1b[?4;1m');
+        sendResponse('\x1b[>4;0m');
         return true;
       }
       return false;
@@ -380,29 +394,60 @@ export function TerminalTile({
       return false;
     });
 
-    fitAddon.fit();
-    term.write(`${TEXT_BOOT}${session.title}\r\n\r\n`);
-
-    // Track last sent size to avoid redundant PTY resizes that trigger
-    // TUI re-render → ResizeObserver → fit() → resize → loop
+    // Track the last measured container size as well as the last PTY size so
+    // repeated redraws from TUI apps don't feed a fit/resize loop.
+    let lastMeasuredWidth = 0;
+    let lastMeasuredHeight = 0;
+    let fitFrame: number | null = null;
     let lastCols = term.cols;
     let lastRows = term.rows;
 
     const sendResizeIfChanged = () => {
-      const socket = socketRef.current;
-      if (!socket || socket.readyState !== WebSocket.OPEN) return;
       const cols = term.cols;
       const rows = term.rows;
       if (!cols || !rows) return;
       if (cols === lastCols && rows === lastRows) return;
       lastCols = cols;
       lastRows = rows;
-      socket.send(`${RESIZE_MESSAGE_PREFIX}${cols},${rows}`);
+      sendControlMessage({ type: 'resize', cols, rows });
+    };
+
+    const claimTerminalControl = () => {
+      sendControlMessage({ type: 'claim' });
+    };
+
+    const runFit = (force = false) => {
+      const container = containerRef.current;
+      if (!container) return;
+
+      const width = container.clientWidth;
+      const height = container.clientHeight;
+      if (!width || !height) return;
+
+      if (!force && width === lastMeasuredWidth && height === lastMeasuredHeight) {
+        return;
+      }
+
+      lastMeasuredWidth = width;
+      lastMeasuredHeight = height;
+      fitAddon.fit();
+      sendResizeIfChanged();
+    };
+
+    const scheduleFit = (force = false) => {
+      if (fitFrame !== null) {
+        if (!force) return;
+        cancelAnimationFrame(fitFrame);
+      }
+
+      fitFrame = window.requestAnimationFrame(() => {
+        fitFrame = null;
+        runFit(force);
+      });
     };
 
     const resizeObserver = new ResizeObserver(() => {
-      fitAddon.fit();
-      sendResizeIfChanged();
+      scheduleFit();
     });
     resizeObserver.observe(containerRef.current);
 
@@ -410,16 +455,26 @@ export function TerminalTile({
     const visibilityObserver = new IntersectionObserver(
       (entries) => {
         if (entries[0].isIntersecting) {
-          fitAddon.fit();
-          sendResizeIfChanged();
+          scheduleFit(true);
         }
       },
       { threshold: 0.8 }
     );
     visibilityObserver.observe(containerRef.current);
+    scheduleFit(true);
+    const fontSet = typeof document !== 'undefined' ? document.fonts : null;
+    const handleFontsReady = () => {
+      if (!cancelled) {
+        scheduleFit(true);
+      }
+    };
+    fontSet?.ready.then(handleFontsReady).catch(() => undefined);
+    fontSet?.addEventListener?.('loadingdone', handleFontsReady);
 
     let socket: WebSocket | null = null;
     let dataDisposable: IDisposable | null = null;
+    let binaryDisposable: IDisposable | null = null;
+    let focusDisposable: IDisposable | null = null;
     let cancelled = false;
     let reconnectAttempts = 0;
     let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -430,6 +485,8 @@ export function TerminalTile({
     const connect = async (isReconnect = false) => {
       if (cancelled) return;
       replayingBuffer = true;
+      replayReady = false;
+      pendingWrites = 0;
 
       try {
         // Get a one-time token for WebSocket authentication
@@ -440,35 +497,68 @@ export function TerminalTile({
         const baseUrl = authEnabled ? `${wsUrl}?token=${token}` : wsUrl;
         // On reconnect, pass received byte offset so server sends only new data
         let finalUrl = baseUrl;
-        if (isReconnect && dataReceivedRef.current > 0) {
+        if (isReconnect && processedOffsetRef.current > 0) {
           const sep = baseUrl.includes('?') ? '&' : '?';
-          finalUrl = `${baseUrl}${sep}bufferOffset=${dataReceivedRef.current}`;
+          finalUrl = `${baseUrl}${sep}bufferOffset=${processedOffsetRef.current}`;
+        }
+        if (isReconnect) {
+          const sep = finalUrl.includes('?') ? '&' : '?';
+          finalUrl = `${finalUrl}${sep}reconnect=1`;
         }
         socket = new WebSocket(finalUrl);
+        socket.binaryType = 'arraybuffer';
         socketRef.current = socket;
 
         socket.addEventListener('open', () => {
           reconnectAttempts = 0;
           hasConnectedOnce = true;
-          // Safety fallback: clear replay flag after 300ms (covers idle terminals
-          // where no buffer/data message arrives to clear the flag)
-          setTimeout(() => { replayingBuffer = false; }, 300);
           // Force send on connect (server needs initial size)
           lastCols = -1; lastRows = -1;
-          sendResizeIfChanged();
-          if (!isReconnect) {
-            term.write(`\r\n${TEXT_CONNECTED}\r\n\r\n`);
-          }
-          // On reconnect: silent - server sends only the delta, no status message needed
+          scheduleFit(true);
         });
         socket.addEventListener('message', (event) => {
           if (typeof event.data === 'string') {
-            dataReceivedRef.current += event.data.length;
-            term.write(event.data);
-            // Clear replay flag AFTER term.write() has processed escape sequences.
-            // This ensures query responses are suppressed during buffer replay,
-            // regardless of network latency (unlike setTimeout which races).
-            replayingBuffer = false;
+            try {
+              const message = JSON.parse(event.data) as ServerControlMessage;
+              if (message.type === 'sync') {
+                replayingBuffer = true;
+                replayReady = false;
+                pendingWrites = 0;
+                processedOffsetRef.current = message.offsetBase;
+                if (message.reset) {
+                  term.reset();
+                  scheduleFit(true);
+                }
+                return;
+              }
+              if (message.type === 'ready') {
+                replayReady = true;
+                if (pendingWrites === 0) {
+                  replayingBuffer = false;
+                }
+                return;
+              }
+            } catch {
+              term.write(event.data);
+            }
+            return;
+          }
+
+          const bytes = event.data instanceof ArrayBuffer
+            ? new Uint8Array(event.data)
+            : event.data instanceof Blob
+              ? null
+              : new Uint8Array(event.data as ArrayBuffer);
+
+          if (bytes) {
+            pendingWrites++;
+            term.write(bytes, () => {
+              processedOffsetRef.current += bytes.byteLength;
+              pendingWrites = Math.max(0, pendingWrites - 1);
+              if (replayReady && pendingWrites === 0) {
+                replayingBuffer = false;
+              }
+            });
           }
         });
         socket.addEventListener('close', (event) => {
@@ -476,15 +566,13 @@ export function TerminalTile({
             return;
           }
 
-          // Normal closure (1000) = server intentionally closed (terminal exited, deleted, etc.)
-          // Don't reconnect for normal closures
           if (event.code === 1000) {
-            term.write(`\r\n${TEXT_CLOSED}\r\n`);
-            return;
+            if (TERMINAL_REMOVED_REASONS.has(event.reason)) {
+              onExit();
+              return;
+            }
           }
 
-          // Abnormal closure (1006, etc.) = network issue, server crash, etc.
-          // Try to reconnect if we haven't exceeded attempts
           if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
             reconnectAttempts++;
             const delay = RECONNECT_BASE_DELAY_MS * Math.pow(2, reconnectAttempts - 1);
@@ -503,9 +591,27 @@ export function TerminalTile({
         }
         dataDisposable = term.onData((data) => {
           if (socket && socket.readyState === WebSocket.OPEN) {
-            socket.send(data);
+            claimTerminalControl();
+            socket.send(textEncoder.encode(data));
           }
         });
+
+        if (binaryDisposable) {
+          binaryDisposable.dispose();
+        }
+        binaryDisposable = term.onBinary((data) => {
+          if (socket && socket.readyState === WebSocket.OPEN) {
+            claimTerminalControl();
+            socket.send(encodeBinaryInput(data));
+          }
+        });
+
+        if (!focusDisposable) {
+          focusDisposable = term.onFocus(() => {
+            claimTerminalControl();
+            scheduleFit(true);
+          });
+        }
       } catch (err) {
         console.error('[Terminal] Failed to connect:', err);
         if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS && hasConnectedOnce) {
@@ -526,10 +632,20 @@ export function TerminalTile({
       if (reconnectTimeout) {
         clearTimeout(reconnectTimeout);
       }
+      if (fitFrame !== null) {
+        cancelAnimationFrame(fitFrame);
+      }
       resizeObserver.disconnect();
       visibilityObserver.disconnect();
+      fontSet?.removeEventListener?.('loadingdone', handleFontsReady);
       if (dataDisposable) {
         dataDisposable.dispose();
+      }
+      if (binaryDisposable) {
+        binaryDisposable.dispose();
+      }
+      if (focusDisposable) {
+        focusDisposable.dispose();
       }
       if (socket) {
         socket.close();
@@ -549,7 +665,7 @@ export function TerminalTile({
       fitAddonRef.current = null;
       term.dispose();
     };
-  }, [session.id, session.title, wsUrl]);
+  }, [onExit, session.id, session.title, wsUrl]);
 
   return (
     <div className="terminal-tile">

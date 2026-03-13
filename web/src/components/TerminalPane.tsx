@@ -5,6 +5,7 @@ interface TerminalPaneProps {
   terminals: TerminalSession[];
   wsBase: string;
   onDeleteTerminal: (terminalId: string) => void;
+  onExitTerminal: (terminalId: string) => void;
 }
 
 // ターミナル数に基づいて最適なグリッドを自動計算
@@ -22,6 +23,7 @@ export function TerminalPane({
   terminals,
   wsBase,
   onDeleteTerminal,
+  onExitTerminal,
 }: TerminalPaneProps) {
   const { cols, rows } = getOptimalGrid(terminals.length);
 
@@ -45,6 +47,7 @@ export function TerminalPane({
               session={terminal}
               wsUrl={`${wsBase}/api/terminals/${terminal.id}`}
               onDelete={() => onDeleteTerminal(terminal.id)}
+              onExit={() => onExitTerminal(terminal.id)}
             />
           ))}
         </div>

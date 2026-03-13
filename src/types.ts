@@ -8,12 +8,17 @@ export type TerminalSession = {
   command: string | null;
   createdAt: string;
   sockets: Set<import('ws').WebSocket>;
-  buffer: string;
-  /** Absolute character count dropped from buffer start (for offset tracking). */
+  /** Socket currently allowed to drive PTY size updates. */
+  resizeOwner: import('ws').WebSocket | null;
+  /** Buffered PTY output retained for reconnect replay. */
+  bufferChunks: Buffer[];
+  /** Total bytes currently retained across bufferChunks. */
+  bufferLength: number;
+  /** Absolute byte count dropped from buffer start (for replay offset tracking). */
   bufferBase: number;
   lastActive: number;
   /** Send keyboard input to the PTY. */
-  write: (data: string) => void;
+  write: (data: string | Uint8Array | Buffer) => void;
   /** Resize the PTY. */
   resize: (cols: number, rows: number) => void;
   /** Kill the PTY process. */

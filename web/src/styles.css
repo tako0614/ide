@@ -214,7 +214,7 @@
   display: grid;
   grid-template-columns: 48px minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr) 22px;
-  height: 100vh;
+  height: 100%;
   overflow: hidden;
 }
 
@@ -433,6 +433,7 @@
 .terminal-layout {
   flex: 1; min-height: 0; min-width: 0;
   display: flex; flex-direction: column; overflow: hidden;
+  overflow-anchor: none;
 }
 .terminal-topbar {
   display: flex; align-items: stretch;
@@ -494,7 +495,7 @@
 .topbar-btn-sm.topbar-btn-codex:hover { background: rgba(0,168,107,0.15); border-color: #00a86b; }
 
 /* ── Terminal Pane ── */
-.terminal-pane { flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; padding: 4px; }
+.terminal-pane { flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; padding: 4px; overflow-anchor: none; }
 .terminal-grid { display: grid; gap: 4px; min-height: 0; min-width: 0; width: 100%; flex: 1; overflow: hidden; }
 .terminal-empty {
   flex: 1; display: flex; align-items: center; justify-content: center;
@@ -522,7 +523,7 @@
   transition: background 0.1s, color 0.1s; flex-shrink: 0;
 }
 .terminal-close-btn:hover { background: #404040; color: #fff; }
-.terminal-tile-body { flex: 1; min-height: 0; overflow: hidden; }
+.terminal-tile-body { flex: 1; min-height: 0; overflow: hidden; overflow-anchor: none; }
 
 /* ── Git Status Colors ── */
 .git-modified   { color: var(--color-git-modified); }

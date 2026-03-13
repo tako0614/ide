@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import type { Server as HttpServer } from 'node:http';
 import type { Server as HttpsServer } from 'node:https';
 import type { IncomingMessage } from 'node:http';
-import { WebSocketServer, WebSocket } from 'ws';
+import { WebSocketServer, WebSocket, type RawData } from 'ws';
 import type { TerminalSession } from './types.js';
 import { PORT, TRUST_PROXY, CORS_ORIGIN, NODE_ENV } from './config.js';
 import { logSecurityEvent } from './middleware/security.js';
@@ -11,6 +11,16 @@ import { verifyWebSocketAuth } from './middleware/auth.js';
 const MIN_TERMINAL_SIZE = 1;
 const MAX_TERMINAL_SIZE = 500;
 const MAX_MESSAGE_SIZE = 64 * 1024; // 64KB max message size
+const MAX_SOCKET_BUFFERED_AMOUNT = 1024 * 1024;
+const HEARTBEAT_INTERVAL_MS = 30_000;
+
+type ClientControlMessage =
+  | { type: 'claim' }
+  | { type: 'resize'; cols: number; rows: number };
+
+type ServerControlMessage =
+  | { type: 'sync'; offsetBase: number; reset: boolean }
+  | { type: 'ready' };
 
 // Configurable connection limit per IP (default: 1000)
 let maxConnectionsPerIP = 1000;
@@ -99,11 +109,114 @@ function validateTerminalSize(value: number): number {
   return intValue;
 }
 
+function rawDataByteLength(data: RawData): number {
+  if (typeof data === 'string') {
+    return Buffer.byteLength(data, 'utf8');
+  }
+  if (Array.isArray(data)) {
+    return data.reduce((total, chunk) => total + chunk.length, 0);
+  }
+  if (data instanceof ArrayBuffer) {
+    return data.byteLength;
+  }
+  return data.length;
+}
+
+function rawDataToBuffer(data: RawData): Buffer {
+  if (typeof data === 'string') {
+    return Buffer.from(data, 'utf8');
+  }
+  if (Array.isArray(data)) {
+    return Buffer.concat(data);
+  }
+  if (data instanceof ArrayBuffer) {
+    return Buffer.from(data);
+  }
+  return data;
+}
+
+function canSendToSocket(socket: WebSocket): boolean {
+  if (socket.readyState !== WebSocket.OPEN) {
+    return false;
+  }
+  if (socket.bufferedAmount > MAX_SOCKET_BUFFERED_AMOUNT) {
+    try { socket.close(1009, 'Terminal output overflow'); } catch { /* ignore */ }
+    return false;
+  }
+  return true;
+}
+
+function sendControl(socket: WebSocket, message: ServerControlMessage): boolean {
+  if (!canSendToSocket(socket)) {
+    return false;
+  }
+  try {
+    socket.send(JSON.stringify(message));
+    return true;
+  } catch {
+    try { socket.close(1011, 'Terminal control send failed'); } catch { /* ignore */ }
+    return false;
+  }
+}
+
+function readBufferedRange(session: TerminalSession, startOffset: number, endOffset: number): Buffer {
+  const relativeStart = Math.max(0, startOffset - session.bufferBase);
+  const relativeEnd = Math.max(relativeStart, Math.min(session.bufferLength, endOffset - session.bufferBase));
+  const totalLength = relativeEnd - relativeStart;
+
+  if (totalLength <= 0 || session.bufferChunks.length === 0) {
+    return Buffer.alloc(0);
+  }
+
+  if (session.bufferChunks.length === 1) {
+    return session.bufferChunks[0].subarray(relativeStart, relativeEnd);
+  }
+
+  const slices: Buffer[] = [];
+  let traversed = 0;
+
+  for (const chunk of session.bufferChunks) {
+    const chunkStart = traversed;
+    const chunkEnd = traversed + chunk.length;
+    traversed = chunkEnd;
+
+    if (chunkEnd <= relativeStart) {
+      continue;
+    }
+    if (chunkStart >= relativeEnd) {
+      break;
+    }
+
+    const startInChunk = Math.max(0, relativeStart - chunkStart);
+    const endInChunk = Math.min(chunk.length, relativeEnd - chunkStart);
+    slices.push(chunk.subarray(startInChunk, endInChunk));
+  }
+
+  return slices.length === 1 ? slices[0] : Buffer.concat(slices, totalLength);
+}
+
 export function setupWebSocketServer(
   server: HttpServer | HttpsServer,
   terminals: Map<string, TerminalSession>
 ): WebSocketServer {
-  const wss = new WebSocketServer({ server });
+  const wss = new WebSocketServer({ server, maxPayload: MAX_MESSAGE_SIZE });
+  const heartbeatState = new WeakMap<WebSocket, boolean>();
+  const heartbeatInterval = setInterval(() => {
+    for (const socket of wss.clients) {
+      if (heartbeatState.get(socket) === false) {
+        try { socket.terminate(); } catch { /* ignore */ }
+        continue;
+      }
+
+      heartbeatState.set(socket, false);
+      try {
+        socket.ping();
+      } catch {
+        try { socket.terminate(); } catch { /* ignore */ }
+      }
+    }
+  }, HEARTBEAT_INTERVAL_MS);
+  heartbeatInterval.unref?.();
 
   const WS_ALLOWED_ORIGINS = new Set([
     `http://localhost:${PORT}`,
@@ -121,6 +234,7 @@ export function setupWebSocketServer(
   wss.on('connection', (socket: WebSocket, req) => {
     const socketId = crypto.randomUUID();
     const clientIP = getClientIP(req);
+    heartbeatState.set(socket, true);
 
     // Validate Origin header to prevent Cross-Site WebSocket Hijacking
     // Skip check if CORS_ORIGIN is '*' or unset in development mode
@@ -140,6 +254,9 @@ export function setupWebSocketServer(
       } catch {
         // Socket might already be closed
       }
+    });
+    socket.on('pong', () => {
+      heartbeatState.set(socket, true);
     });
 
     // Check connection limit per IP
@@ -172,72 +289,109 @@ export function setupWebSocketServer(
       return;
     }
 
+    const hadNoSockets = session.sockets.size === 0;
     session.sockets.add(socket);
+    if (hadNoSockets && !session.resizeOwner) {
+      session.resizeOwner = socket;
+    }
     session.lastActive = Date.now();
 
     // Send buffer content if available
-    // bufferOffset: absolute character count the client already received
-    // bufferBase: absolute position of buffer[0] (chars dropped from start)
+    // bufferOffset: absolute byte count the client already processed
+    // bufferBase: absolute byte position of buffer[0] (bytes dropped from start)
     const offsetParam = url.searchParams.get('bufferOffset');
     const clientOffset = offsetParam ? Math.max(0, parseInt(offsetParam, 10) || 0) : 0;
-    if (session.buffer) {
+    const bufferStart = session.bufferBase;
+    const bufferEnd = session.bufferBase + session.bufferLength;
+    let replayStartOffset = clientOffset;
+    let resetTerminal = false;
+
+    if (clientOffset <= bufferStart) {
+      replayStartOffset = bufferStart;
+      resetTerminal = session.bufferLength > 0;
+    } else if (clientOffset >= bufferEnd) {
+      replayStartOffset = bufferEnd;
+    }
+
+    if (!sendControl(socket, { type: 'sync', offsetBase: replayStartOffset, reset: resetTerminal })) {
+      return;
+    }
+
+    if (session.bufferLength > 0) {
       try {
-        const bufferStart = session.bufferBase;
-        const bufferEnd = session.bufferBase + session.buffer.length;
-        let bufferToSend: string;
+        let bufferToSend: Buffer = Buffer.alloc(0);
 
         if (clientOffset <= bufferStart) {
           // Client's last position is before (or at) what we have — send everything
-          bufferToSend = session.buffer;
+          bufferToSend = readBufferedRange(session, bufferStart, bufferEnd);
         } else if (clientOffset >= bufferEnd) {
           // Client is fully up to date
-          bufferToSend = '';
+          bufferToSend = Buffer.alloc(0);
         } else {
           // Send only the delta
-          bufferToSend = session.buffer.slice(clientOffset - bufferStart);
+          bufferToSend = readBufferedRange(session, clientOffset, bufferEnd);
         }
 
-        if (bufferToSend) {
-          socket.send(bufferToSend);
+        if (bufferToSend.length > 0 && canSendToSocket(socket)) {
+          socket.send(bufferToSend, { binary: true });
         }
       } catch (error) {
         console.error(`Failed to send buffer to socket ${socketId}:`, error);
       }
     }
+    sendControl(socket, { type: 'ready' });
 
     socket.on('message', (data) => {
       try {
-        // Convert to string
-        const message = data.toString('utf8');
-
-        // Check message size
-        const messageSize = Buffer.byteLength(message, 'utf8');
+        const messageSize = rawDataByteLength(data);
         if (messageSize > MAX_MESSAGE_SIZE) {
           logSecurityEvent('WS_MESSAGE_TOO_LARGE', { ip: clientIP, size: messageSize });
-          socket.send('\r\n\x1b[31mMessage too large. Maximum size is 64KB.\x1b[0m\r\n');
+          socket.close(1009, 'Message too large');
           return;
         }
 
         session.lastActive = Date.now();
 
-        // Check for resize message
-        if (message.startsWith('\u0000resize:')) {
-          const payload = message.slice('\u0000resize:'.length);
-          const [colsRaw, rowsRaw] = payload.split(',');
-          const cols = validateTerminalSize(Number(colsRaw));
-          const rows = validateTerminalSize(Number(rowsRaw));
+        if (typeof data === 'string') {
+          let control: ClientControlMessage | null = null;
+          try {
+            control = JSON.parse(data) as ClientControlMessage;
+          } catch {
+            control = null;
+          }
+
+          if (control?.type === 'claim') {
+            session.resizeOwner = socket;
+            return;
+          }
+
+          if (control?.type === 'resize') {
+            if (session.resizeOwner && session.resizeOwner !== socket) {
+              return;
+            }
+
+            session.resizeOwner = socket;
+            const cols = validateTerminalSize(control.cols);
+            const rows = validateTerminalSize(control.rows);
+
+            try {
+              session.resize(cols, rows);
+            } catch (resizeError) {
+              console.error(`Failed to resize terminal ${id}:`, resizeError);
+            }
+            return;
+          }
 
           try {
-            session.resize(cols, rows);
-          } catch (resizeError) {
-            console.error(`Failed to resize terminal ${id}:`, resizeError);
+            session.write(Buffer.from(data, 'utf8'));
+          } catch (writeError) {
+            console.error(`Failed to write text input to terminal ${id}:`, writeError);
           }
           return;
         }
 
         try {
-          // Write user input to terminal
-          session.write(message);
+          session.write(rawDataToBuffer(data));
         } catch (writeError) {
           console.error(`Failed to write to terminal ${id}:`, writeError);
         }
@@ -248,13 +402,20 @@ export function setupWebSocketServer(
 
     socket.on('close', () => {
       session.sockets.delete(socket);
+      if (session.resizeOwner === socket) {
+        session.resizeOwner = null;
+      }
       session.lastActive = Date.now();
+      heartbeatState.delete(socket);
       untrackConnection(clientIP, socket);
     });
   });
 
   wss.on('error', (error) => {
     console.error('WebSocket server error:', error);
+  });
+  wss.on('close', () => {
+    clearInterval(heartbeatInterval);
   });
 
   return wss;

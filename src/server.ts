@@ -111,7 +111,7 @@ export async function createServer() {
   // Mount routers
   app.route('/api/settings', createSettingsRouter());
   app.route('/api/workspaces', createWorkspaceRouter(db, workspaces, workspacePathIndex));
-  app.route('/api/decks', createDeckRouter(db, workspaces, decks));
+  app.route('/api/decks', createDeckRouter(db, workspaces, decks, terminals));
 
   const terminalRouter = createTerminalRouter(db, decks, terminals);
   app.route('/api/terminals', terminalRouter);
