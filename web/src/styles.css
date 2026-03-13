@@ -522,7 +522,7 @@
   transition: background 0.1s, color 0.1s; flex-shrink: 0;
 }
 .terminal-close-btn:hover { background: #404040; color: #fff; }
-.terminal-tile-body { flex: 1; min-height: 0; }
+.terminal-tile-body { flex: 1; min-height: 0; overflow: hidden; }
 
 /* ── Git Status Colors ── */
 .git-modified   { color: var(--color-git-modified); }
