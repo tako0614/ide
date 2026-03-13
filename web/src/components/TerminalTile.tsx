@@ -383,18 +383,26 @@ export function TerminalTile({
     fitAddon.fit();
     term.write(`${TEXT_BOOT}${session.title}\r\n\r\n`);
 
-    const sendResize = () => {
+    // Track last sent size to avoid redundant PTY resizes that trigger
+    // TUI re-render → ResizeObserver → fit() → resize → loop
+    let lastCols = term.cols;
+    let lastRows = term.rows;
+
+    const sendResizeIfChanged = () => {
       const socket = socketRef.current;
       if (!socket || socket.readyState !== WebSocket.OPEN) return;
       const cols = term.cols;
       const rows = term.rows;
       if (!cols || !rows) return;
+      if (cols === lastCols && rows === lastRows) return;
+      lastCols = cols;
+      lastRows = rows;
       socket.send(`${RESIZE_MESSAGE_PREFIX}${cols},${rows}`);
     };
 
     const resizeObserver = new ResizeObserver(() => {
       fitAddon.fit();
-      sendResize();
+      sendResizeIfChanged();
     });
     resizeObserver.observe(containerRef.current);
 
@@ -403,7 +411,7 @@ export function TerminalTile({
       (entries) => {
         if (entries[0].isIntersecting) {
           fitAddon.fit();
-          sendResize();
+          sendResizeIfChanged();
         }
       },
       { threshold: 0.8 }
@@ -445,7 +453,9 @@ export function TerminalTile({
           // Safety fallback: clear replay flag after 300ms (covers idle terminals
           // where no buffer/data message arrives to clear the flag)
           setTimeout(() => { replayingBuffer = false; }, 300);
-          sendResize();
+          // Force send on connect (server needs initial size)
+          lastCols = -1; lastRows = -1;
+          sendResizeIfChanged();
           if (!isReconnect) {
             term.write(`\r\n${TEXT_CONNECTED}\r\n\r\n`);
           }
