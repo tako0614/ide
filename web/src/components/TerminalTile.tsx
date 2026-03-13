@@ -493,7 +493,7 @@ export function TerminalTile({
     let socket: WebSocket | null = null;
     let dataDisposable: IDisposable | null = null;
     let binaryDisposable: IDisposable | null = null;
-    let focusDisposable: IDisposable | null = null;
+    let focusCleanup: (() => void) | null = null;
     let pointerFocusCleanup: (() => void) | null = null;
     let cancelled = false;
     let reconnectAttempts = 0;
@@ -702,10 +702,10 @@ export function TerminalTile({
           }
         });
 
-        if (!focusDisposable) {
-          focusDisposable = term.onFocus(() => {
-            claimTerminalControl();
-          });
+        if (!focusCleanup && term.textarea) {
+          const onFocus = () => { claimTerminalControl(); };
+          term.textarea.addEventListener('focus', onFocus);
+          focusCleanup = () => { term.textarea?.removeEventListener('focus', onFocus); };
         }
       } catch (err) {
         console.error('[Terminal] Failed to connect:', err);
@@ -738,8 +738,8 @@ export function TerminalTile({
       if (binaryDisposable) {
         binaryDisposable.dispose();
       }
-      if (focusDisposable) {
-        focusDisposable.dispose();
+      if (focusCleanup) {
+        focusCleanup();
       }
       if (pointerFocusCleanup) {
         pointerFocusCleanup();
