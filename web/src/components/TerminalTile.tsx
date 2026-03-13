@@ -3,7 +3,6 @@ import { Terminal, type IDisposable } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import { Unicode11Addon } from 'xterm-addon-unicode11';
 import { WebLinksAddon } from 'xterm-addon-web-links';
-import { WebglAddon } from 'xterm-addon-webgl';
 import 'xterm/css/xterm.css';
 import type { TerminalSession } from '../types';
 import { getWsToken } from '../api';
@@ -57,7 +56,6 @@ export function TerminalTile({
 }: TerminalTileProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
-  const webglAddonRef = useRef<WebglAddon | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const processedOffsetRef = useRef<number>(0);
   const onExitRef = useRef(onExit);
@@ -108,26 +106,6 @@ export function TerminalTile({
     fitAddonRef.current = fitAddon;
     term.open(containerRef.current);
 
-    // Load WebGL addon for better rendering performance (may fail on some systems)
-    // IMPORTANT: Must be loaded AFTER term.open() to ensure terminal is initialized
-    try {
-      const webglAddon = new WebglAddon();
-      term.loadAddon(webglAddon);
-      webglAddonRef.current = webglAddon;
-      // Set up context loss handler only after successful load
-      webglAddon.onContextLoss(() => {
-        console.warn('[WebGL] Context lost, disposing addon');
-        try {
-          webglAddon.dispose();
-          webglAddonRef.current = null;
-        } catch (err) {
-          console.error('[WebGL] Error disposing after context loss:', err);
-        }
-      });
-    } catch (error) {
-      console.warn('[WebGL] Failed to load WebGL addon, using canvas renderer:', error);
-      webglAddonRef.current = null;
-    }
 
     // Track whether we're replaying buffer (suppress query responses during replay)
     let replayingBuffer = true;
@@ -406,6 +384,26 @@ export function TerminalTile({
     let fitFrame: number | null = null;
     let lastCols = term.cols;
     let lastRows = term.rows;
+    let estimatedCellWidth = 0;
+    let estimatedCellHeight = 0;
+    let lastViewportScale = window.visualViewport?.scale ?? 1;
+
+    const updateCellEstimate = (width: number, height: number) => {
+      if (term.cols > 0) {
+        estimatedCellWidth = width / term.cols;
+      }
+      if (term.rows > 0) {
+        estimatedCellHeight = height / term.rows;
+      }
+    };
+
+    const helperTextarea = containerRef.current.querySelector('.xterm-helper-textarea');
+    if (helperTextarea instanceof HTMLTextAreaElement) {
+      helperTextarea.setAttribute('spellcheck', 'false');
+      helperTextarea.setAttribute('autocapitalize', 'off');
+      helperTextarea.setAttribute('autocomplete', 'off');
+      helperTextarea.setAttribute('autocorrect', 'off');
+    }
 
     const sendResizeIfChanged = () => {
       const cols = term.cols;
@@ -433,9 +431,36 @@ export function TerminalTile({
         return;
       }
 
+      const currentViewportScale = window.visualViewport?.scale ?? 1;
+      if (!force && estimatedCellWidth > 0 && estimatedCellHeight > 0) {
+        const predictedCols = Math.max(2, Math.floor(width / estimatedCellWidth));
+        const predictedRows = Math.max(1, Math.floor(height / estimatedCellHeight));
+        const deltaWidth = Math.abs(width - lastMeasuredWidth);
+        const deltaHeight = Math.abs(height - lastMeasuredHeight);
+        const widthThreshold = Math.max(estimatedCellWidth * 0.75, 2);
+        const heightThreshold = Math.max(estimatedCellHeight * 0.75, 2);
+        const scaleChanged = Math.abs(currentViewportScale - lastViewportScale) > 0.001;
+
+        if (predictedCols === lastCols && predictedRows === lastRows) {
+          lastMeasuredWidth = width;
+          lastMeasuredHeight = height;
+          lastViewportScale = currentViewportScale;
+          return;
+        }
+
+        if (scaleChanged && deltaWidth < widthThreshold && deltaHeight < heightThreshold) {
+          lastMeasuredWidth = width;
+          lastMeasuredHeight = height;
+          lastViewportScale = currentViewportScale;
+          return;
+        }
+      }
+
       lastMeasuredWidth = width;
       lastMeasuredHeight = height;
       fitAddon.fit();
+      updateCellEstimate(width, height);
+      lastViewportScale = currentViewportScale;
       sendResizeIfChanged();
     };
 
@@ -476,6 +501,19 @@ export function TerminalTile({
     let isIntentionalClose = false;
     let hasConnectedOnce = false;
 
+    const parentPane = containerRef.current.closest('.terminal-pane');
+
+    const setPaneTerminalFocus = (focused: boolean) => {
+      if (!(parentPane instanceof HTMLElement)) {
+        return;
+      }
+      if (focused) {
+        parentPane.dataset.terminalFocus = 'true';
+      } else {
+        delete parentPane.dataset.terminalFocus;
+      }
+    };
+
     const focusTerminalWithoutScroll = () => {
       const helper = containerRef.current?.querySelector('.xterm-helper-textarea');
       if (!(helper instanceof HTMLTextAreaElement)) {
@@ -496,19 +534,37 @@ export function TerminalTile({
 
     const handleFocusIn = () => {
       if (!cancelled) {
+        setPaneTerminalFocus(true);
         focusTerminalWithoutScroll();
       }
+    };
+
+    const handleFocusOut = () => {
+      window.setTimeout(() => {
+        if (cancelled) {
+          return;
+        }
+        const container = containerRef.current;
+        if (!container) {
+          return;
+        }
+        if (!container.contains(document.activeElement)) {
+          setPaneTerminalFocus(false);
+        }
+      }, 0);
     };
 
     containerRef.current.addEventListener('pointerdown', handlePointerFocus, { passive: true, capture: true });
     containerRef.current.addEventListener('mousedown', handlePointerFocus, { passive: true, capture: true });
     containerRef.current.addEventListener('touchstart', handlePointerFocus, { passive: true, capture: true });
     containerRef.current.addEventListener('focusin', handleFocusIn, true);
+    containerRef.current.addEventListener('focusout', handleFocusOut, true);
     pointerFocusCleanup = () => {
       containerRef.current?.removeEventListener('pointerdown', handlePointerFocus, true);
       containerRef.current?.removeEventListener('mousedown', handlePointerFocus, true);
       containerRef.current?.removeEventListener('touchstart', handlePointerFocus, true);
       containerRef.current?.removeEventListener('focusin', handleFocusIn, true);
+      containerRef.current?.removeEventListener('focusout', handleFocusOut, true);
     };
 
     // Fetch WebSocket token and connect
@@ -545,8 +601,11 @@ export function TerminalTile({
           // Force send on connect (server needs initial size)
           lastMeasuredWidth = 0;
           lastMeasuredHeight = 0;
+          estimatedCellWidth = 0;
+          estimatedCellHeight = 0;
           lastCols = -1;
           lastRows = -1;
+          lastViewportScale = window.visualViewport?.scale ?? 1;
           scheduleFit();
         });
         socket.addEventListener('message', (event) => {
@@ -685,20 +744,11 @@ export function TerminalTile({
       if (pointerFocusCleanup) {
         pointerFocusCleanup();
       }
+      setPaneTerminalFocus(false);
       if (socket) {
         socket.close();
       }
       socketRef.current = null;
-
-      // Dispose WebGL addon first to avoid disposal errors
-      if (webglAddonRef.current) {
-        try {
-          webglAddonRef.current.dispose();
-        } catch (err) {
-          console.error('[WebGL] Error disposing addon during cleanup:', err);
-        }
-        webglAddonRef.current = null;
-      }
 
       fitAddonRef.current = null;
       term.dispose();
