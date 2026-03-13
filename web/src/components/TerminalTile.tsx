@@ -60,6 +60,11 @@ export function TerminalTile({
   const webglAddonRef = useRef<WebglAddon | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const processedOffsetRef = useRef<number>(0);
+  const onExitRef = useRef(onExit);
+
+  useEffect(() => {
+    onExitRef.current = onExit;
+  }, [onExit]);
 
   useEffect(() => {
     if (!containerRef.current) {
@@ -450,18 +455,7 @@ export function TerminalTile({
       scheduleFit();
     });
     resizeObserver.observe(containerRef.current);
-
-    // Re-fit when this tile scrolls into view (mobile scroll-snap)
-    const visibilityObserver = new IntersectionObserver(
-      (entries) => {
-        if (entries[0].isIntersecting) {
-          scheduleFit(true);
-        }
-      },
-      { threshold: 0.8 }
-    );
-    visibilityObserver.observe(containerRef.current);
-    scheduleFit(true);
+    scheduleFit();
     const fontSet = typeof document !== 'undefined' ? document.fonts : null;
     const handleFontsReady = () => {
       if (!cancelled) {
@@ -539,8 +533,11 @@ export function TerminalTile({
           reconnectAttempts = 0;
           hasConnectedOnce = true;
           // Force send on connect (server needs initial size)
-          lastCols = -1; lastRows = -1;
-          scheduleFit(true);
+          lastMeasuredWidth = 0;
+          lastMeasuredHeight = 0;
+          lastCols = -1;
+          lastRows = -1;
+          scheduleFit();
         });
         socket.addEventListener('message', (event) => {
           if (typeof event.data === 'string') {
@@ -559,7 +556,7 @@ export function TerminalTile({
               processedOffsetRef.current = message.offsetBase;
               if (message.reset) {
                 term.reset();
-                scheduleFit(true);
+                scheduleFit();
               }
               return;
             }
@@ -598,7 +595,7 @@ export function TerminalTile({
 
           if (event.code === 1000) {
             if (TERMINAL_REMOVED_REASONS.has(event.reason)) {
-              onExit();
+              onExitRef.current();
               return;
             }
           }
@@ -639,7 +636,6 @@ export function TerminalTile({
         if (!focusDisposable) {
           focusDisposable = term.onFocus(() => {
             claimTerminalControl();
-            scheduleFit(true);
           });
         }
       } catch (err) {
@@ -666,7 +662,6 @@ export function TerminalTile({
         cancelAnimationFrame(fitFrame);
       }
       resizeObserver.disconnect();
-      visibilityObserver.disconnect();
       fontSet?.removeEventListener?.('loadingdone', handleFontsReady);
       if (dataDisposable) {
         dataDisposable.dispose();
@@ -698,7 +693,7 @@ export function TerminalTile({
       fitAddonRef.current = null;
       term.dispose();
     };
-  }, [onExit, session.id, session.title, wsUrl]);
+  }, [session.id, wsUrl]);
 
   return (
     <div className="terminal-tile">

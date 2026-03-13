@@ -72,7 +72,7 @@
 /* ── Global base ── */
 @layer base {
   *, *::before, *::after { box-sizing: border-box; }
-  html, body, #root { height: 100%; margin: 0; }
+  html, body, #root { height: 100%; min-height: 100%; margin: 0; }
   body {
     font-family: var(--font-ui);
     font-size: 13px;
@@ -86,8 +86,8 @@
     outline: 2px solid var(--color-focus);
     outline-offset: 2px;
   }
-  @supports (height: 100dvh) {
-    html, body, #root { height: 100dvh; }
+  @supports (height: 100svh) {
+    html, body, #root { height: 100svh; min-height: 100svh; }
   }
 
   /* Subtle scrollbars */
@@ -636,7 +636,7 @@
   }
   /* Mobile: vertical swipe between terminals */
   .terminal-pane {
-    height: 100%; overflow-y: scroll; overflow-x: hidden;
+    flex: 1 1 auto; min-height: 0; height: auto; overflow-y: auto; overflow-x: hidden;
     scroll-snap-type: none; -webkit-overflow-scrolling: touch;
     overscroll-behavior-y: contain; touch-action: pan-y;
     scrollbar-width: none; padding: 0 !important; width: 100%; max-width: 100%;
@@ -644,12 +644,12 @@
   .terminal-pane::-webkit-scrollbar { display: none; }
   .terminal-grid {
     display: flex !important; flex-direction: column !important;
-    flex: none !important; height: 100%; width: 100%;
+    flex: 1 0 auto !important; min-height: 100%; height: auto; width: 100%;
     overflow: visible !important; gap: 0 !important;
     grid-template-columns: unset !important; grid-template-rows: unset !important;
   }
   .terminal-tile {
-    flex: 0 0 auto; height: 100%; width: 100%; max-width: 100%;
+    flex: 0 0 auto; min-height: 100%; height: auto; width: 100%; max-width: 100%;
     scroll-snap-align: none; border-radius: 0; border-left: none; border-right: none;
   }
   .status-float {
