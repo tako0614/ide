@@ -518,29 +518,33 @@ export function TerminalTile({
         });
         socket.addEventListener('message', (event) => {
           if (typeof event.data === 'string') {
+            let message: ServerControlMessage | null = null;
             try {
-              const message = JSON.parse(event.data) as ServerControlMessage;
-              if (message.type === 'sync') {
-                replayingBuffer = true;
-                replayReady = false;
-                pendingWrites = 0;
-                processedOffsetRef.current = message.offsetBase;
-                if (message.reset) {
-                  term.reset();
-                  scheduleFit(true);
-                }
-                return;
-              }
-              if (message.type === 'ready') {
-                replayReady = true;
-                if (pendingWrites === 0) {
-                  replayingBuffer = false;
-                }
-                return;
-              }
+              message = JSON.parse(event.data) as ServerControlMessage;
             } catch {
-              term.write(event.data);
+              // Not JSON — ignore malformed control frames rather than
+              // leaking raw JSON text into the terminal display.
+              return;
             }
+            if (message?.type === 'sync') {
+              replayingBuffer = true;
+              replayReady = false;
+              pendingWrites = 0;
+              processedOffsetRef.current = message.offsetBase;
+              if (message.reset) {
+                term.reset();
+                scheduleFit(true);
+              }
+              return;
+            }
+            if (message?.type === 'ready') {
+              replayReady = true;
+              if (pendingWrites === 0) {
+                replayingBuffer = false;
+              }
+              return;
+            }
+            // Unknown control message type — ignore
             return;
           }
 

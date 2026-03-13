@@ -98,7 +98,8 @@ function untrackConnection(ip: string, socket: WebSocket): void {
   }
 }
 
-function validateTerminalSize(value: number): number {
+function validateTerminalSize(value: number | undefined): number {
+  if (value == null) return MIN_TERMINAL_SIZE;
   const intValue = Math.floor(value);
   if (!Number.isFinite(intValue) || intValue < MIN_TERMINAL_SIZE) {
     return MIN_TERMINAL_SIZE;
@@ -132,7 +133,8 @@ function rawDataToBuffer(data: RawData): Buffer {
   if (data instanceof ArrayBuffer) {
     return Buffer.from(data);
   }
-  return data;
+  // data is Buffer
+  return Buffer.isBuffer(data) ? data : Buffer.from(data as Buffer);
 }
 
 function canSendToSocket(socket: WebSocket): boolean {
@@ -341,7 +343,7 @@ export function setupWebSocketServer(
     }
     sendControl(socket, { type: 'ready' });
 
-    socket.on('message', (data) => {
+    socket.on('message', (data, isBinary) => {
       try {
         const messageSize = rawDataByteLength(data);
         if (messageSize > MAX_MESSAGE_SIZE) {
@@ -352,10 +354,19 @@ export function setupWebSocketServer(
 
         session.lastActive = Date.now();
 
-        if (typeof data === 'string') {
+        // Text frames carry JSON control messages (claim, resize).
+        // Note: the ws library delivers text frames as Buffer by default,
+        // so we use the isBinary flag rather than typeof === 'string'.
+        if (!isBinary) {
+          const text = typeof data === 'string'
+            ? data
+            : Array.isArray(data)
+              ? Buffer.concat(data).toString('utf8')
+              : Buffer.from(data as ArrayBuffer).toString('utf8');
+
           let control: ClientControlMessage | null = null;
           try {
-            control = JSON.parse(data) as ClientControlMessage;
+            control = JSON.parse(text) as ClientControlMessage;
           } catch {
             control = null;
           }
@@ -382,14 +393,16 @@ export function setupWebSocketServer(
             return;
           }
 
+          // Unknown text frame — still forward to terminal for compatibility
           try {
-            session.write(Buffer.from(data, 'utf8'));
+            session.write(Buffer.from(text, 'utf8'));
           } catch (writeError) {
             console.error(`Failed to write text input to terminal ${id}:`, writeError);
           }
           return;
         }
 
+        // Binary frames carry terminal input (keystrokes, paste, etc.)
         try {
           session.write(rawDataToBuffer(data));
         } catch (writeError) {
