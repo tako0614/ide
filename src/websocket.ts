@@ -7,6 +7,7 @@ import type { TerminalSession } from './types.js';
 import { PORT, TRUST_PROXY, CORS_ORIGIN, NODE_ENV } from './config.js';
 import { logSecurityEvent } from './middleware/security.js';
 import { verifyWebSocketAuth } from './middleware/auth.js';
+import { alignToUtf8Start, alignToUtf8End } from './utils/utf8.js';
 
 const MIN_TERMINAL_SIZE = 1;
 const MAX_TERMINAL_SIZE = 500;
@@ -164,37 +165,50 @@ function sendControl(socket: WebSocket, message: ServerControlMessage): boolean 
 function readBufferedRange(session: TerminalSession, startOffset: number, endOffset: number): Buffer {
   const relativeStart = Math.max(0, startOffset - session.bufferBase);
   const relativeEnd = Math.max(relativeStart, Math.min(session.bufferLength, endOffset - session.bufferBase));
-  const totalLength = relativeEnd - relativeStart;
 
-  if (totalLength <= 0 || session.bufferChunks.length === 0) {
+  if (relativeEnd <= relativeStart || session.bufferChunks.length === 0) {
     return Buffer.alloc(0);
   }
 
+  // Materialize the raw range first, then align to UTF-8 boundaries.
+  // This avoids splitting multi-byte characters that span chunk boundaries.
+  let raw: Buffer;
+
   if (session.bufferChunks.length === 1) {
-    return session.bufferChunks[0].subarray(relativeStart, relativeEnd);
+    raw = session.bufferChunks[0].subarray(relativeStart, relativeEnd);
+  } else {
+    const slices: Buffer[] = [];
+    let traversed = 0;
+
+    for (const chunk of session.bufferChunks) {
+      const chunkStart = traversed;
+      const chunkEnd = traversed + chunk.length;
+      traversed = chunkEnd;
+
+      if (chunkEnd <= relativeStart) {
+        continue;
+      }
+      if (chunkStart >= relativeEnd) {
+        break;
+      }
+
+      const startInChunk = Math.max(0, relativeStart - chunkStart);
+      const endInChunk = Math.min(chunk.length, relativeEnd - chunkStart);
+      slices.push(chunk.subarray(startInChunk, endInChunk));
+    }
+
+    raw = slices.length === 1 ? slices[0] : Buffer.concat(slices);
   }
 
-  const slices: Buffer[] = [];
-  let traversed = 0;
+  // Align start: skip orphaned continuation bytes
+  const alignedStart = alignToUtf8Start(raw, 0);
+  // Align end: don't cut a multi-byte character in half
+  const alignedEnd = alignToUtf8End(raw, raw.length);
 
-  for (const chunk of session.bufferChunks) {
-    const chunkStart = traversed;
-    const chunkEnd = traversed + chunk.length;
-    traversed = chunkEnd;
-
-    if (chunkEnd <= relativeStart) {
-      continue;
-    }
-    if (chunkStart >= relativeEnd) {
-      break;
-    }
-
-    const startInChunk = Math.max(0, relativeStart - chunkStart);
-    const endInChunk = Math.min(chunk.length, relativeEnd - chunkStart);
-    slices.push(chunk.subarray(startInChunk, endInChunk));
+  if (alignedStart === 0 && alignedEnd === raw.length) {
+    return raw;
   }
-
-  return slices.length === 1 ? slices[0] : Buffer.concat(slices, totalLength);
+  return raw.subarray(alignedStart, alignedEnd);
 }
 
 export function setupWebSocketServer(
