@@ -170,12 +170,12 @@ function readBufferedRange(session: TerminalSession, startOffset: number, endOff
     return Buffer.alloc(0);
   }
 
-  // Materialize the raw range first, then align to UTF-8 boundaries.
-  // This avoids splitting multi-byte characters that span chunk boundaries.
+  // Materialize the raw range into a contiguous copy so the caller
+  // is not affected if buffer chunks are later trimmed or reassigned.
   let raw: Buffer;
 
   if (session.bufferChunks.length === 1) {
-    raw = session.bufferChunks[0].subarray(relativeStart, relativeEnd);
+    raw = Buffer.from(session.bufferChunks[0].subarray(relativeStart, relativeEnd));
   } else {
     const slices: Buffer[] = [];
     let traversed = 0;
@@ -197,7 +197,7 @@ function readBufferedRange(session: TerminalSession, startOffset: number, endOff
       slices.push(chunk.subarray(startInChunk, endInChunk));
     }
 
-    raw = slices.length === 1 ? slices[0] : Buffer.concat(slices);
+    raw = Buffer.concat(slices); // concat always creates a new Buffer
   }
 
   // Align start: skip orphaned continuation bytes
@@ -208,7 +208,7 @@ function readBufferedRange(session: TerminalSession, startOffset: number, endOff
   if (alignedStart === 0 && alignedEnd === raw.length) {
     return raw;
   }
-  return raw.subarray(alignedStart, alignedEnd);
+  return Buffer.from(raw.subarray(alignedStart, alignedEnd));
 }
 
 export function setupWebSocketServer(

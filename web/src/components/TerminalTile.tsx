@@ -645,22 +645,34 @@ export function TerminalTile({
             return;
           }
 
-          const bytes = event.data instanceof ArrayBuffer
-            ? new Uint8Array(event.data)
-            : event.data instanceof Blob
-              ? null
-              : new Uint8Array(event.data as ArrayBuffer);
-
-          if (bytes) {
-            pendingWrites++;
-            term.write(bytes, () => {
-              processedOffsetRef.current += bytes.byteLength;
-              pendingWrites = Math.max(0, pendingWrites - 1);
-              if (replayReady && pendingWrites === 0) {
-                replayingBuffer = false;
-              }
+          if (event.data instanceof Blob) {
+            // binaryType is 'arraybuffer', so Blob shouldn't occur.
+            // Handle defensively by reading it as ArrayBuffer.
+            const blob = event.data;
+            blob.arrayBuffer().then((ab) => {
+              if (cancelled) return;
+              const blobBytes = new Uint8Array(ab);
+              pendingWrites++;
+              term.write(blobBytes, () => {
+                processedOffsetRef.current += blobBytes.byteLength;
+                pendingWrites = Math.max(0, pendingWrites - 1);
+                if (replayReady && pendingWrites === 0) {
+                  replayingBuffer = false;
+                }
+              });
             });
+            return;
           }
+
+          const bytes = new Uint8Array(event.data as ArrayBuffer);
+          pendingWrites++;
+          term.write(bytes, () => {
+            processedOffsetRef.current += bytes.byteLength;
+            pendingWrites = Math.max(0, pendingWrites - 1);
+            if (replayReady && pendingWrites === 0) {
+              replayingBuffer = false;
+            }
+          });
         });
         socket.addEventListener('close', (event) => {
           if (cancelled || isIntentionalClose) {
