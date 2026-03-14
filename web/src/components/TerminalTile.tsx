@@ -114,6 +114,20 @@ export function TerminalTile({
     let replayingBuffer = true;
     let replayReady = false;
     let pendingWrites = 0;
+    // Lock out resizes during replay so xterm.js processes the entire buffer
+    // at a consistent terminal size.  Without this, async write batching can
+    // interleave with ResizeObserver / font-load events, causing part of the
+    // content to be rendered at one column width and the rest at another.
+    let replayResizeLock = false;
+
+    const finishReplay = () => {
+      replayingBuffer = false;
+      if (replayResizeLock) {
+        replayResizeLock = false;
+        // Catch up on any resize that was suppressed during replay
+        scheduleFit(true);
+      }
+    };
 
     // Register terminal query handlers to prevent TUI apps from hanging
     const sendControlMessage = (message: ClientControlMessage) => {
@@ -423,6 +437,11 @@ export function TerminalTile({
     };
 
     const runFit = (force = false) => {
+      // During replay, block all resizes except the initial forced fit
+      // from the sync handler.  This prevents xterm.js async write batching
+      // from interleaving with resize events.
+      if (replayResizeLock) return;
+
       const container = containerRef.current;
       if (!container) return;
 
@@ -625,19 +644,26 @@ export function TerminalTile({
               replayingBuffer = true;
               replayReady = false;
               pendingWrites = 0;
+              replayResizeLock = false; // temporarily unlock for the initial fit
               processedOffsetRef.current = message.offsetBase;
               if (message.reset) {
                 term.reset();
                 // Synchronous fit so the terminal has the correct dimensions
                 // before replay data arrives in the next message event.
                 runFit(true);
+                // Lock resizes for the duration of the replay.  xterm.js
+                // processes large writes asynchronously across multiple
+                // animation frames; without this lock a ResizeObserver or
+                // font-load callback can change the column count mid-replay,
+                // corrupting cursor-positioned content like ASCII art.
+                replayResizeLock = true;
               }
               return;
             }
             if (message?.type === 'ready') {
               replayReady = true;
               if (pendingWrites === 0) {
-                replayingBuffer = false;
+                finishReplay();
               }
               return;
             }
@@ -657,7 +683,7 @@ export function TerminalTile({
                 processedOffsetRef.current += blobBytes.byteLength;
                 pendingWrites = Math.max(0, pendingWrites - 1);
                 if (replayReady && pendingWrites === 0) {
-                  replayingBuffer = false;
+                  finishReplay();
                 }
               });
             });
