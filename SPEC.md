@@ -1,64 +1,88 @@
-# Deck IDE Spec
+# Deck IDE 設計仕様
 
-## Goals
-- Create and open multiple decks, including multiple decks that point to the same root.
-- Each deck has a fixed default root path that cannot be changed after creation.
-- Provide a full-screen terminal mode and multi-pane workspace layout.
-- Offer editor capabilities comparable to VS Code via Monaco Editor.
-- Work well on mobile with view switching and touch-friendly controls.
+## コンセプト
 
-## Non-goals (initial release)
-- Remote SSH, cloud sync, multi-user collaboration.
-- Plugin marketplace or extension system.
-- Binary file editing.
+ブラウザベースの軽量 IDE。複数の AI エージェント（Claude Code、Codex CLI 等）を並列起動し、永続的に管理することに最適化されている。
 
-## Core concepts
-- Deck: saved workspace with a fixed root, layout state, open files, and terminal sessions.
-- Root: absolute filesystem path used for file browsing and file IO.
-- Panel: UI area for editor, terminal, or file explorer.
+## コア概念
 
-## UX flow
-1. User creates a deck. Root is set to `DEFAULT_ROOT`.
-2. User can create another deck with the same root.
-3. Opening a deck shows the file tree rooted at the deck root.
-4. Editor tabs and terminals are associated with the active deck.
-5. Terminal can be maximized to fill the main workspace area.
-6. On mobile, user switches between Decks, Files, Editor, and Terminal.
+| 概念 | 説明 |
+|------|------|
+| **ワークスペース** | ファイルシステム上のルートディレクトリ。エディタ・ファイルツリー・Git 操作の対象 |
+| **デッキ** | ワークスペースに紐づくターミナルのグループ。タブで切り替え、最大3つまで分割表示 |
+| **ターミナルセッション** | node-pty による PTY プロセス。出力はサーバー側でバッファリングされ、再接続時に再生される |
 
-## Data model (front-end)
-```json
-{
-  "deck": {
-    "id": "uuid",
-    "name": "Deck A",
-    "root": "C:/workspace",
-    "openFiles": ["path/to/file"],
-    "terminalSessions": ["term-1"],
-    "layout": {
-      "terminalMaximized": false
-    }
-  }
-}
+## アーキテクチャ
+
+```
+┌─────────────────────────────────────────────┐
+│  Browser (React + xterm.js + Monaco)         │
+│  ┌───────┐ ┌───────┐ ┌───────┐              │
+│  │ Term1 │ │ Term2 │ │ Term3 │  ← xterm.js  │
+│  └───┬───┘ └───┬───┘ └───┬───┘              │
+│      │ WS      │ WS      │ WS               │
+└──────┼─────────┼─────────┼──────────────────┘
+       │         │         │
+┌──────┼─────────┼─────────┼──────────────────┐
+│  Server (Hono + node-pty)                    │
+│  ┌───┴───┐ ┌───┴───┐ ┌───┴───┐              │
+│  │ PTY1  │ │ PTY2  │ │ PTY3  │              │
+│  └───────┘ └───────┘ └───────┘              │
+│  ┌──────────────────────────────┐            │
+│  │  SQLite (node:sqlite)        │            │
+│  │  ワークスペース・デッキ・端末永続化 │            │
+│  └──────────────────────────────┘            │
+└──────────────────────────────────────────────┘
 ```
 
-## API
-- `GET /api/decks` -> list decks (in-memory in v0).
-- `POST /api/decks` -> create deck using `DEFAULT_ROOT`.
-- `GET /api/files?path=...` -> list directory entries.
-- `GET /api/file?path=...` -> read file contents.
-- `PUT /api/file` -> write file contents.
-- `POST /api/terminals` -> create terminal session.
-- `WS /api/terminals/:id` -> interactive terminal stream.
+## ターミナルバッファ管理
 
-## Security
-- All filesystem operations are constrained under `DEFAULT_ROOT`.
-- Reject any path traversal attempts.
+サーバーは各ターミナルの PTY 出力をリングバッファに保持する（上限: `TERMINAL_BUFFER_LIMIT`、デフォルト 500KB）。
 
-## Mobile behavior
-- Sidebar collapses into a bottom switcher.
-- Primary views (Decks, Files, Editor, Terminal) render full-screen.
+### 再接続フロー
 
-## Future work
-- Persistent deck storage.
-- Layout presets and split panes.
-- Project-level settings per deck.
+1. クライアントが `?bufferOffset=N&reconnect=1` 付きで WebSocket 接続
+2. サーバーが `{ type: "sync", offsetBase, reset }` を送信
+3. バッファデータをバイナリフレームで送信（UTF-8 境界・ANSI エスケープシーケンス境界を考慮）
+4. `{ type: "ready" }` を送信して同期完了を通知
+5. クライアントはリプレイ中のリサイズをロックし、完了後にキャッチアップ fit を実行
+
+### バッファ安全性
+
+- UTF-8 マルチバイト文字の途中で切断しない（`alignToUtf8Start` / `alignToUtf8End`）
+- ANSI エスケープシーケンス（CSI、OSC、DCS、APC）の途中で切断しない（`skipPartialEscapeSequence`）
+- リプレイ中は xterm.js のリサイズをロック（`replayResizeLock`）して描画崩れを防止
+
+## リサイズ制御
+
+ターミナルの fit ロジックは以下の条件でリサイズを抑制する:
+
+- **リプレイロック中**: バッファリプレイ完了まで全リサイズをブロック
+- **セル予測**: コンテナサイズ変化が1セル未満ならスキップ
+- **ビューポートスケール**: ピンチズーム等による微小変化をフィルタ
+- **コンテナサイズ未変化**: 前回と同じピクセルサイズならスキップ
+
+## セキュリティ
+
+- Basic 認証（CLI またはブラウザ設定画面で有効化）
+- WebSocket トークン認証（ワンタイムトークン方式）
+- Origin 検証（CSRF 防止）
+- パストラバーサル防止
+- 本番環境では CORS_ORIGIN の明示的指定が必須
+- REP (CSI b) の繰り返し回数を 65535 に制限（DoS 防止）
+- セキュリティヘッダー（X-Content-Type-Options、X-Frame-Options 等）
+
+## モバイル対応
+
+- 720px 以下でレスポンシブレイアウトに切り替え
+- アクティビティバーが画面下部に水平配置
+- デッキを左右スワイプで切り替え
+- ターミナルを縦スクロールで切り替え
+- ターミナルフォーカス時はグリッドスクロールを無効化
+- タッチデバイスではホバー状態の残留を防止
+
+## 将来の拡張
+
+- リモート SSH 接続
+- プラグインシステム
+- マルチユーザーコラボレーション
