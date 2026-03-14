@@ -79,6 +79,9 @@ export function TerminalTile({
       convertEol: false,
       // Don't use windowsMode with ConPTY - it handles line discipline itself
       windowsMode: false,
+      // Move textarea to mouse position on right-click so the browser's
+      // context menu shows "Paste" over an editable element.
+      rightClickSelectsWord: true,
       theme: {
         background: TERMINAL_BACKGROUND_COLOR,
         foreground: TERMINAL_FOREGROUND_COLOR
@@ -625,7 +628,9 @@ export function TerminalTile({
               processedOffsetRef.current = message.offsetBase;
               if (message.reset) {
                 term.reset();
-                scheduleFit();
+                // Synchronous fit so the terminal has the correct dimensions
+                // before replay data arrives in the next message event.
+                runFit(true);
               }
               return;
             }

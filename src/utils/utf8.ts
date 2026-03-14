@@ -19,22 +19,25 @@ export function alignToUtf8Start(buf: Buffer, offset: number): number {
 /**
  * Find the last valid UTF-8 character boundary at or before the given position.
  * This prevents slicing a buffer in the middle of a multi-byte sequence at the end.
+ *
+ * When offset equals buf.length, the function checks whether the last character
+ * in the buffer is complete — an incomplete trailing sequence is excluded.
  */
 export function alignToUtf8End(buf: Buffer, offset: number): number {
-  if (offset <= 0 || offset >= buf.length) {
+  if (offset <= 0 || buf.length === 0) {
     return offset;
   }
-  // If the byte at `offset` is a continuation byte, we're mid-character.
-  // Walk backwards to find the start byte, then check if the full character fits.
-  let pos = offset;
+
+  // Clamp to buffer length so we can safely inspect the last byte
+  const effectiveEnd = Math.min(offset, buf.length);
+
+  // Walk backwards from the last byte within the range, skipping continuation bytes
+  let pos = effectiveEnd - 1;
   while (pos > 0 && (buf[pos] & 0xC0) === 0x80) {
     pos--;
   }
-  if (pos === offset) {
-    // Not in the middle of a multi-byte sequence
-    return offset;
-  }
-  // pos is now at the start byte — determine expected character length
+
+  // pos is now at a potential start byte — determine expected character length
   const startByte = buf[pos];
   let charLen: number;
   if ((startByte & 0x80) === 0) charLen = 1;
@@ -43,10 +46,10 @@ export function alignToUtf8End(buf: Buffer, offset: number): number {
   else if ((startByte & 0xF8) === 0xF0) charLen = 4;
   else charLen = 1; // Invalid start byte — treat as single byte
 
-  if (pos + charLen <= offset) {
-    // The character fits before `offset` — no truncation needed
-    return offset;
+  if (pos + charLen <= effectiveEnd) {
+    // The character is complete within the range
+    return effectiveEnd;
   }
-  // The character is incomplete at `offset` — exclude it
+  // The character is incomplete — exclude it
   return pos;
 }
