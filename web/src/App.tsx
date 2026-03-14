@@ -568,7 +568,7 @@ export default function App() {
       <div
         className={clsx('terminal-split-container', isSplitDropTargetActive && 'is-drop-target')}
         ref={splitContainerRef}
-        style={{ gridTemplateColumns: `repeat(${activeDeckIds.length}, 1fr)` }}
+        style={{ gridTemplateColumns: `repeat(${activeDeckIds.length}, minmax(0, 1fr))` }}
         onDragOver={handleSplitContainerDragOver}
         onDragLeave={handleSplitContainerDragLeave}
         onDrop={handleSplitContainerDrop}
