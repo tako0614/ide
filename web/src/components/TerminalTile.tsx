@@ -127,6 +127,13 @@ export function TerminalTile({
         // Catch up on any resize that was suppressed during replay
         scheduleFit(true);
       }
+      // Ensure the terminal viewport is scrolled to the latest output
+      // after replay.  term.reset() resets scroll to 0; the catch-up fit
+      // may reflow content.  scrollToBottom puts xterm.js into auto-scroll
+      // mode so subsequent resizes also stay at the bottom.
+      window.requestAnimationFrame(() => {
+        term.scrollToBottom();
+      });
     };
 
     // Register terminal query handlers to prevent TUI apps from hanging
@@ -729,6 +736,10 @@ export function TerminalTile({
           dataDisposable.dispose();
         }
         dataDisposable = term.onData((data) => {
+          // Suppress during replay: xterm.js windowOptions (CSI 14t/16t/18t)
+          // generate responses via onData that would be misinterpreted as
+          // keyboard input by the PTY.
+          if (replayingBuffer) return;
           if (socket && socket.readyState === WebSocket.OPEN) {
             claimTerminalControl();
             socket.send(textEncoder.encode(data));
@@ -739,6 +750,7 @@ export function TerminalTile({
           binaryDisposable.dispose();
         }
         binaryDisposable = term.onBinary((data) => {
+          if (replayingBuffer) return;
           if (socket && socket.readyState === WebSocket.OPEN) {
             claimTerminalControl();
             socket.send(encodeBinaryInput(data));
