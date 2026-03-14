@@ -696,7 +696,7 @@ export function TerminalTile({
             processedOffsetRef.current += bytes.byteLength;
             pendingWrites = Math.max(0, pendingWrites - 1);
             if (replayReady && pendingWrites === 0) {
-              replayingBuffer = false;
+              finishReplay();
             }
           });
         });
