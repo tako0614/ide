@@ -573,13 +573,14 @@ export function TerminalTile({
         if (cancelled) {
           return;
         }
-        const container = containerRef.current;
-        if (!container) {
+        // Check if focus moved to another terminal within the same pane.
+        // Without this, switching between terminals in the same pane
+        // briefly removes data-terminal-focus, toggling overflow-y on
+        // mobile and resetting the grid scroll position.
+        if (parentPane && parentPane.contains(document.activeElement)) {
           return;
         }
-        if (!container.contains(document.activeElement)) {
-          setPaneTerminalFocus(false);
-        }
+        setPaneTerminalFocus(false);
       }, 0);
     };
 
@@ -655,16 +656,19 @@ export function TerminalTile({
               processedOffsetRef.current = message.offsetBase;
               if (message.reset) {
                 term.reset();
-                // Synchronous fit so the terminal has the correct dimensions
-                // before replay data arrives in the next message event.
-                runFit(true);
-                // Lock resizes for the duration of the replay.  xterm.js
-                // processes large writes asynchronously across multiple
-                // animation frames; without this lock a ResizeObserver or
-                // font-load callback can change the column count mid-replay,
-                // corrupting cursor-positioned content like ASCII art.
-                replayResizeLock = true;
               }
+              // Synchronous fit so the terminal has the correct dimensions
+              // before replay data arrives in the next message event.
+              runFit(true);
+              // Lock resizes for the duration of the replay.  xterm.js
+              // processes large writes asynchronously across multiple
+              // animation frames; without this lock a ResizeObserver or
+              // font-load callback can change the column count mid-replay,
+              // corrupting cursor-positioned content like ASCII art.
+              // This applies to both reset and delta replays — the
+              // scheduleFit() queued from the socket open handler could
+              // otherwise fire mid-write.
+              replayResizeLock = true;
               return;
             }
             if (message?.type === 'ready') {

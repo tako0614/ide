@@ -475,7 +475,7 @@
 /* ── Deck Split Container ── */
 .terminal-split-container {
   flex: 1; min-height: 0; min-width: 0; width: 100%; max-width: 100%;
-  display: grid; gap: 4px; padding: 4px; position: relative;
+  display: grid; grid-auto-rows: minmax(0, 1fr); gap: 4px; padding: 4px; position: relative;
 }
 .deck-split-pane {
   display: flex; flex-direction: column; min-height: 0; min-width: 0;
