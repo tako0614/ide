@@ -9,7 +9,7 @@ import { TERMINAL_BUFFER_LIMIT } from '../config.js';
 import { createHttpError, handleError, readJson } from '../utils/error.js';
 import { getDefaultShell } from '../utils/shell.js';
 import { saveTerminal, deleteTerminal as deleteTerminalFromDb } from '../utils/database.js';
-import { alignToUtf8Start } from '../utils/utf8.js';
+import { alignToUtf8Start, skipPartialEscapeSequence } from '../utils/utf8.js';
 
 const DEFAULT_TERMINAL_TITLE = 'ターミナル';
 const MAX_SOCKET_BUFFERED_AMOUNT = 1024 * 1024;
@@ -34,17 +34,24 @@ export function createTerminalRouter(
     if (chunk.length >= TERMINAL_BUFFER_LIMIT) {
       let cutPos = chunk.length - TERMINAL_BUFFER_LIMIT;
       cutPos = alignToUtf8Start(chunk, cutPos);
-      const retainedChunk = Buffer.from(chunk.subarray(cutPos));
-      session.bufferBase += session.bufferLength + cutPos;
-      session.bufferChunks = [retainedChunk];
-      session.bufferLength = retainedChunk.length;
+      let retained = Buffer.from(chunk.subarray(cutPos));
+      // Skip partial escape sequence at the new start
+      const escSkip = skipPartialEscapeSequence(retained, 0);
+      if (escSkip > 0) {
+        retained = Buffer.from(retained.subarray(escSkip));
+      }
+      session.bufferBase += session.bufferLength + cutPos + escSkip;
+      session.bufferChunks = [retained];
+      session.bufferLength = retained.length;
       return;
     }
 
     session.bufferChunks.push(Buffer.from(chunk));
     session.bufferLength += chunk.length;
 
+    let trimmed = false;
     while (session.bufferLength > TERMINAL_BUFFER_LIMIT && session.bufferChunks.length > 0) {
+      trimmed = true;
       const overflow = session.bufferLength - TERMINAL_BUFFER_LIMIT;
       const firstChunk = session.bufferChunks[0];
 
@@ -61,15 +68,26 @@ export function createTerminalRouter(
       session.bufferLength -= cutPos;
     }
 
-    // After removing whole chunks, the new first chunk may start with
-    // orphaned UTF-8 continuation bytes from a character that spanned chunks.
-    if (session.bufferChunks.length > 0) {
+    if (trimmed && session.bufferChunks.length > 0) {
+      // After removing whole chunks, the new first chunk may start with
+      // orphaned UTF-8 continuation bytes from a character that spanned chunks.
       const first = session.bufferChunks[0];
       const skip = alignToUtf8Start(first, 0);
       if (skip > 0) {
         session.bufferChunks[0] = Buffer.from(first.subarray(skip));
         session.bufferBase += skip;
         session.bufferLength -= skip;
+      }
+
+      // Also skip past any partial ANSI CSI escape sequence at the start.
+      // Without this, orphaned parameter bytes like "100;50m" are rendered
+      // as literal text and shift all cursor positions.
+      const cur = session.bufferChunks[0];
+      const escSkip = skipPartialEscapeSequence(cur, 0);
+      if (escSkip > 0) {
+        session.bufferChunks[0] = Buffer.from(cur.subarray(escSkip));
+        session.bufferBase += escSkip;
+        session.bufferLength -= escSkip;
       }
     }
   }
