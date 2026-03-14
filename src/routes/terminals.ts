@@ -9,6 +9,7 @@ import { TERMINAL_BUFFER_LIMIT } from '../config.js';
 import { createHttpError, handleError, readJson } from '../utils/error.js';
 import { getDefaultShell } from '../utils/shell.js';
 import { saveTerminal, deleteTerminal as deleteTerminalFromDb } from '../utils/database.js';
+import { alignToUtf8Start } from '../utils/utf8.js';
 
 const DEFAULT_TERMINAL_TITLE = 'ターミナル';
 const MAX_SOCKET_BUFFERED_AMOUNT = 1024 * 1024;
@@ -31,8 +32,10 @@ export function createTerminalRouter(
     }
 
     if (chunk.length >= TERMINAL_BUFFER_LIMIT) {
-      const retainedChunk = Buffer.from(chunk.subarray(chunk.length - TERMINAL_BUFFER_LIMIT));
-      session.bufferBase += session.bufferLength + (chunk.length - TERMINAL_BUFFER_LIMIT);
+      let cutPos = chunk.length - TERMINAL_BUFFER_LIMIT;
+      cutPos = alignToUtf8Start(chunk, cutPos);
+      const retainedChunk = Buffer.from(chunk.subarray(cutPos));
+      session.bufferBase += session.bufferLength + cutPos;
       session.bufferChunks = [retainedChunk];
       session.bufferLength = retainedChunk.length;
       return;
@@ -52,9 +55,22 @@ export function createTerminalRouter(
         continue;
       }
 
-      session.bufferChunks[0] = Buffer.from(firstChunk.subarray(overflow));
-      session.bufferBase += overflow;
-      session.bufferLength -= overflow;
+      const cutPos = alignToUtf8Start(firstChunk, overflow);
+      session.bufferChunks[0] = Buffer.from(firstChunk.subarray(cutPos));
+      session.bufferBase += cutPos;
+      session.bufferLength -= cutPos;
+    }
+
+    // After removing whole chunks, the new first chunk may start with
+    // orphaned UTF-8 continuation bytes from a character that spanned chunks.
+    if (session.bufferChunks.length > 0) {
+      const first = session.bufferChunks[0];
+      const skip = alignToUtf8Start(first, 0);
+      if (skip > 0) {
+        session.bufferChunks[0] = Buffer.from(first.subarray(skip));
+        session.bufferBase += skip;
+        session.bufferLength -= skip;
+      }
     }
   }
 
