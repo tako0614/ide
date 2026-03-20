@@ -497,6 +497,8 @@
 /* ── Terminal Pane ── */
 .terminal-pane { flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; padding: 4px; overflow-anchor: none; }
 .terminal-grid { display: grid; gap: 4px; min-height: 0; min-width: 0; width: 100%; flex: 1; overflow: hidden; }
+.terminal-tile-slot { display: contents; }
+.terminal-back-btn { display: none; }
 .terminal-empty {
   flex: 1; display: flex; align-items: center; justify-content: center;
   background: var(--color-bg-soft); border: 1px dashed var(--color-border);
@@ -642,33 +644,70 @@
     scroll-snap-align: start; overflow: hidden;
     border-radius: 0; border-left: none; border-right: none;
   }
-  /* Mobile: vertical swipe between terminals */
+  /* Mobile: terminal pane base */
   .terminal-pane {
-    flex: 1 1 auto; min-height: 0; height: auto; overflow: hidden;
-    scroll-snap-type: none; padding: 0 !important; width: 100%; max-width: 100%;
+    flex: 1 1 auto; min-height: 0; overflow: hidden;
+    padding: 0 !important; width: 100%; max-width: 100%;
   }
-  .terminal-pane::-webkit-scrollbar { display: none; }
-  .terminal-grid {
-    display: flex !important; flex-direction: column !important;
-    flex: 1 1 auto !important; min-height: 0; height: 100%; width: 100%;
-    overflow-y: auto !important; overflow-x: hidden !important; gap: 0 !important;
+  /* Mobile: 2×n preview grid */
+  .terminal-grid-preview {
+    display: grid !important;
+    grid-template-columns: repeat(2, 1fr) !important;
+    grid-template-rows: unset !important;
+    gap: 4px !important;
+    padding: 4px !important;
+    flex: 1 1 auto; min-height: 0;
+    overflow-y: auto !important; overflow-x: hidden !important;
     -webkit-overflow-scrolling: touch;
     overscroll-behavior-y: contain;
-    touch-action: pan-y;
     scrollbar-width: none;
-    padding-bottom: 4px;
-    grid-template-columns: unset !important; grid-template-rows: unset !important;
   }
-  .terminal-grid::-webkit-scrollbar { display: none; }
-  .terminal-pane[data-terminal-focus="true"] .terminal-grid {
+  .terminal-grid-preview::-webkit-scrollbar { display: none; }
+  .terminal-tile-slot-preview {
+    display: block; cursor: pointer; overflow: hidden;
+  }
+  .terminal-tile-slot-preview .terminal-tile {
+    height: 150px !important; min-height: 150px !important; max-height: 150px !important;
+    border-radius: 4px;
+  }
+  .terminal-tile-slot-preview .terminal-tile-body {
+    pointer-events: none;
+  }
+  .terminal-tile-slot-preview .terminal-close-btn {
+    display: none;
+  }
+  .terminal-tile-slot-preview .terminal-tile-header {
+    padding: 4px 8px; font-size: 11px;
+  }
+  /* Mobile: expanded terminal (full screen) */
+  .terminal-pane-expanded {
+    display: flex; flex-direction: column;
+  }
+  .terminal-back-btn {
+    display: flex; align-items: center; gap: 4px;
+    padding: 8px 12px; min-height: 36px;
+    background: var(--color-sidebar); border: none;
+    border-bottom: 1px solid var(--color-border);
+    color: var(--color-accent); font-size: 13px; font-weight: 500;
+    cursor: pointer; flex-shrink: 0;
+  }
+  .terminal-grid-expanded {
+    display: flex !important; flex-direction: column !important;
+    flex: 1 !important; min-height: 0 !important;
+    overflow: hidden !important; gap: 0 !important; padding: 0 !important;
+  }
+  .terminal-tile-slot-active {
+    display: flex !important; flex-direction: column; flex: 1; min-height: 0; overflow: hidden;
+  }
+  .terminal-tile-slot-active .terminal-tile {
+    flex: 1; height: auto !important; min-height: 0 !important;
+    border-radius: 0; border: none;
+  }
+  .terminal-tile-slot-hidden {
+    display: none !important;
+  }
+  .terminal-pane-expanded[data-terminal-focus="true"] .terminal-grid-expanded {
     overflow-y: hidden !important;
-  }
-  .terminal-tile {
-    flex: 0 0 auto;
-    min-height: clamp(18rem, calc(100svh - 10rem), 32rem);
-    height: clamp(18rem, calc(100svh - 10rem), 32rem);
-    width: 100%; max-width: 100%;
-    scroll-snap-align: none; border-radius: 0; border-left: none; border-right: none;
   }
   .status-float {
     right: 12px;
