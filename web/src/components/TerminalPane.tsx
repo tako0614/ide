@@ -1,3 +1,5 @@
+import { useState, useEffect } from 'react';
+import clsx from 'clsx';
 import type { TerminalSession } from '../types';
 import { TerminalTile } from './TerminalTile';
 
@@ -26,31 +28,82 @@ export function TerminalPane({
   onExitTerminal,
 }: TerminalPaneProps) {
   const { cols, rows } = getOptimalGrid(terminals.length);
+  const [expandedTerminalId, setExpandedTerminalId] = useState<string | null>(null);
+  const [isMobile, setIsMobile] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia('(max-width: 720px)').matches
+  );
+
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 720px)');
+    setIsMobile(mq.matches);
+    const handler = () => setIsMobile(mq.matches);
+    mq.addEventListener('change', handler);
+    return () => mq.removeEventListener('change', handler);
+  }, []);
+
+  // Reset expanded state when switching to desktop
+  useEffect(() => {
+    if (!isMobile) setExpandedTerminalId(null);
+  }, [isMobile]);
+
+  // Clear expanded if terminal was removed
+  useEffect(() => {
+    if (expandedTerminalId && !terminals.find(t => t.id === expandedTerminalId)) {
+      setExpandedTerminalId(null);
+    }
+  }, [terminals, expandedTerminalId]);
+
+  const mobileMode = isMobile ? (expandedTerminalId ? 'expanded' : 'preview') : null;
 
   return (
-    <section className="terminal-pane">
+    <section className={clsx('terminal-pane', mobileMode === 'expanded' && 'terminal-pane-expanded')}>
       {terminals.length === 0 ? (
         <div className="terminal-empty">
           <span className="terminal-empty-text">ターミナルを追加</span>
         </div>
       ) : (
-        <div
-          className="terminal-grid"
-          style={{
-            gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
-            gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
-          }}
-        >
-          {terminals.map((terminal) => (
-            <TerminalTile
-              key={terminal.id}
-              session={terminal}
-              wsUrl={`${wsBase}/api/terminals/${terminal.id}`}
-              onDelete={() => onDeleteTerminal(terminal.id)}
-              onExit={() => onExitTerminal(terminal.id)}
-            />
-          ))}
-        </div>
+        <>
+          {mobileMode === 'expanded' && (
+            <button
+              type="button"
+              className="terminal-back-btn"
+              onClick={() => setExpandedTerminalId(null)}
+            >
+              ← 一覧
+            </button>
+          )}
+          <div
+            className={clsx(
+              'terminal-grid',
+              mobileMode === 'preview' && 'terminal-grid-preview',
+              mobileMode === 'expanded' && 'terminal-grid-expanded'
+            )}
+            style={!isMobile ? {
+              gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
+              gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
+            } : undefined}
+          >
+            {terminals.map((terminal) => (
+              <div
+                key={terminal.id}
+                className={clsx(
+                  'terminal-tile-slot',
+                  mobileMode === 'preview' && 'terminal-tile-slot-preview',
+                  mobileMode === 'expanded' && terminal.id === expandedTerminalId && 'terminal-tile-slot-active',
+                  mobileMode === 'expanded' && terminal.id !== expandedTerminalId && 'terminal-tile-slot-hidden'
+                )}
+                onClick={mobileMode === 'preview' ? () => setExpandedTerminalId(terminal.id) : undefined}
+              >
+                <TerminalTile
+                  session={terminal}
+                  wsUrl={`${wsBase}/api/terminals/${terminal.id}`}
+                  onDelete={() => onDeleteTerminal(terminal.id)}
+                  onExit={() => onExitTerminal(terminal.id)}
+                />
+              </div>
+            ))}
+          </div>
+        </>
       )}
     </section>
   );
