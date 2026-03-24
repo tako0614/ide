@@ -86,8 +86,12 @@
     outline: 2px solid var(--color-focus);
     outline-offset: 2px;
   }
-  @supports (height: 100svh) {
-    html, body, #root { height: 100svh; min-height: 100svh; }
+  @supports (height: 100dvh) {
+    html, body, #root { height: 100dvh; min-height: 100dvh; }
+  }
+  html, body, #root {
+    height: var(--viewport-height, 100dvh);
+    min-height: var(--viewport-height, 100dvh);
   }
 
   /* Subtle scrollbars */
