@@ -634,7 +634,7 @@
     display: flex !important; flex-direction: row !important;
     overflow-x: scroll; overflow-y: hidden;
     scroll-snap-type: none; -webkit-overflow-scrolling: touch;
-    overscroll-behavior-x: contain; touch-action: pan-x;
+    overscroll-behavior-x: contain; touch-action: auto;
     scrollbar-width: none; padding: 0 !important; gap: 0 !important;
     width: 100%; max-width: 100%;
   }
@@ -709,6 +709,16 @@
   .terminal-pane-expanded[data-terminal-focus="true"] .terminal-grid-expanded {
     overflow-y: hidden !important;
   }
+  /* Mobile: fullscreen when terminal expanded */
+  .app:has(.terminal-pane-expanded) {
+    grid-template-rows: 1fr;
+    padding-bottom: 0;
+  }
+  .app:has(.terminal-pane-expanded) > .activity-bar { display: none; }
+  .app:has(.terminal-pane-expanded) .terminal-topbar { display: none; }
+  .app:has(.terminal-pane-expanded) .deck-split-pane > :first-child:not(.terminal-pane) { display: none; }
+  .app:has(.terminal-pane-expanded) .terminal-tile-header { display: none; }
+  .app:has(.terminal-pane-expanded) .status-float { display: none; }
   .status-float {
     right: 12px;
     bottom: calc(48px + 22px + env(safe-area-inset-bottom, 0px) + 8px);
