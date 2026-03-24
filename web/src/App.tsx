@@ -61,6 +61,18 @@ export default function App() {
 
   const { theme, handleToggleTheme } = useTheme();
 
+  // Track visual viewport height for mobile keyboard visibility
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const update = () => {
+      document.documentElement.style.setProperty('--viewport-height', `${vv.height}px`);
+    };
+    update();
+    vv.addEventListener('resize', update);
+    return () => vv.removeEventListener('resize', update);
+  }, []);
+
   const {
     isWorkspaceModalOpen,
     openWorkspaceModal,
