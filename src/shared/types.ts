@@ -62,6 +62,8 @@ export interface WorkspaceState {
 
 export interface DeckState {
   terminals: TerminalSession[];
+  // モバイルの単一表示で前面に出す端末。null の場合は先頭端末にフォールバック。
+  activeTerminalId?: string | null;
 }
 
 // API Response types
@@ -89,6 +91,67 @@ export interface ApiTerminalCreateResponse {
   title: string;
 }
 
+export interface BrowserTab {
+  id: string;
+  url: string;
+  title: string;
+}
+
+export interface BrowserStatus {
+  running: boolean;
+  launching: boolean;
+  profileDir: string;
+  outputDir: string;
+  executablePath: string | null;
+  cdpUrl: string | null;
+  // URL/title of the active tab, kept for backward compatibility.
+  pageUrl: string | null;
+  pageTitle: string | null;
+  tabs: BrowserTab[];
+  activeTabId: string | null;
+  audio: BrowserAudioStatus;
+  webrtc: BrowserWebRtcStatus;
+  error?: string;
+}
+
+export interface BrowserAudioStatus {
+  available: boolean;
+  running: boolean;
+  clients: number;
+  source: string | null;
+  ffmpegPath: string | null;
+  mimeType: string;
+  reason?: string;
+  error?: string;
+}
+
+// Capability + live state for the code-server "power editor".
+// `acquired:false` means the binary isn't installed yet.
+export interface CodeServerStatus {
+  available: boolean;
+  acquired: boolean;
+  binPath: string | null;
+  running: boolean;
+  instances: number;
+  wsId: string | null;
+  reason?: string;
+  error?: string;
+}
+
+// Capability + live state for the WebRTC video path (A1: direct Xvfb capture).
+// `available:false` means the client should use the JPEG screencast fallback.
+export interface BrowserWebRtcStatus {
+  available: boolean;
+  running: boolean;
+  clients: number;
+  codec: string;
+  display: string | null;
+  width: number;
+  height: number;
+  reason?: string;
+  error?: string;
+}
+
 // API Request types
 
 export interface CreateWorkspaceRequest {
@@ -104,6 +167,10 @@ export interface CreateDeckRequest {
 export interface CreateTerminalRequest {
   deckId: string;
   title?: string;
+}
+
+export interface BrowserNavigateRequest {
+  url: string;
 }
 
 export interface SaveFileRequest {

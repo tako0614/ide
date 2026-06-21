@@ -47,6 +47,36 @@ export const TERMINAL_BUFFER_LIMIT = parseIntEnv(process.env.TERMINAL_BUFFER_LIM
 export const MAX_REQUEST_BODY_SIZE = parseIntEnv(process.env.MAX_REQUEST_BODY_SIZE, 1024 * 1024); // 1MB default
 export const TRUST_PROXY = process.env.TRUST_PROXY === 'true'; // Only trust proxy headers if explicitly enabled
 
+// --- Agent browser WebRTC streaming (A1: direct Xvfb capture → ffmpeg → werift) ---
+// Master switch. 'false' (default) keeps the JPEG screencast path and never even
+// imports werift. 'true'/'auto' advertise the WebRTC capability; the client still
+// falls back to JPEG on any failure.
+const webrtcFlag = (process.env.AGENT_BROWSER_WEBRTC || 'false').toLowerCase();
+export const AGENT_BROWSER_WEBRTC = webrtcFlag === 'true' || webrtcFlag === 'auto';
+// Video codec for the encoded stream. Only 'vp8' is wired today; 'vp9'/'h264'
+// are accepted for forward-compat and validated in the relay.
+export const AGENT_BROWSER_WEBRTC_CODEC = (process.env.AGENT_BROWSER_WEBRTC_CODEC || 'vp8').toLowerCase();
+// Target video bitrate passed to the encoder (ffmpeg -b:v syntax, e.g. '3M').
+export const AGENT_BROWSER_WEBRTC_BITRATE = process.env.AGENT_BROWSER_WEBRTC_BITRATE || '3M';
+export const AGENT_BROWSER_WEBRTC_FPS = parseIntEnv(process.env.AGENT_BROWSER_WEBRTC_FPS, 30);
+// Optional explicit X display to capture (e.g. ':99'). When unset the relay
+// discovers it from the running Chrome process environment.
+export const AGENT_BROWSER_DISPLAY = process.env.AGENT_BROWSER_DISPLAY || '';
+// Optional ICE servers as JSON (e.g. '[{"urls":"stun:stun.l.google.com:19302"}]').
+// Empty = host candidates only, which is correct for same-host / LAN.
+export const AGENT_BROWSER_WEBRTC_ICE_SERVERS = process.env.AGENT_BROWSER_WEBRTC_ICE_SERVERS || '';
+
+// --- Shared-browser maintenance ---
+// CDP port the shared agent browser listens on (must match agent-browser's).
+export const AGENT_BROWSER_CDP_PORT = parseIntEnv(process.env.AGENT_BROWSER_CDP_PORT, 9222);
+// Reap leaked chrome-devtools-mcp server stacks when one agent accumulates too
+// many (the observed leak). On by default; set 'false' to disable.
+export const AGENT_BROWSER_REAP_MCP = (process.env.AGENT_BROWSER_REAP_MCP || 'true').toLowerCase() !== 'false';
+// Max chrome-devtools-mcp stacks a single agent may keep before old extras are reaped.
+export const AGENT_BROWSER_MAX_MCP_PER_AGENT = parseIntEnv(process.env.AGENT_BROWSER_MAX_MCP_PER_AGENT, 3);
+// Extra stacks must be older than this before being reaped (spares restart bursts).
+export const AGENT_BROWSER_MCP_IDLE_MS = parseIntEnv(process.env.AGENT_BROWSER_MCP_IDLE_MS, 600_000);
+
 // Flat structure: dist/ and web/dist/ are siblings at project root
 export const distDir = path.resolve(__dirname, '..', 'web', 'dist');
 export const hasStatic = fsSync.existsSync(distDir);

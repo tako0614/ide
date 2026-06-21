@@ -11,6 +11,7 @@
 - **マルチリポジトリ対応** — ワークスペース内の複数 Git リポジトリを自動検出
 - **ファイルエクスプローラー** — ファイル・フォルダの作成、削除、コンテキストメニュー
 - **ターミナルバッファ永続化** — WebSocket 切断・再接続時にターミナル出力を完全復元
+- **セッション保存ブラウザ** — Codex / Claude Code と同じ Chromium プロファイルを Deck IDE 内から操作
 - **Basic 認証** — CLI またはブラウザ設定画面から認証の有効化が可能
 - **CLI ツール** — `deckide` コマンドでバックグラウンド起動・停止・設定管理
 - **モバイル対応** — タッチ操作、スワイプでのデッキ切替、レスポンシブレイアウト
@@ -98,6 +99,10 @@ deckide config reset           設定リセット
 3. コミットメッセージを入力してコミット
 4. プッシュ / プル / フェッチで同期
 
+### ブラウザ
+
+サイドバーのブラウザアイコンから、永続プロファイル付き Chromium を起動・停止・操作できます。既定では `~/.local/share/agent-browser/profile` を使うため、Codex / Claude Code の Playwright MCP ブラウザとログインセッションを共有できます。音声は PulseAudio / PipeWire pulse 互換の monitor source を ffmpeg で WebM/Opus にして Deck IDE へ転送します。音を出す環境には `ffmpeg` と `pactl`、または `AGENT_BROWSER_AUDIO_SOURCE` で指定した monitor source が必要です。
+
 ## プロジェクト構成
 
 ```
@@ -156,6 +161,31 @@ ide/
 | `TERMINAL_BUFFER_LIMIT` | ターミナルバッファ上限 (bytes) | 500000 |
 | `TRUST_PROXY` | プロキシヘッダーを信頼 | false |
 | `DECKIDE_DATA_DIR` | データディレクトリ | ~/.deckide |
+| `AGENT_BROWSER_CHROME` | Chromium / Chrome 実行ファイル | Playwright Chromium または PATH から自動検出 |
+| `AGENT_BROWSER_PROFILE_DIR` | ブラウザプロファイル | ~/.local/share/agent-browser/profile |
+| `AGENT_BROWSER_OUTPUT_DIR` | ブラウザログ出力先 | ~/.local/share/agent-browser/output |
+| `AGENT_BROWSER_FFMPEG` | ffmpeg 実行ファイル | PATH から自動検出 |
+| `AGENT_BROWSER_PACTL` | pactl 実行ファイル | PATH から自動検出 |
+| `AGENT_BROWSER_AUDIO_SOURCE` | 音声キャプチャ元 | 既定 sink の monitor source |
+
+## MCP / OAuth
+
+Deck IDE は MCP Streamable HTTP エンドポイントを提供します。
+
+| 用途 | URL |
+|------|-----|
+| MCP | `http://localhost:8787/mcp` |
+| Protected Resource Metadata | `http://localhost:8787/.well-known/oauth-protected-resource/mcp` |
+| Authorization Server Metadata | `http://localhost:8787/.well-known/oauth-authorization-server` |
+| Dynamic Client Registration | `http://localhost:8787/oauth/register` |
+| Authorization Endpoint | `http://localhost:8787/oauth/authorize` |
+| Token Endpoint | `http://localhost:8787/oauth/token` |
+
+OAuth は Authorization Code + PKCE (`S256`) を使用します。MCP クライアントは Dynamic Client Registration でクライアント登録し、`deckide:all` scope の Bearer トークンを取得して `/mcp` に接続します。
+
+Basic 認証が有効な場合、OAuth の認可画面 (`/oauth/authorize`) も Basic 認証で保護されます。MCP 呼び出し自体は `Authorization: Bearer <access_token>` を使用します。
+
+MCP tools からはワークスペース、ファイル、ディレクトリ、デッキ、端末、Git、WebSocket 管理、設定、サーバー停止、低レベル API 呼び出しを利用できます。端末はMCP専用に `write` / `read_buffer` / `resize` も提供します。
 
 ## API
 
@@ -199,6 +229,17 @@ ide/
 | DELETE | `/api/terminals/:id` | 削除 |
 | WS | `/api/terminals/:id` | WebSocket 接続 |
 
+### ブラウザ
+
+| メソッド | パス | 説明 |
+|---------|------|------|
+| GET | `/api/browser/status` | 状態取得 |
+| POST | `/api/browser/start` | 起動 |
+| POST | `/api/browser/stop` | 停止 |
+| POST | `/api/browser/navigate` | URL へ移動 |
+| WS | `/api/browser/ws` | 画面・入力ストリーム |
+| WS | `/api/browser/audio/ws` | 音声ストリーム |
+
 ### Git
 
 | メソッド | パス | 説明 |
@@ -233,7 +274,7 @@ ide/
 
 ## WebSocket プロトコル
 
-ターミナル接続は `/api/terminals/:id` WebSocket エンドポイントを使用します。
+ターミナル接続は `/api/terminals/:id` WebSocket エンドポイントを使用します。ブラウザ接続は `/api/browser/ws` で JPEG screencast とマウス・キー入力イベントを送受信します。ブラウザ音声は `/api/browser/audio/ws` で WebM/Opus のバイナリチャンクを送ります。
 
 **クライアント → サーバー:**
 - `{ type: "claim" }` — リサイズ権限を取得

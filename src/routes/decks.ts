@@ -96,7 +96,6 @@ export function createDeckRouter(
   });
 
   const deleteDeckStmt = db.prepare('DELETE FROM decks WHERE id = ?');
-  const deleteTerminalsByDeckStmt = db.prepare('DELETE FROM terminals WHERE deck_id = ?');
 
   function closeDeckTerminalSockets(sockets: Set<WebSocket>, reason: string): void {
     sockets.forEach((socket) => {
@@ -125,7 +124,6 @@ export function createDeckRouter(
         session.kill();
       });
 
-      deleteTerminalsByDeckStmt.run(deckId);
       deleteDeckStmt.run(deckId);
       decks.delete(deckId);
       return c.json({ deleted: true });

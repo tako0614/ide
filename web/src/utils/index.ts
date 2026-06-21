@@ -3,7 +3,7 @@
  */
 
 // State utilities
-export { createEmptyWorkspaceState, createEmptyDeckState } from './stateUtils';
+export { createEmptyWorkspaceState, createEmptyDeckState, resolveActiveTerminalId } from './stateUtils';
 
 // File utilities
 export { toTreeNodes, getLanguageFromPath, updateTreeNode, addTreeNode, removeTreeNode } from './fileUtils';

@@ -498,11 +498,22 @@
 .topbar-btn-sm.topbar-btn-codex { color: #00a86b; }
 .topbar-btn-sm.topbar-btn-codex:hover { background: rgba(0,168,107,0.15); border-color: #00a86b; }
 
+/* Deck Drive shell */
+.drive-mini-btn {
+  padding: 1px 5px; background: transparent; border: 0; border-radius: 3px;
+  color: var(--color-muted); font-size: 11px; cursor: pointer; line-height: 1.4;
+}
+.drive-mini-btn:hover { background: var(--color-list-hover); color: var(--color-ink); }
+.drive-body.drive-drag-active { outline: 2px dashed var(--color-accent); outline-offset: -6px; background: var(--color-list-hover); }
+.drive-tab { background: transparent; border: 0; cursor: pointer; border-bottom: 2px solid transparent; }
+.code-server-frame { width: 100%; height: 100%; border: 0; display: block; background: #1e1e1e; }
+
 /* ── Terminal Pane ── */
 .terminal-pane { flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; padding: 4px; overflow-anchor: none; }
 .terminal-grid { display: grid; gap: 4px; min-height: 0; min-width: 0; width: 100%; flex: 1; overflow: hidden; }
 .terminal-tile-slot { display: contents; }
-.terminal-back-btn { display: none; }
+/* 端末切替ドロップダウンはモバイル専用。デスクトップはグリッドで全表示するため隠す。 */
+.terminal-switcher { display: none; }
 .terminal-empty {
   flex: 1; display: flex; align-items: center; justify-content: center;
   background: var(--color-bg-soft); border: 1px dashed var(--color-border);
@@ -512,6 +523,13 @@
   border: 1px solid var(--color-border); border-radius: 4px;
   background: #1e1e1e; color: #d4d4d4;
   min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden;
+  transition: background 0.15s ease-out, box-shadow 0.15s ease-out;
+}
+/* Visual bell: ベル受信時に一瞬だけ点滅させる（onBell で付与/解除）。 */
+.terminal-tile.bell-flash {
+  background: #2a2a3a;
+  box-shadow: inset 0 0 0 2px rgba(120, 170, 255, 0.7);
+  transition: none;
 }
 .terminal-tile-header {
   display: flex; align-items: center; justify-content: space-between;
@@ -542,6 +560,306 @@
   overscroll-behavior-y: contain;
   -webkit-overflow-scrolling: touch;
   touch-action: pan-y;
+}
+
+/* ── Browser Pane ── */
+.browser-layout {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-panel);
+  overflow: hidden;
+}
+
+.browser-toolbar {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 4px 8px;
+  background: var(--color-sidebar);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.browser-address-group {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.browser-toolbar-button,
+.browser-go-button {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-bg-soft);
+  color: var(--color-ink);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.browser-toolbar-button:hover,
+.browser-go-button:hover {
+  background: var(--color-list-hover);
+}
+
+.browser-toolbar-button-active {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.browser-toolbar-button svg {
+  width: 16px;
+  height: 16px;
+}
+
+.browser-toolbar-button:disabled,
+.browser-go-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.browser-address-form {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.browser-address-input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-panel);
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.browser-status-line {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-ink-muted);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-muted);
+}
+
+.browser-dot-running {
+  background: var(--color-git-staged);
+}
+
+.browser-error {
+  flex-shrink: 0;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--color-border);
+  background: rgba(241,76,76,0.12);
+  color: var(--color-git-deleted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-tabs {
+  flex-shrink: 0;
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  padding: 4px 6px;
+  background: var(--color-sidebar);
+  border-bottom: 1px solid var(--color-border);
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.browser-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 180px;
+  min-width: 92px;
+  padding: 4px 6px 4px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-bg-soft);
+  color: var(--color-ink-muted);
+  cursor: pointer;
+  font-size: 12px;
+  user-select: none;
+}
+
+.browser-tab:hover {
+  background: var(--color-list-hover);
+}
+
+.browser-tab-active {
+  background: var(--color-panel);
+  color: var(--color-ink);
+  border-color: var(--color-accent);
+}
+
+.browser-tab-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-tab-close {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  opacity: 0.6;
+}
+
+.browser-tab-close:hover {
+  background: var(--color-list-hover);
+  opacity: 1;
+}
+
+.browser-tab-new {
+  flex-shrink: 0;
+  width: 28px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-bg-soft);
+  color: var(--color-ink);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.browser-tab-new:hover {
+  background: var(--color-list-hover);
+}
+
+.browser-audio {
+  display: none;
+}
+
+.browser-viewport {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  background: #111;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  outline: none;
+}
+
+.browser-viewport:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--color-focus);
+}
+
+.browser-frame {
+  /* Fill the viewport and letterbox the frame inside it. The canvas pixel
+     dimensions track the incoming frame size, which changes during resize/
+     reconnect; sizing the element off those intrinsic dims (max-width/auto)
+     made it overflow as a flex item (min-width: auto won't shrink below the
+     intrinsic size) and jump around. A fixed 100% box + object-fit keeps the
+     displayed scale stable regardless of frame size. */
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  user-select: none;
+  cursor: default;
+}
+
+.browser-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 24px;
+  text-align: center;
+  color: #c8c8c8;
+  font-family: var(--font-mono);
+}
+
+.browser-state-title {
+  font-size: 13px;
+  color: #e6e6e6;
+}
+
+.browser-state-hint {
+  font-size: 12px;
+  color: #9a9a9a;
+  max-width: 280px;
+  line-height: 1.5;
+}
+
+.browser-state-action {
+  padding: 6px 16px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-bg-soft);
+  color: var(--color-ink);
+  cursor: pointer;
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+
+.browser-state-action:hover:not(:disabled) {
+  background: var(--color-list-hover);
+}
+
+.browser-state-action:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.browser-spinner {
+  width: 22px;
+  height: 22px;
+  border: 2px solid rgba(255, 255, 255, 0.18);
+  border-top-color: var(--color-accent);
+  border-radius: 50%;
+  animation: browser-spin 0.8s linear infinite;
+}
+
+@keyframes browser-spin {
+  to { transform: rotate(360deg); }
 }
 
 /* ── Git Status Colors ── */
@@ -653,80 +971,48 @@
     flex: 1 1 auto; min-height: 0; overflow: hidden;
     padding: 0 !important; width: 100%; max-width: 100%;
   }
-  /* Mobile: 2×n preview grid */
-  .terminal-grid-preview {
-    display: grid !important;
-    grid-template-columns: repeat(2, 1fr) !important;
-    grid-template-rows: unset !important;
-    gap: 4px !important;
-    padding: 4px !important;
-    flex: 1 1 auto; min-height: 0;
-    overflow-y: auto !important; overflow-x: hidden !important;
-    -webkit-overflow-scrolling: touch;
-    overscroll-behavior-y: contain;
-    scrollbar-width: none;
-  }
-  .terminal-grid-preview::-webkit-scrollbar { display: none; }
-  .terminal-tile-slot-preview {
-    display: block; cursor: pointer; overflow: hidden;
-  }
-  .terminal-tile-slot-preview .terminal-tile {
-    height: 150px !important; min-height: 150px !important; max-height: 150px !important;
-    border-radius: 4px;
-  }
-  .terminal-tile-slot-preview .terminal-tile-body {
-    pointer-events: none;
-  }
-  .terminal-tile-slot-preview .terminal-close-btn {
-    display: none;
-  }
-  .terminal-tile-slot-preview .terminal-tile-header {
-    padding: 4px 8px; font-size: 11px;
-  }
-  /* Mobile: expanded terminal (full screen) */
-  .terminal-pane-expanded {
-    display: flex; flex-direction: column;
-  }
-  .terminal-back-btn {
-    display: flex; align-items: center; gap: 4px;
-    padding: 8px 12px; min-height: 36px;
-    background: var(--color-sidebar); border: none;
-    border-bottom: 1px solid var(--color-border);
-    color: var(--color-accent); font-size: 13px; font-weight: 500;
-    cursor: pointer; flex-shrink: 0;
-  }
-  .terminal-grid-expanded {
+  /* Mobile: 単一端末をフルサイズ表示（プレビューのグリッドは廃止）。
+     非アクティブ端末は display:none でマウント維持し、極小 resize を防ぐ。
+     切り替えはデッキヘッダ行のドロップダウン (.terminal-switcher) で行う。 */
+  .terminal-grid-mobile {
     display: flex !important; flex-direction: column !important;
     flex: 1 !important; min-height: 0 !important;
     overflow: hidden !important; gap: 0 !important; padding: 0 !important;
   }
-  .terminal-tile-slot-active {
+  .terminal-tile-slot-mobile-active {
     display: flex !important; flex-direction: column; flex: 1; min-height: 0; overflow: hidden;
   }
-  .terminal-tile-slot-active .terminal-tile {
+  .terminal-tile-slot-mobile-active .terminal-tile {
     flex: 1; height: auto !important; min-height: 0 !important;
     border-radius: 0; border: none;
   }
-  .terminal-tile-slot-hidden {
-    display: none !important;
+  .terminal-tile-slot-mobile-hidden { display: none !important; }
+  /* 端末切替ドロップダウン（デッキヘッダ行に同居）。モバイルのみ表示。 */
+  .terminal-switcher {
+    display: block; flex: 1 1 auto; min-width: 0; max-width: 60%;
+    height: 28px; padding: 0 8px;
+    background: var(--color-bg-soft); color: var(--color-ink);
+    border: 1px solid var(--color-border); border-radius: 4px;
+    font-size: 12px; font-family: var(--font-mono);
   }
-  .terminal-pane-expanded[data-terminal-focus="true"] .terminal-grid-expanded {
-    overflow-y: hidden !important;
-  }
-  /* Mobile: fullscreen when terminal expanded */
-  .app:has(.terminal-pane-expanded) {
-    grid-template-rows: 1fr;
-    padding-bottom: 0;
-  }
-  .app:has(.terminal-pane-expanded) > .activity-bar { display: none; }
-  .app:has(.terminal-pane-expanded) .terminal-topbar { display: none; }
-  .app:has(.terminal-pane-expanded) .deck-split-pane > :first-child:not(.terminal-pane) { display: none; }
-  .app:has(.terminal-pane-expanded) .terminal-tile-header { display: none; }
-  .app:has(.terminal-pane-expanded) .status-float { display: none; }
   .status-float {
     right: 12px;
     bottom: calc(48px + 22px + env(safe-area-inset-bottom, 0px) + 8px);
     max-width: calc(100vw - 24px);
+  }
+  /* キーボード表示中はターミナル(など)を最大化するため下部ナビバーを畳む。
+     可視領域がキーボード上に縮むので、48px のバー＋ステータス行を残すと
+     入力中のターミナルが極端に小さくなってしまう。バーはキーボードを
+     閉じれば再表示される。 */
+  html.keyboard-open .app {
+    grid-template-rows: minmax(0, 1fr);
+    padding-bottom: 0;
+  }
+  html.keyboard-open .app > nav.activity-bar {
+    display: none;
+  }
+  html.keyboard-open .status-float {
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 8px);
   }
   /* Workspace editor: drawer layout */
   .workspace-editor-grid {

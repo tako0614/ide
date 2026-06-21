@@ -14,6 +14,12 @@ export type {
   ApiFileResponse,
   ApiFileSaveResponse,
   ApiTerminalCreateResponse,
+  BrowserAudioStatus,
+  BrowserWebRtcStatus,
+  CodeServerStatus,
+  BrowserStatus,
+  BrowserTab,
+  BrowserNavigateRequest,
   CreateWorkspaceRequest,
   CreateDeckRequest,
   CreateTerminalRequest,
@@ -30,8 +36,18 @@ export type {
   MultiRepoGitStatus
 } from '@shared/types';
 
-export type AppView = 'workspace' | 'terminal';
+export type AppView = 'workspace' | 'terminal' | 'browser';
 export type WorkspaceMode = 'list' | 'editor';
+
+// Drive shell tab model (code-server + Google-Drive-style UI).
+export type TabKind = 'drive' | 'code' | 'browser' | 'terminal';
+export interface TabDescriptor {
+  id: string;
+  kind: TabKind;
+  title: string;
+  // For 'code'/'drive' tabs: the workspace this tab is scoped to.
+  wsId?: string;
+}
 export type ThemeMode = 'light' | 'dark';
 export type SidebarPanel = 'files' | 'git';
 
@@ -47,4 +63,3 @@ export interface DeckListItem {
   name: string;
   path: string;
 }
-

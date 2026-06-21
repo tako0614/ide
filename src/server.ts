@@ -23,6 +23,10 @@ import {
   hasStatic,
   distDir,
   dbPath,
+  AGENT_BROWSER_REAP_MCP,
+  AGENT_BROWSER_CDP_PORT,
+  AGENT_BROWSER_MAX_MCP_PER_AGENT,
+  AGENT_BROWSER_MCP_IDLE_MS,
 } from './config.js';
 import { securityHeaders } from './middleware/security.js';
 import { corsMiddleware } from './middleware/cors.js';
@@ -32,7 +36,6 @@ import {
   handleDatabaseCorruption,
   initializeDatabase,
   loadPersistedState,
-  clearOrphanedTerminals,
 } from './utils/database.js';
 import { createWorkspaceRouter, getConfigHandler } from './routes/workspaces.js';
 import { createDeckRouter } from './routes/decks.js';
@@ -40,6 +43,12 @@ import { createFileRouter } from './routes/files.js';
 import { createTerminalRouter } from './routes/terminals.js';
 import { createGitRouter } from './routes/git.js';
 import { createSettingsRouter } from './routes/settings.js';
+import { createMcpRouter } from './routes/mcp.js';
+import { createBrowserRouter } from './routes/browser.js';
+import { createCodeServerRouter } from './routes/codeserver.js';
+import { AgentBrowserService } from './utils/agent-browser.js';
+import { CodeServerService } from './utils/code-server.js';
+import { startMcpReaper } from './utils/browser-maintenance.js';
 import {
   setupWebSocketServer,
   getConnectionLimit,
@@ -78,13 +87,35 @@ export async function createServer() {
 
   const db = new DatabaseSync(dbPath);
   initializeDatabase(db);
-  clearOrphanedTerminals(db);
 
   // Initialize state
   const workspaces = new Map<string, Workspace>();
   const workspacePathIndex = new Map<string, string>();
   const decks = new Map<string, Deck>();
   const terminals = new Map<string, TerminalSession>();
+  const browserService = new AgentBrowserService();
+  const codeServerService = new CodeServerService(workspaces);
+
+  // 共有ブラウザを起動時から常駐させ、BrowserPane を開いていなくても
+  // Codex/Claude の chrome MCP（--browserUrl 127.0.0.1:9222）が常に使えるようにする。
+  // 失敗してもサーバ起動は継続（Chrome 未導入の環境などを考慮）。AGENT_BROWSER_AUTOSTART=false で無効化可。
+  if (process.env.AGENT_BROWSER_AUTOSTART !== 'false') {
+    void browserService.start().catch((err) => {
+      console.error('[browser] 共有ブラウザの自動起動に失敗:', err instanceof Error ? err.message : err);
+    });
+  }
+
+  // Periodically reap leaked chrome-devtools-mcp servers (agents spawn one per
+  // session against our CDP port and can leave them disconnected — wedging the
+  // agent's chrome tools and leaking GBs). Safe: only disconnected + idle ones.
+  const stopMcpReaper = AGENT_BROWSER_REAP_MCP
+    ? startMcpReaper({
+        cdpPort: AGENT_BROWSER_CDP_PORT,
+        maxPerAgent: AGENT_BROWSER_MAX_MCP_PER_AGENT,
+        idleMs: AGENT_BROWSER_MCP_IDLE_MS,
+        intervalMs: 120_000,
+      })
+    : null;
 
   loadPersistedState(db, workspaces, workspacePathIndex, decks);
 
@@ -99,9 +130,20 @@ export async function createServer() {
     maxSize: MAX_REQUEST_BODY_SIZE,
     onError: (c) => c.json({ error: 'Request body too large' }, 413),
   }));
+  app.use('/mcp', bodyLimit({
+    maxSize: MAX_REQUEST_BODY_SIZE,
+    onError: (c) => c.json({ error: 'Request body too large' }, 413),
+  }));
+  app.use('/oauth/*', bodyLimit({
+    maxSize: MAX_REQUEST_BODY_SIZE,
+    onError: (c) => c.json({ error: 'Request body too large' }, 413),
+  }));
 
   if (basicAuthMiddleware) {
     app.use('/api/*', basicAuthMiddleware);
+    app.use('/oauth/authorize', basicAuthMiddleware);
+    // code-server runs with --auth none; this same-origin proxy is the gate.
+    app.use('/codeserver/*', basicAuthMiddleware);
   }
 
   app.get('/health', (c) =>
@@ -113,9 +155,11 @@ export async function createServer() {
   app.route('/api/workspaces', createWorkspaceRouter(db, workspaces, workspacePathIndex));
   app.route('/api/decks', createDeckRouter(db, workspaces, decks, terminals));
 
-  const terminalRouter = createTerminalRouter(db, decks, terminals);
+  const terminalRouter = createTerminalRouter(decks, terminals);
   app.route('/api/terminals', terminalRouter);
   app.route('/api/git', createGitRouter(workspaces));
+  app.route('/api/browser', createBrowserRouter(browserService));
+  app.route('/codeserver', createCodeServerRouter(codeServerService));
 
   app.get('/api/config', getConfigHandler());
 
@@ -143,6 +187,10 @@ export async function createServer() {
 
   const fileRouter = createFileRouter(workspaces);
   app.route('/api', fileRouter);
+  app.route('/', createMcpRouter({
+    apiFetch: (request) => Promise.resolve(app.fetch(request)),
+    terminals,
+  }));
 
   if (hasStatic) {
     const serveAssets = serveStatic({ root: distDir });
@@ -155,19 +203,21 @@ export async function createServer() {
   }
 
   const server = serve({ fetch: app.fetch, port: PORT, hostname: HOST }) as Server;
-  setupWebSocketServer(server, terminals);
+  setupWebSocketServer(server, terminals, browserService, codeServerService);
 
   server.on('listening', () => {
     const baseUrl = `http://localhost:${PORT}`;
     console.log(`Deck IDE server listening on ${baseUrl}`);
     console.log(`UI: ${baseUrl}`);
     console.log(`API: ${baseUrl}/api`);
+    console.log(`MCP: ${baseUrl}/mcp`);
     console.log(`Health: ${baseUrl}/health`);
     console.log('');
     console.log('Security Status:');
     console.log(`  - Basic Auth: ${BASIC_AUTH_USER && BASIC_AUTH_PASSWORD ? 'enabled' : 'DISABLED'}`);
     console.log(`  - Max File Size: ${Math.round(MAX_FILE_SIZE / 1024 / 1024)}MB`);
     console.log(`  - Max Request Body: ${Math.round(MAX_REQUEST_BODY_SIZE / 1024)}KB`);
+    console.log('  - MCP OAuth: enabled');
     console.log(`  - Trust Proxy: ${TRUST_PROXY ? 'enabled' : 'disabled'}`);
     console.log(`  - CORS Origin: ${CORS_ORIGIN || (NODE_ENV === 'development' ? '*' : 'NOT SET')}`);
     console.log(`  - Environment: ${NODE_ENV}`);
@@ -187,6 +237,9 @@ export async function createServer() {
         session.kill();
       });
       terminals.clear();
+      stopMcpReaper?.();
+      await browserService.stop();
+      await codeServerService.stopAll();
 
       try { db.close(); } catch { /* ignore */ }
     })();

@@ -49,10 +49,41 @@ export const EDITOR_FONT_FAMILY = '"JetBrains Mono", monospace';
 export const EDITOR_FONT_SIZE = 14;
 
 // Terminal configuration
-export const TERMINAL_FONT_FAMILY = '"Cascadia Code", "JetBrains Mono", "Consolas", "Menlo", monospace';
+// CJK monospace fallbacks (Noto Sans Mono CJK JP / Source Han Mono / MS Gothic)
+// を末尾の monospace の前に追加し、日本語・中国語・韓国語のグリフ崩れを防ぐ。
+export const TERMINAL_FONT_FAMILY =
+  '"Cascadia Code", "JetBrains Mono", "Consolas", "Menlo", "Noto Sans Mono CJK JP", "Source Han Mono", "MS Gothic", monospace';
 export const TERMINAL_FONT_SIZE = 13;
 export const TERMINAL_BACKGROUND_COLOR = '#000000';
 export const TERMINAL_FOREGROUND_COLOR = '#ffffff';
+
+// 16-entry ANSI palette (index 0..15).  モダンでダークな配色で、
+// 背景 #000000 / 前景 #ffffff の上でも読みやすいコントラストを確保する。
+// 0..7  : black, red, green, yellow, blue, magenta, cyan, white
+// 8..15 : brightBlack, brightRed, brightGreen, brightYellow,
+//         brightBlue, brightMagenta, brightCyan, brightWhite
+export const TERMINAL_ANSI_PALETTE: readonly string[] = [
+  '#1e1e1e', // 0  black
+  '#f44747', // 1  red
+  '#23d18b', // 2  green
+  '#e5c07b', // 3  yellow
+  '#4aa5f0', // 4  blue
+  '#c586c0', // 5  magenta
+  '#29b8db', // 6  cyan
+  '#d4d4d4', // 7  white
+  '#666666', // 8  brightBlack
+  '#ff6e6e', // 9  brightRed
+  '#5ff967', // 10 brightGreen
+  '#f5f543', // 11 brightYellow
+  '#6ab7ff', // 12 brightBlue
+  '#d670d6', // 13 brightMagenta
+  '#62e8f5', // 14 brightCyan
+  '#ffffff'  // 15 brightWhite
+];
+
+// カーソル色と選択範囲の背景色（テーマ palette と整合させる）。
+export const TERMINAL_CURSOR_COLOR = '#ffffff';
+export const TERMINAL_SELECTION_BACKGROUND = '#264f78';
 
 // Local storage keys
 export const STORAGE_KEY_THEME = 'deck-theme';

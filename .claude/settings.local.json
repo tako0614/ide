@@ -91,7 +91,14 @@
       "Bash(npm uninstall:*)",
       "Bash(find:*)",
       "Bash(/tmp/search.txt:*)",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "Bash(git:*)",
+      "Bash(find /home/tako/Desktop/github/ide/src -type f \\\\\\(-name *.css -o -name *.scss -o -name *.ts -o -name *.tsx -o -name *.js -o -name *.jsx \\\\\\))",
+      "Bash(find /home/tako/Desktop/github/ide/web/src -type f \\\\\\(-name *.ts -o -name *.tsx -o -name *.js -o -name *.jsx \\\\\\))",
+      "Bash(echo \"--- exit: $? ---\")",
+      "Bash(curl -s --max-time 3 http://127.0.0.1:9222/json/version)",
+      "Bash(python3 -c \"import sys,json;d=json.load\\(sys.stdin\\);print\\('Chrome on 9222:',d.get\\('Browser'\\),'| UA:',d.get\\('User-Agent',''\\)[:50]\\)\")",
+      "mcp__chrome__list_pages"
     ],
     "deny": [],
     "ask": []

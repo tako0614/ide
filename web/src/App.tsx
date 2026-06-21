@@ -3,10 +3,13 @@ import clsx from 'clsx';
 import { DeckModal } from './components/DeckModal';
 import { SideNav } from './components/SideNav';
 import { StatusMessage } from './components/StatusMessage';
+import { BrowserPane } from './components/BrowserPane';
 import { TerminalPane } from './components/TerminalPane';
 import { WorkspaceList } from './components/WorkspaceList';
 import { WorkspaceModal } from './components/WorkspaceModal';
 import { WorkspaceEditor } from './components/WorkspaceEditor';
+import { TerminalSwitcher } from './components/TerminalSwitcher';
+import { DriveShell } from './components/DriveShell';
 import { SettingsModal } from './components/SettingsModal';
 import { getConfig, getWsBase, saveDeckOrder } from './api';
 import { useWorkspaceState } from './hooks/useWorkspaceState';
@@ -27,7 +30,7 @@ import {
   MESSAGE_SELECT_WORKSPACE
 } from './constants';
 import { parseUrlState } from './utils/urlUtils';
-import { createEmptyWorkspaceState, createEmptyDeckState } from './utils/stateUtils';
+import { createEmptyWorkspaceState, createEmptyDeckState, resolveActiveTerminalId } from './utils/stateUtils';
 
 const MAX_ACTIVE_DECKS = 3;
 function moveItemBefore(items: string[], source: string, target: string) {
@@ -61,16 +64,56 @@ export default function App() {
 
   const { theme, handleToggleTheme } = useTheme();
 
-  // Track visual viewport height for mobile keyboard visibility
+  // 端末が OSC 0/2 で設定した動的タイトル（terminalId -> title）。
+  // 切替ドロップダウンの表示に使う。
+  const [liveTitles, setLiveTitles] = useState<Record<string, string | null>>({});
+  const handleTerminalTitle = useCallback((terminalId: string, title: string | null) => {
+    setLiveTitles((prev) => {
+      if (prev[terminalId] === title) return prev;
+      return { ...prev, [terminalId]: title };
+    });
+  }, []);
+
+  // Track visual viewport height for mobile keyboard visibility.
+  // キーボード表示時はアプリ高さがキーボード上の可視領域まで縮むため、
+  // そのままだと下部ナビバー(48px)+ステータス(22px)がターミナルを圧迫する。
+  // 「観測した最大高さとの差」でキーボード表示を検出し、html.keyboard-open を
+  // 付与する。CSS 側でこのときだけ下部バーを畳んでターミナルを最大化する。
+  // （interactive-widget=resizes-content では innerHeight も縮むため、
+  //  innerHeight - vv.height の差分ではキーボードを検出できない。）
   useEffect(() => {
     const vv = window.visualViewport;
     if (!vv) return;
+    // キーボード非表示時の基準高さ。回転時は次の resize で再取得する。
+    let baseline = vv.height;
+    let pendingReset = false;
+    const root = document.documentElement;
     const update = () => {
-      document.documentElement.style.setProperty('--viewport-height', `${vv.height}px`);
+      if (pendingReset) {
+        baseline = vv.height;
+        pendingReset = false;
+      } else if (vv.height > baseline) {
+        baseline = vv.height;
+      }
+      // 150px はソフトキーボードの最小高さ目安。URL バーの開閉(~100px)を
+      // キーボードと誤検出しないためのしきい値。
+      const keyboardOpen = baseline - vv.height > 150;
+      root.style.setProperty('--viewport-height', `${vv.height}px`);
+      root.classList.toggle('keyboard-open', keyboardOpen);
+    };
+    const handleOrientation = () => {
+      // 回転で基準高さが変わるので次の更新で取り直す。
+      pendingReset = true;
+      window.setTimeout(update, 300);
     };
     update();
     vv.addEventListener('resize', update);
-    return () => vv.removeEventListener('resize', update);
+    window.addEventListener('orientationchange', handleOrientation);
+    return () => {
+      vv.removeEventListener('resize', update);
+      window.removeEventListener('orientationchange', handleOrientation);
+      root.classList.remove('keyboard-open');
+    };
   }, []);
 
   const {
@@ -597,7 +640,15 @@ export default function App() {
             return (
               <div key={deckId} className="deck-split-pane">
                 <div className="flex items-center justify-between px-2 py-1 border-b border-border bg-sidebar gap-2 min-h-[28px]">
-                  {activeDeckIds.length > 1 && <span className="flex-1 min-w-0 text-[11px] font-semibold text-ink-muted overflow-hidden text-ellipsis whitespace-nowrap">{deck.name}</span>}
+                  {activeDeckIds.length > 1 && <span className="deck-pane-name flex-1 min-w-0 text-[11px] font-semibold text-ink-muted overflow-hidden text-ellipsis whitespace-nowrap">{deck.name}</span>}
+                  {deckState.terminals.length > 0 && (
+                    <TerminalSwitcher
+                      terminals={deckState.terminals}
+                      liveTitles={liveTitles}
+                      value={resolveActiveTerminalId(deckState.terminals, deckState.activeTerminalId) ?? ''}
+                      onChange={(terminalId) => updateDeckState(deckId, (s) => ({ ...s, activeTerminalId: terminalId }))}
+                    />
+                  )}
                   <div className="flex items-center gap-1 ml-auto">
                     <button
                       type="button"
@@ -628,8 +679,10 @@ export default function App() {
                 <TerminalPane
                   terminals={deckState.terminals}
                   wsBase={wsBase}
+                  activeTerminalId={deckState.activeTerminalId ?? null}
                   onDeleteTerminal={(terminalId) => handleTerminalDeleteForDeck(deckId, terminalId)}
                   onExitTerminal={(terminalId) => handleTerminalExitForDeck(deckId, terminalId)}
+                  onTerminalTitle={handleTerminalTitle}
                 />
               </div>
             );
@@ -638,6 +691,22 @@ export default function App() {
       </div>
     </div>
   );
+
+  const browserView = <BrowserPane wsBase={wsBase} />;
+
+  // New "Deck Drive" shell (code-server + Google-Drive-style UI). Opt-in via
+  // ?shell=drive during rollout; will become the default in a later phase.
+  // Captured once so useUrlSync rewriting the query can't unmount the shell.
+  const [useDriveShell] = useState(() => {
+    try {
+      return new URLSearchParams(window.location.search).get('shell') === 'drive';
+    } catch {
+      return false;
+    }
+  });
+  if (useDriveShell) {
+    return <DriveShell wsBase={wsBase} />;
+  }
 
   return (
     <div className="app" data-view={view}>
@@ -651,6 +720,7 @@ export default function App() {
       <main className="main">
         {view === 'workspace' && workspaceView}
         {view === 'terminal' && terminalView}
+        {view === 'browser' && browserView}
       </main>
       <StatusMessage message={statusMessage} />
       <WorkspaceModal

@@ -2,12 +2,15 @@ import crypto from 'node:crypto';
 import type { Server as HttpServer } from 'node:http';
 import type { Server as HttpsServer } from 'node:https';
 import type { IncomingMessage } from 'node:http';
+import type { Duplex } from 'node:stream';
 import { WebSocketServer, WebSocket, type RawData } from 'ws';
 import type { TerminalSession } from './types.js';
 import { PORT, TRUST_PROXY, CORS_ORIGIN, NODE_ENV } from './config.js';
 import { logSecurityEvent } from './middleware/security.js';
 import { verifyWebSocketAuth } from './middleware/auth.js';
 import { alignToUtf8Start, alignToUtf8End } from './utils/utf8.js';
+import type { AgentBrowserService } from './utils/agent-browser.js';
+import type { CodeServerService } from './utils/code-server.js';
 
 const MIN_TERMINAL_SIZE = 1;
 const MAX_TERMINAL_SIZE = 500;
@@ -21,7 +24,10 @@ type ClientControlMessage =
 
 type ServerControlMessage =
   | { type: 'sync'; offsetBase: number; reset: boolean }
-  | { type: 'ready' };
+  | { type: 'ready' }
+  // この接続が「主」クライアントか。端末クエリ（DSR/DA など）への応答は
+  // 主クライアントのみが返し、複数クライアント時の二重応答を防ぐ。
+  | { type: 'primary'; value: boolean };
 
 // Configurable connection limit per IP (default: 1000)
 let maxConnectionsPerIP = 1000;
@@ -162,6 +168,20 @@ function sendControl(socket: WebSocket, message: ServerControlMessage): boolean 
   }
 }
 
+// 制御権（resizeOwner = 主クライアント）を付け替え、新旧クライアントへ
+// primary 状態を通知する。主クライアントだけが端末クエリへ応答する。
+function assignResizeOwner(session: TerminalSession, socket: WebSocket): void {
+  const previous = session.resizeOwner;
+  if (previous === socket) {
+    return;
+  }
+  session.resizeOwner = socket;
+  if (previous) {
+    sendControl(previous, { type: 'primary', value: false });
+  }
+  sendControl(socket, { type: 'primary', value: true });
+}
+
 function readBufferedRange(session: TerminalSession, startOffset: number, endOffset: number): Buffer {
   const relativeStart = Math.max(0, startOffset - session.bufferBase);
   const relativeEnd = Math.max(relativeStart, Math.min(session.bufferLength, endOffset - session.bufferBase));
@@ -213,9 +233,49 @@ function readBufferedRange(session: TerminalSession, startOffset: number, endOff
 
 export function setupWebSocketServer(
   server: HttpServer | HttpsServer,
-  terminals: Map<string, TerminalSession>
+  terminals: Map<string, TerminalSession>,
+  browserService?: AgentBrowserService,
+  codeServerService?: CodeServerService
 ): WebSocketServer {
-  const wss = new WebSocketServer({ server, maxPayload: MAX_MESSAGE_SIZE });
+  // noServer mode: we own the HTTP 'upgrade' event so code-server's WebSocket can
+  // be reverse-proxied alongside the app's own sockets. Everything that isn't a
+  // /codeserver/ upgrade is handed to wss exactly as before.
+  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_SIZE });
+
+  server.on('upgrade', (req, socket: Duplex, head) => {
+    let pathname: string;
+    try {
+      pathname = new URL(req.url || '', `http://localhost:${PORT}`).pathname;
+    } catch {
+      socket.destroy();
+      return;
+    }
+
+    if (codeServerService && pathname.startsWith('/codeserver/')) {
+      if (!verifyWebSocketAuth(req)) {
+        socket.destroy();
+        return;
+      }
+      const rest = pathname.slice('/codeserver/'.length);
+      const slash = rest.indexOf('/');
+      const wsId = slash === -1 ? rest : rest.slice(0, slash);
+      const prefix = `/codeserver/${wsId}`;
+      const original = req.url || '';
+      req.url = original.slice(prefix.length) || '/';
+      if (!req.url.startsWith('/')) {
+        req.url = `/${req.url}`;
+      }
+      codeServerService
+        .ensure(wsId)
+        .then(() => codeServerService.proxyUpgrade(wsId, req, socket, head))
+        .catch(() => {
+          try { socket.destroy(); } catch { /* ignore */ }
+        });
+      return;
+    }
+
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
+  });
   const heartbeatState = new WeakMap<WebSocket, boolean>();
   const heartbeatInterval = setInterval(() => {
     for (const socket of wss.clients) {
@@ -290,6 +350,51 @@ export function setupWebSocketServer(
     }
 
     const url = new URL(req.url || '', `http://localhost:${PORT}`);
+    if (url.pathname === '/api/browser/ws') {
+      if (!browserService) {
+        untrackConnection(clientIP, socket);
+        socket.close(1011, 'Browser service unavailable');
+        return;
+      }
+
+      socket.on('close', () => {
+        heartbeatState.delete(socket);
+        untrackConnection(clientIP, socket);
+      });
+      browserService.attachWebSocket(socket);
+      return;
+    }
+
+    if (url.pathname === '/api/browser/audio/ws') {
+      if (!browserService) {
+        untrackConnection(clientIP, socket);
+        socket.close(1011, 'Browser service unavailable');
+        return;
+      }
+
+      socket.on('close', () => {
+        heartbeatState.delete(socket);
+        untrackConnection(clientIP, socket);
+      });
+      browserService.attachAudioWebSocket(socket);
+      return;
+    }
+
+    if (url.pathname === '/api/browser/webrtc/ws') {
+      if (!browserService) {
+        untrackConnection(clientIP, socket);
+        socket.close(1011, 'Browser service unavailable');
+        return;
+      }
+
+      socket.on('close', () => {
+        heartbeatState.delete(socket);
+        untrackConnection(clientIP, socket);
+      });
+      browserService.attachWebRtcWebSocket(socket);
+      return;
+    }
+
     const match = url.pathname.match(/\/api\/terminals\/(.+)/);
     if (!match) {
       untrackConnection(clientIP, socket);
@@ -356,6 +461,8 @@ export function setupWebSocketServer(
       }
     }
     sendControl(socket, { type: 'ready' });
+    // この接続が現在の主クライアントかを通知（既定では先頭接続が主）。
+    sendControl(socket, { type: 'primary', value: session.resizeOwner === socket });
 
     socket.on('message', (data, isBinary) => {
       try {
@@ -386,7 +493,7 @@ export function setupWebSocketServer(
           }
 
           if (control?.type === 'claim') {
-            session.resizeOwner = socket;
+            assignResizeOwner(session, socket);
             return;
           }
 
@@ -395,7 +502,7 @@ export function setupWebSocketServer(
               return;
             }
 
-            session.resizeOwner = socket;
+            assignResizeOwner(session, socket);
             const cols = validateTerminalSize(control.cols);
             const rows = validateTerminalSize(control.rows);
 
@@ -431,6 +538,12 @@ export function setupWebSocketServer(
       session.sockets.delete(socket);
       if (session.resizeOwner === socket) {
         session.resizeOwner = null;
+        // 主クライアントが去ったら、残っている接続のいずれかを主に昇格させ、
+        // 端末クエリへ応答するクライアントが居なくならないようにする。
+        const next = session.sockets.values().next().value;
+        if (next) {
+          assignResizeOwner(session, next);
+        }
       }
       session.lastActive = Date.now();
       heartbeatState.delete(socket);

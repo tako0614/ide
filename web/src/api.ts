@@ -1,4 +1,4 @@
-import type { Deck, FileSystemEntry, Workspace, GitStatus, GitDiff, GitRepoInfo, MultiRepoGitStatus } from './types';
+import type { Deck, FileSystemEntry, Workspace, GitStatus, GitDiff, GitRepoInfo, MultiRepoGitStatus, BrowserStatus } from './types';
 import { API_BASE } from './constants';
 
 const HTTP_STATUS_NO_CONTENT = 204;
@@ -225,6 +225,49 @@ export function deleteDirectory(
 }
 
 /**
+ * Moves or renames a file/directory within a workspace (Drive UI).
+ */
+export function moveEntry(
+  workspaceId: string,
+  from: string,
+  to: string,
+  overwrite = false
+): Promise<{ from: string; to: string; moved: boolean }> {
+  return request('/api/move', {
+    method: HTTP_METHOD_POST,
+    headers: { 'Content-Type': CONTENT_TYPE_JSON },
+    body: JSON.stringify({ workspaceId, from, to, overwrite })
+  });
+}
+
+/**
+ * Uploads files into a workspace directory (multipart). Bypasses the JSON
+ * request() helper because it sends FormData.
+ */
+export async function uploadFiles(
+  workspaceId: string,
+  dirPath: string,
+  files: File[]
+): Promise<{ uploaded: string[] }> {
+  const form = new FormData();
+  form.append('workspaceId', workspaceId);
+  form.append('path', dirPath);
+  for (const file of files) {
+    form.append('file', file);
+  }
+  const response = await fetch(`${API_BASE}/api/upload`, {
+    method: HTTP_METHOD_POST,
+    body: form,
+    credentials: 'include'
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || `Upload failed (${response.status})`);
+  }
+  return response.json() as Promise<{ uploaded: string[] }>;
+}
+
+/**
  * Creates a new terminal session
  */
 export function createTerminal(
@@ -257,6 +300,30 @@ export function listTerminals(
 export function deleteTerminal(terminalId: string): Promise<void> {
   return request<void>(`/api/terminals/${terminalId}`, {
     method: HTTP_METHOD_DELETE
+  });
+}
+
+export function getBrowserStatus(): Promise<BrowserStatus> {
+  return request<BrowserStatus>('/api/browser/status');
+}
+
+export function startBrowser(): Promise<BrowserStatus> {
+  return request<BrowserStatus>('/api/browser/start', {
+    method: HTTP_METHOD_POST
+  });
+}
+
+export function stopBrowser(): Promise<BrowserStatus> {
+  return request<BrowserStatus>('/api/browser/stop', {
+    method: HTTP_METHOD_POST
+  });
+}
+
+export function navigateBrowser(url: string): Promise<BrowserStatus> {
+  return request<BrowserStatus>('/api/browser/navigate', {
+    method: HTTP_METHOD_POST,
+    headers: { 'Content-Type': CONTENT_TYPE_JSON },
+    body: JSON.stringify({ url })
   });
 }
 

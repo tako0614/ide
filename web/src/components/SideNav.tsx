@@ -1,7 +1,5 @@
 import clsx from 'clsx';
-
-type AppView = 'workspace' | 'terminal';
-type ThemeMode = 'light' | 'dark';
+import type { AppView, ThemeMode } from '../types';
 
 interface SideNavProps {
   activeView: AppView;
@@ -43,6 +41,17 @@ export function SideNav({
             <path d="M21 4H3a1 1 0 00-1 1v14a1 1 0 001 1h18a1 1 0 001-1V5a1 1 0 00-1-1zM4 18V6h16v12H4z" fill="currentColor"/>
             <path d="M6.5 15.5L10 12 6.5 8.5 8 7l5 5-5 5-1.5-1.5z" fill="currentColor"/>
             <path d="M13 14h5v2h-5z" fill="currentColor"/>
+          </svg>
+        </button>
+        <button
+          type="button"
+          className={clsx('activity-bar-item', activeView === 'browser' && 'active')}
+          onClick={() => onSelect('browser')}
+          aria-label="Browser"
+          title="Browser"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 2a10 10 0 100 20 10 10 0 000-20zm6.93 9h-3.02a15.7 15.7 0 00-1.12-5.03A8.03 8.03 0 0118.93 11zM12 4c.64 0 1.58 1.19 2.03 3.5.2 1.02.33 2.2.37 3.5H9.6c.04-1.3.17-2.48.37-3.5C10.42 5.19 11.36 4 12 4zM4.07 13h3.02c.11 1.9.5 3.64 1.12 5.03A8.03 8.03 0 014.07 13zm3.02-2H4.07a8.03 8.03 0 014.14-5.03A15.7 15.7 0 007.09 11zM12 20c-.64 0-1.58-1.19-2.03-3.5A18.4 18.4 0 019.6 13h4.8a18.4 18.4 0 01-.37 3.5C13.58 18.81 12.64 20 12 20zm3.79-1.97c.62-1.39 1.01-3.13 1.12-5.03h3.02a8.03 8.03 0 01-4.14 5.03z" fill="currentColor"/>
           </svg>
         </button>
       </div>

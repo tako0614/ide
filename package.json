@@ -1,6 +1,6 @@
 {
   "name": "deckide",
-  "version": "3.5.33",
+  "version": "3.5.42",
   "description": "Deck IDE - Browser-based IDE with terminal, file explorer, and git integration",
   "type": "module",
   "bin": {
@@ -22,6 +22,11 @@
   },
   "dependencies": {
     "@hono/node-server": "^1.12.2",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-unicode11": "^0.9.0",
+    "@xterm/addon-web-links": "^0.12.0",
+    "@xterm/addon-webgl": "^0.19.0",
+    "@xterm/xterm": "^5.5.0",
     "hono": "^4.5.10",
     "node-pty": "^1.0.0",
     "simple-git": "^3.27.0",
@@ -39,13 +44,12 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "tailwindcss": "^4.2.1",
-    "tsx": "^4.19.2",
+    "tsx": "^4.22.4",
     "typescript": "^5.6.3",
-    "vite": "^5.2.0",
-    "xterm": "^5.3.0",
-    "xterm-addon-fit": "^0.8.0",
-    "xterm-addon-unicode11": "^0.6.0",
-    "xterm-addon-web-links": "^0.9.0"
+    "vite": "^6.4.3"
+  },
+  "overrides": {
+    "dompurify": "3.4.11"
   },
   "engines": {
     "node": ">=22.5.0"
@@ -62,5 +66,8 @@
     "developer-tools"
   ],
   "author": "tako0614",
-  "license": "MIT"
+  "license": "MIT",
+  "optionalDependencies": {
+    "werift": "^0.23.0"
+  }
 }

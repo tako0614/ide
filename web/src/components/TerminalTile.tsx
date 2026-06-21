@@ -1,23 +1,31 @@
-import { useEffect, useRef } from 'react';
-import { Terminal, type IDisposable } from 'xterm';
-import { FitAddon } from 'xterm-addon-fit';
-import { Unicode11Addon } from 'xterm-addon-unicode11';
-import { WebLinksAddon } from 'xterm-addon-web-links';
-import 'xterm/css/xterm.css';
+import { useEffect, useRef, useState } from 'react';
+import { Terminal, type IDisposable } from '@xterm/xterm';
+import { FitAddon } from '@xterm/addon-fit';
+import { Unicode11Addon } from '@xterm/addon-unicode11';
+import { WebLinksAddon } from '@xterm/addon-web-links';
+import { WebglAddon } from '@xterm/addon-webgl';
+import '@xterm/xterm/css/xterm.css';
 import type { TerminalSession } from '../types';
 import { getWsToken } from '../api';
 import {
   TERMINAL_FONT_FAMILY,
   TERMINAL_FONT_SIZE,
   TERMINAL_BACKGROUND_COLOR,
-  TERMINAL_FOREGROUND_COLOR
+  TERMINAL_FOREGROUND_COLOR,
+  TERMINAL_ANSI_PALETTE,
+  TERMINAL_CURSOR_COLOR,
+  TERMINAL_SELECTION_BACKGROUND
 } from '../constants';
+import { registerTerminalQueryHandlers } from './terminalQueries';
+import { attachTerminalKeymap } from './terminalKeymap';
 
 interface TerminalTileProps {
   session: TerminalSession;
   wsUrl: string;
   onDelete: () => void;
   onExit: () => void;
+  // OSC 0/2 で受け取った動的タイトルを親へ通知（端末セレクタの表示用）。
+  onTitle?: (title: string | null) => void;
 }
 
 const TEXT_CLOSED = '接続が終了しました。';
@@ -32,13 +40,20 @@ const TERMINAL_REMOVED_REASONS = new Set([
 
 type ServerControlMessage =
   | { type: 'sync'; offsetBase: number; reset: boolean }
-  | { type: 'ready' };
+  | { type: 'ready' }
+  // この接続が「主」クライアントか（端末クエリ応答を送るのは主のみ）。
+  | { type: 'primary'; value: boolean };
 
 type ClientControlMessage =
   | { type: 'claim' }
   | { type: 'resize'; cols: number; rows: number };
 
 const textEncoder = new TextEncoder();
+
+// Keep each input frame well under the server's 64KB maxPayload so a large
+// paste is split across frames instead of tripping the 1009 "message too
+// large" close, which would drop the terminal mid-paste.
+const MAX_INPUT_CHUNK = 48 * 1024;
 
 function encodeBinaryInput(data: string): Uint8Array {
   const bytes = new Uint8Array(data.length);
@@ -52,17 +67,33 @@ export function TerminalTile({
   session,
   wsUrl,
   onDelete,
-  onExit
+  onExit,
+  onTitle
 }: TerminalTileProps) {
+  const tileRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const processedOffsetRef = useRef<number>(0);
   const onExitRef = useRef(onExit);
+  const onTitleRef = useRef(onTitle);
+
+  // OSC 0/2 で受け取った動的なウィンドウタイトル。null の間は session.title を表示。
+  const [liveTitle, setLiveTitle] = useState<string | null>(null);
 
   useEffect(() => {
     onExitRef.current = onExit;
   }, [onExit]);
+
+  useEffect(() => {
+    onTitleRef.current = onTitle;
+  }, [onTitle]);
+
+  // セッションが切り替わったら動的タイトルをリセット（effect も再実行される）。
+  useEffect(() => {
+    setLiveTitle(null);
+    onTitleRef.current?.(null);
+  }, [session.id]);
 
   useEffect(() => {
     if (!containerRef.current) {
@@ -72,10 +103,18 @@ export function TerminalTile({
     containerRef.current.innerHTML = '';
     const term = new Terminal({
       cursorBlink: true,
+      // 非アクティブ時はカーソルを枠線表示にして、どのタイルが
+      // フォーカスされているかを視認しやすくする。
+      cursorInactiveStyle: 'outline',
       fontFamily: TERMINAL_FONT_FAMILY,
       fontSize: TERMINAL_FONT_SIZE,
       allowProposedApi: true,
-      scrollback: 3000,
+      // ネイティブターミナル相当のスクロールバックと慣性スクロール感度。
+      scrollback: 10000,
+      scrollSensitivity: 3,
+      fastScrollModifier: 'alt',
+      // macOS で Option/Alt を Meta として送り、readline の単語移動を有効化。
+      macOptionIsMeta: true,
       convertEol: false,
       // Don't use windowsMode with ConPTY - it handles line discipline itself
       windowsMode: false,
@@ -84,7 +123,26 @@ export function TerminalTile({
       rightClickSelectsWord: true,
       theme: {
         background: TERMINAL_BACKGROUND_COLOR,
-        foreground: TERMINAL_FOREGROUND_COLOR
+        foreground: TERMINAL_FOREGROUND_COLOR,
+        cursor: TERMINAL_CURSOR_COLOR,
+        cursorAccent: TERMINAL_BACKGROUND_COLOR,
+        selectionBackground: TERMINAL_SELECTION_BACKGROUND,
+        black: TERMINAL_ANSI_PALETTE[0],
+        red: TERMINAL_ANSI_PALETTE[1],
+        green: TERMINAL_ANSI_PALETTE[2],
+        yellow: TERMINAL_ANSI_PALETTE[3],
+        blue: TERMINAL_ANSI_PALETTE[4],
+        magenta: TERMINAL_ANSI_PALETTE[5],
+        cyan: TERMINAL_ANSI_PALETTE[6],
+        white: TERMINAL_ANSI_PALETTE[7],
+        brightBlack: TERMINAL_ANSI_PALETTE[8],
+        brightRed: TERMINAL_ANSI_PALETTE[9],
+        brightGreen: TERMINAL_ANSI_PALETTE[10],
+        brightYellow: TERMINAL_ANSI_PALETTE[11],
+        brightBlue: TERMINAL_ANSI_PALETTE[12],
+        brightMagenta: TERMINAL_ANSI_PALETTE[13],
+        brightCyan: TERMINAL_ANSI_PALETTE[14],
+        brightWhite: TERMINAL_ANSI_PALETTE[15]
       },
       // CRITICAL: Enable window operations for rich TUI mode
       windowOptions: {
@@ -109,16 +167,100 @@ export function TerminalTile({
     fitAddonRef.current = fitAddon;
     term.open(containerRef.current);
 
+    // WebGL レンダラ。モバイルの端末切替では非アクティブタイルが
+    // display:none でマウントされるため、0 サイズ/非表示の canvas で WebGL を
+    // 初期化すると初回表示時に黒画面になりやすい。そこで「初めて可視になった
+    // タイミング」まで初期化を遅延する（IntersectionObserver）。失敗時は
+    // デフォルトの DOM レンダラにフォールバックし、onContextLoss でも戻す。
+    let webglAddon: WebglAddon | null = null;
+    let webglTried = false;
+
+    const tryLoadWebgl = () => {
+      if (webglTried || cancelled || webglAddon) return;
+      webglTried = true;
+      try {
+        const addon = new WebglAddon();
+        addon.onContextLoss(() => {
+          addon.dispose();
+          if (webglAddon === addon) {
+            webglAddon = null;
+          }
+        });
+        term.loadAddon(addon);
+        webglAddon = addon;
+      } catch (err) {
+        console.warn('[Terminal] WebGL renderer unavailable, falling back to DOM:', err);
+        if (webglAddon) {
+          try {
+            webglAddon.dispose();
+          } catch {
+            // ignore
+          }
+          webglAddon = null;
+        }
+      }
+    };
+
+    // タイルが可視になったら WebGL を初期化し、サイズ追従の fit も走らせる。
+    const visibilityObserver = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.isIntersecting && entry.intersectionRatio > 0) {
+          tryLoadWebgl();
+          // 非表示→表示の遷移で正しいサイズに再フィットさせる。
+          scheduleFit(true);
+        }
+      }
+    });
+    visibilityObserver.observe(containerRef.current);
+
+    // キーボードインターセプト + クリップボード（コピー/ペースト）を設定（#1 / #3）。
+    // 非同期ペースト後の二重実行を防ぐため、cancelled を遅延参照で渡す。
+    attachTerminalKeymap(term, () => cancelled);
+
+    // ウィンドウタイトル（OSC 0/2）。ヘッダ表示を動的タイトルで上書きする（#9）。
+    const titleDisposable = term.onTitleChange((title) => {
+      setLiveTitle(title);
+      onTitleRef.current?.(title);
+    });
+
+    // ビジュアルベル（#10）。ベル受信時にタイル要素へ一瞬クラスを付与して点滅。
+    let bellTimeout: ReturnType<typeof setTimeout> | null = null;
+    const bellDisposable = term.onBell(() => {
+      const tile =
+        tileRef.current ??
+        (containerRef.current?.closest('.terminal-tile') as HTMLElement | null);
+      if (!tile) return;
+      tile.classList.add('bell-flash');
+      if (bellTimeout) {
+        clearTimeout(bellTimeout);
+      }
+      bellTimeout = setTimeout(() => {
+        bellTimeout = null;
+        tile.classList.remove('bell-flash');
+      }, 150);
+    });
+
 
     // Track whether we're replaying buffer (suppress query responses during replay)
     let replayingBuffer = true;
     let replayReady = false;
     let pendingWrites = 0;
+    // この接続が「主」クライアントか。複数クライアントが同じ端末を開いたとき、
+    // 端末クエリ（DSR/DA/DECRQM/OSC など）へ応答するのは主のみにして、
+    // PTY へ重複した応答が二重入力されるのを防ぐ。サーバが primary 制御
+    // メッセージで通知する。単独クライアントは既定で主（true）。
+    let isPrimary = true;
     // Lock out resizes during replay so xterm.js processes the entire buffer
     // at a consistent terminal size.  Without this, async write batching can
     // interleave with ResizeObserver / font-load events, causing part of the
     // content to be rendered at one column width and the rest at another.
     let replayResizeLock = false;
+
+    // Whether finishReplay should snap the viewport to the bottom.  Captured
+    // at sync time from the user's current scroll position so a background
+    // reconnect / delta replay doesn't yank them down while reading scrollback.
+    // Defaults to true so the very first connect lands at the bottom.
+    let shouldScrollAfterReplay = true;
 
     const finishReplay = () => {
       replayingBuffer = false;
@@ -127,13 +269,16 @@ export function TerminalTile({
         // Catch up on any resize that was suppressed during replay
         scheduleFit(true);
       }
-      // Ensure the terminal viewport is scrolled to the latest output
-      // after replay.  term.reset() resets scroll to 0; the catch-up fit
-      // may reflow content.  scrollToBottom puts xterm.js into auto-scroll
-      // mode so subsequent resizes also stay at the bottom.
-      window.requestAnimationFrame(() => {
-        term.scrollToBottom();
-      });
+      // Only scroll to the bottom when the user was already at the bottom
+      // (or the buffer was fully reset).  Otherwise preserve their scroll
+      // position across reconnects.  term.reset() resets scroll to 0; the
+      // catch-up fit may reflow content.  scrollToBottom puts xterm.js into
+      // auto-scroll mode so subsequent resizes also stay at the bottom.
+      if (shouldScrollAfterReplay) {
+        window.requestAnimationFrame(() => {
+          term.scrollToBottom();
+        });
+      }
     };
 
     // Register terminal query handlers to prevent TUI apps from hanging
@@ -146,260 +291,16 @@ export function TerminalTile({
 
     const sendResponse = (response: string) => {
       if (replayingBuffer) return; // Don't respond during buffer replay
+      if (!isPrimary) return; // 主クライアントのみが端末クエリへ応答する
       const socket = socketRef.current;
       if (socket && socket.readyState === WebSocket.OPEN) {
         socket.send(textEncoder.encode(response));
       }
     };
 
-    // DSR (Device Status Report) - CSI n
-    term.parser.registerCsiHandler({ final: 'n' }, (params) => {
-      const param = params.length > 0 ? params[0] as number : 0;
-
-      if (param === 6) {
-        // CPR - Cursor Position Report
-        const buffer = term.buffer.active;
-        const row = buffer.cursorY + buffer.baseY + 1;
-        const col = buffer.cursorX + 1;
-        sendResponse(`\x1b[${row};${col}R`);
-        return true;
-      } else if (param === 5) {
-        // Device Status Report - terminal OK
-        sendResponse('\x1b[0n');
-        return true;
-      }
-      return false;
-    });
-
-    // DA1 (Primary Device Attributes) - CSI c
-    term.parser.registerCsiHandler({ final: 'c' }, (params) => {
-      // Keep the device attributes conservative: no sixel/windowing claims.
-      sendResponse('\x1b[?62;1;6;22c');
-      return true;
-    });
-
-    // DA2 (Secondary Device Attributes) - CSI > c
-    term.parser.registerCsiHandler({ prefix: '>', final: 'c' }, (params) => {
-      // Respond as VT220 (1) with version 5.0.0 (firmware version)
-      sendResponse('\x1b[>1;500;0c');
-      return true;
-    });
-
-    // DECRQM (Request Mode) - CSI ? Ps $ p
-    term.parser.registerCsiHandler({ prefix: '?', final: 'p', intermediates: '$' }, (params) => {
-      const mode = (params[0] as number) || 0;
-      const modes = term.modes;
-
-      // 0 = not recognized, 1 = set, 2 = reset, 3 = permanently set, 4 = permanently reset
-      let response = 0;
-      if (mode === 1) response = modes.applicationCursorKeysMode ? 1 : 2;
-      else if (mode === 25) response = 1;
-      else if (mode === 1000) response = modes.mouseTrackingMode === 'x10' ? 1 : 2;
-      else if (mode === 1002) response = modes.mouseTrackingMode === 'drag' ? 1 : 2;
-      else if (mode === 1003) response = modes.mouseTrackingMode === 'any' ? 1 : 2;
-      else if (mode === 1004) response = modes.sendFocusMode ? 1 : 2;
-      else if (mode === 1006) response = modes.mouseTrackingMode !== 'none' ? 1 : 2;
-      else if (mode === 1049) response = term.buffer.active.type === 'alternate' ? 1 : 2;
-      else if (mode === 2004) response = modes.bracketedPasteMode ? 1 : 2;
-      else if (mode === 2026) response = 2;
-
-      sendResponse(`\x1b[?${mode};${response}$y`);
-      return true;
-    });
-
-    // OSC handlers for color queries
-    // Helper to convert 8-bit color to 16-bit hex format
-    const colorTo16BitHex = (value: number): string => {
-      // Convert 8-bit (0-255) to 16-bit (0-65535) by multiplying by 257
-      const val16 = value * 257;
-      return val16.toString(16).padStart(4, '0');
-    };
-
-    // OSC 10 - Foreground color query
-    term.parser.registerOscHandler(10, (data) => {
-      if (data === '?') {
-        const fgColor = TERMINAL_FOREGROUND_COLOR || '#ffffff';
-        const r = parseInt(fgColor.slice(1, 3), 16);
-        const g = parseInt(fgColor.slice(3, 5), 16);
-        const b = parseInt(fgColor.slice(5, 7), 16);
-        sendResponse(`\x1b]10;rgb:${colorTo16BitHex(r)}/${colorTo16BitHex(g)}/${colorTo16BitHex(b)}\x07`);
-        return true;
-      }
-      return false;
-    });
-
-    // OSC 11 - Background color query (CRITICAL for dark/light mode detection)
-    term.parser.registerOscHandler(11, (data) => {
-      if (data === '?') {
-        const bgColor = TERMINAL_BACKGROUND_COLOR || '#000000';
-        const r = parseInt(bgColor.slice(1, 3), 16);
-        const g = parseInt(bgColor.slice(3, 5), 16);
-        const b = parseInt(bgColor.slice(5, 7), 16);
-        sendResponse(`\x1b]11;rgb:${colorTo16BitHex(r)}/${colorTo16BitHex(g)}/${colorTo16BitHex(b)}\x07`);
-        return true;
-      }
-      return false;
-    });
-
-    // OSC 12 - Cursor color query
-    term.parser.registerOscHandler(12, (data) => {
-      if (data === '?') {
-        sendResponse(`\x1b]12;rgb:ffff/ffff/ffff\x07`);
-        return true;
-      }
-      return false;
-    });
-
-    // OSC 4 - Color palette query (individual ANSI colors)
-    term.parser.registerOscHandler(4, (data) => {
-      const match = data.match(/^(\d+);?\?$/);
-      if (match) {
-        const colorIndex = parseInt(match[1]);
-        // Return basic ANSI colors
-        const ansiColors = [
-          '0000/0000/0000', // 0: black
-          'cdcb/0000/0000', // 1: red
-          '0000/cdcb/0000', // 2: green
-          'cdcb/cdcb/0000', // 3: yellow
-          '1e1e/9090/ffff', // 4: blue
-          'cdcb/0000/cdcb', // 5: magenta
-          '0000/cdcb/cdcb', // 6: cyan
-          'e5e5/e5e5/e5e5', // 7: white
-        ];
-        const color = colorIndex < 8 ? ansiColors[colorIndex] : '0000/0000/0000';
-        sendResponse(`\x1b]4;${colorIndex};rgb:${color}\x07`);
-        return true;
-      }
-      return false;
-    });
-
-    // OSC 52 - Clipboard query (SECURITY: blocked for safety)
-    term.parser.registerOscHandler(52, (data) => {
-      if (data.includes('?')) {
-        // Don't respond to clipboard queries for security
-        return true; // Consume but don't respond
-      }
-      return false;
-    });
-
-    // XTVERSION - Terminal version query (CSI > q or CSI > 0 q)
-    term.parser.registerCsiHandler({ prefix: '>', final: 'q' }, (params) => {
-      sendResponse('\x1bP>|xterm.js(5.0.0)\x1b\\');
-      return true;
-    });
-
-    // CSI u - Kitty keyboard protocol query (CRITICAL for Neovim/Helix)
-    term.parser.registerCsiHandler({ prefix: '?', final: 'u' }, (params) => {
-      // Don't respond = not supported, apps will fall back to modifyOtherKeys
-      return true; // Consume the query
-    });
-
-    // XTQMODKEYS - modifyOtherKeys query (CSI ? 4 m)
-    term.parser.registerCsiHandler({ prefix: '?', final: 'm' }, (params) => {
-      const param = params[0] as number;
-      if (param === 4) {
-        sendResponse('\x1b[>4;0m');
-        return true;
-      }
-      return false;
-    });
-
-    // XTWINOPS - Window operations (CSI Ps t)
-    // Note: CSI 14t, 16t, 18t are handled automatically by xterm.js with windowOptions enabled
-    term.parser.registerCsiHandler({ final: 't' }, (params) => {
-      const operation = params[0] as number;
-
-      // Only handle operations NOT covered by windowOptions
-      if (operation === 19) {
-        // Report screen size (same as window for web terminal)
-        sendResponse(`\x1b[9;${term.rows};${term.cols}t`);
-        return true;
-      } else if (operation === 20) {
-        // Report icon label
-        sendResponse('\x1b]LTerminal\x1b\\');
-        return true;
-      } else if (operation === 21) {
-        // Report window title
-        sendResponse('\x1b]lTerminal\x1b\\');
-        return true;
-      } else if (operation === 14 || operation === 16 || operation === 18) {
-        // These are handled by xterm.js windowOptions
-        return false;
-      }
-      return false;
-    });
-
-    // XTSMGRAPHICS - Sixel capability query (CSI ? Pi ; Pa ; Pv S)
-    term.parser.registerCsiHandler({ prefix: '?', final: 'S' }, (params) => {
-      // Don't respond = not supported
-      return true; // Consume the sequence
-    });
-
-    // DECRQSS - Request Status String (DCS $ q Pt ST)
-    term.parser.registerDcsHandler({ intermediates: '$', final: 'q' }, (data, params) => {
-      if (data === 'm') {
-        // SGR query - report current attributes (normal text)
-        sendResponse('\x1bP1$rm\x1b\\');
-        return true;
-      } else if (data === '"p') {
-        // DECSCL - Conformance level (VT220, 8-bit controls)
-        sendResponse('\x1bP1$r62;1"p\x1b\\');
-        return true;
-      } else if (data === 'r') {
-        // DECSTBM - Scrolling region
-        sendResponse(`\x1bP1$r1;${term.rows}r\x1b\\`);
-        return true;
-      }
-
-      // Report as invalid request for other queries
-      sendResponse('\x1bP0$r\x1b\\');
-      return true;
-    });
-
-    // XTGETTCAP - Termcap/terminfo query (DCS + q <hex> ST)
-    term.parser.registerDcsHandler({ intermediates: '+', final: 'q' }, (data, params) => {
-      // Decode hex-encoded capability names
-      try {
-        const hexPairs = data.match(/.{2}/g) || [];
-        const capName = hexPairs.map(h => String.fromCharCode(parseInt(h, 16))).join('');
-
-        // Respond to important capabilities
-        const capabilities: Record<string, string> = {
-          'TN': 'xterm-256color', // Terminal name
-          'Co': '256', // Colors
-          'RGB': '', // RGB/truecolor support (empty value = supported)
-          'Tc': '', // Truecolor (tmux convention)
-          'colors': '256',
-          'setrgbf': '\x1b[38;2;%p1%d;%p2%d;%p3%dm', // Set RGB foreground
-          'setrgbb': '\x1b[48;2;%p1%d;%p2%d;%p3%dm', // Set RGB background
-        };
-
-        if (capName in capabilities) {
-          const value = capabilities[capName];
-          const hexValue = value.split('').map(c => c.charCodeAt(0).toString(16).padStart(2, '0')).join('');
-          sendResponse(`\x1bP1+r${hexValue}\x1b\\`);
-          return true;
-        }
-      } catch (e) {
-        console.error('[XTGETTCAP] Failed to decode:', e);
-      }
-
-      // Report as not available for unknown capabilities
-      sendResponse('\x1bP0+r\x1b\\');
-      return true;
-    });
-
-    // REP - Repeat character (CSI Ps b) - SECURITY: Clamp to prevent DoS
-    term.parser.registerCsiHandler({ final: 'b' }, (params) => {
-      const repeatCount = (params[0] as number) || 1;
-      if (repeatCount > 65535) {
-        console.warn(`[REP] Large repeat count ${repeatCount} clamped to 65535 for security`);
-        // Don't execute, just consume
-        return true;
-      }
-      // Let xterm.js handle normal REP
-      return false;
-    });
+    // 端末問い合わせ（DSR/DA/DECRQM/OSC/DCS など）への応答ハンドラを登録する。
+    // 応答送出は sendResponse 経由（リプレイ中の抑制・主クライアント判定込み）。
+    registerTerminalQueryHandlers(term, sendResponse);
 
     // Track the last measured container size as well as the last PTY size so
     // repeated redraws from TUI apps don't feed a fit/resize loop.
@@ -441,6 +342,22 @@ export function TerminalTile({
 
     const claimTerminalControl = () => {
       sendControlMessage({ type: 'claim' });
+    };
+
+    // Send terminal input, splitting oversized payloads (e.g. a multi-megabyte
+    // paste) into chunks the server will accept.  The PTY reassembles the byte
+    // stream, so splitting mid-character is harmless.
+    const sendInput = (bytes: Uint8Array) => {
+      const socket = socketRef.current;
+      if (!socket || socket.readyState !== WebSocket.OPEN) return;
+      if (bytes.byteLength <= MAX_INPUT_CHUNK) {
+        socket.send(bytes);
+        return;
+      }
+      for (let offset = 0; offset < bytes.byteLength; offset += MAX_INPUT_CHUNK) {
+        const end = Math.min(offset + MAX_INPUT_CHUNK, bytes.byteLength);
+        socket.send(bytes.subarray(offset, end));
+      }
     };
 
     const runFit = (force = false) => {
@@ -528,20 +445,6 @@ export function TerminalTile({
     let reconnectAttempts = 0;
     let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
     let isIntentionalClose = false;
-    let hasConnectedOnce = false;
-
-    const parentPane = containerRef.current.closest('.terminal-pane');
-
-    const setPaneTerminalFocus = (focused: boolean) => {
-      if (!(parentPane instanceof HTMLElement)) {
-        return;
-      }
-      if (focused) {
-        parentPane.dataset.terminalFocus = 'true';
-      } else {
-        delete parentPane.dataset.terminalFocus;
-      }
-    };
 
     const focusTerminalWithoutScroll = () => {
       const helper = containerRef.current?.querySelector('.xterm-helper-textarea');
@@ -563,38 +466,19 @@ export function TerminalTile({
 
     const handleFocusIn = () => {
       if (!cancelled) {
-        setPaneTerminalFocus(true);
         focusTerminalWithoutScroll();
       }
-    };
-
-    const handleFocusOut = () => {
-      window.setTimeout(() => {
-        if (cancelled) {
-          return;
-        }
-        // Check if focus moved to another terminal within the same pane.
-        // Without this, switching between terminals in the same pane
-        // briefly removes data-terminal-focus, toggling overflow-y on
-        // mobile and resetting the grid scroll position.
-        if (parentPane && parentPane.contains(document.activeElement)) {
-          return;
-        }
-        setPaneTerminalFocus(false);
-      }, 0);
     };
 
     containerRef.current.addEventListener('pointerdown', handlePointerFocus, { passive: true, capture: true });
     containerRef.current.addEventListener('mousedown', handlePointerFocus, { passive: true, capture: true });
     containerRef.current.addEventListener('touchstart', handlePointerFocus, { passive: true, capture: true });
     containerRef.current.addEventListener('focusin', handleFocusIn, true);
-    containerRef.current.addEventListener('focusout', handleFocusOut, true);
     pointerFocusCleanup = () => {
       containerRef.current?.removeEventListener('pointerdown', handlePointerFocus, true);
       containerRef.current?.removeEventListener('mousedown', handlePointerFocus, true);
       containerRef.current?.removeEventListener('touchstart', handlePointerFocus, true);
       containerRef.current?.removeEventListener('focusin', handleFocusIn, true);
-      containerRef.current?.removeEventListener('focusout', handleFocusOut, true);
     };
 
     // Fetch WebSocket token and connect
@@ -627,7 +511,6 @@ export function TerminalTile({
 
         socket.addEventListener('open', () => {
           reconnectAttempts = 0;
-          hasConnectedOnce = true;
           // Force send on connect (server needs initial size)
           lastMeasuredWidth = 0;
           lastMeasuredHeight = 0;
@@ -637,6 +520,11 @@ export function TerminalTile({
           lastRows = -1;
           lastViewportScale = window.visualViewport?.scale ?? 1;
           scheduleFit();
+          // 接続時にこの端末がフォーカス中なら制御権を主張する。再接続では
+          // focus イベントが再発火しないため、ここで明示的に claim しておく。
+          if (term.textarea && document.activeElement === term.textarea) {
+            claimTerminalControl();
+          }
         });
         socket.addEventListener('message', (event) => {
           if (typeof event.data === 'string') {
@@ -649,6 +537,11 @@ export function TerminalTile({
               return;
             }
             if (message?.type === 'sync') {
+              // Record whether the user is pinned to the bottom *before* we
+              // reset/replay, so finishReplay can preserve their position.
+              // A full reset always re-renders fresh content, so snap to bottom.
+              const active = term.buffer.active;
+              shouldScrollAfterReplay = message.reset || active.viewportY >= active.baseY;
               replayingBuffer = true;
               replayReady = false;
               pendingWrites = 0;
@@ -676,6 +569,10 @@ export function TerminalTile({
               if (pendingWrites === 0) {
                 finishReplay();
               }
+              return;
+            }
+            if (message?.type === 'primary') {
+              isPrimary = message.value;
               return;
             }
             // Unknown control message type — ignore
@@ -715,6 +612,11 @@ export function TerminalTile({
           if (cancelled || isIntentionalClose) {
             return;
           }
+          // 既に新しいソケットへ差し替わっている場合、この古いソケットの
+          // close では再接続しない（二重コネクションを防ぐ）。
+          if (socketRef.current !== socket) {
+            return;
+          }
 
           if (event.code === 1000) {
             if (TERMINAL_REMOVED_REASONS.has(event.reason)) {
@@ -745,8 +647,7 @@ export function TerminalTile({
           // keyboard input by the PTY.
           if (replayingBuffer) return;
           if (socket && socket.readyState === WebSocket.OPEN) {
-            claimTerminalControl();
-            socket.send(textEncoder.encode(data));
+            sendInput(textEncoder.encode(data));
           }
         });
 
@@ -756,8 +657,7 @@ export function TerminalTile({
         binaryDisposable = term.onBinary((data) => {
           if (replayingBuffer) return;
           if (socket && socket.readyState === WebSocket.OPEN) {
-            claimTerminalControl();
-            socket.send(encodeBinaryInput(data));
+            sendInput(encodeBinaryInput(data));
           }
         });
 
@@ -768,7 +668,9 @@ export function TerminalTile({
         }
       } catch (err) {
         console.error('[Terminal] Failed to connect:', err);
-        if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS && hasConnectedOnce) {
+        // Retry even on the very first attempt — the server may simply not be
+        // up yet when the page is opened right after a restart.
+        if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
           reconnectAttempts++;
           const delay = RECONNECT_BASE_DELAY_MS * Math.pow(2, reconnectAttempts - 1);
           reconnectTimeout = setTimeout(() => connect(true), delay);
@@ -780,9 +682,45 @@ export function TerminalTile({
 
     connect();
 
+    // When the device wakes from sleep / the tab is refocused / the network
+    // comes back, the socket may be closed and the backoff may have already
+    // given up.  Force an immediate reconnect instead of leaving a dead
+    // terminal showing "接続が終了しました。".
+    const forceReconnect = () => {
+      if (cancelled || isIntentionalClose) return;
+      const current = socketRef.current;
+      // 既に接続済み / 接続中なら何もしない。
+      if (current && (current.readyState === WebSocket.OPEN || current.readyState === WebSocket.CONNECTING)) {
+        return;
+      }
+      // 復帰時は必ず再試行できるようバックオフをリセット。
+      reconnectAttempts = 0;
+      // まだ閉じ切っていない（CLOSING）場合は、このソケット自身の close
+      // ハンドラが（リセット済みの回数で）再接続する。ここで新しいソケットを
+      // 張ると二重コネクションになるため待つ。
+      if (current && current.readyState === WebSocket.CLOSING) {
+        return;
+      }
+      if (reconnectTimeout) {
+        clearTimeout(reconnectTimeout);
+        reconnectTimeout = null;
+      }
+      connect(true);
+    };
+    const handleOnline = () => forceReconnect();
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        forceReconnect();
+      }
+    };
+    window.addEventListener('online', handleOnline);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
     return () => {
       cancelled = true;
       isIntentionalClose = true;
+      window.removeEventListener('online', handleOnline);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       if (reconnectTimeout) {
         clearTimeout(reconnectTimeout);
       }
@@ -790,6 +728,7 @@ export function TerminalTile({
         cancelAnimationFrame(fitFrame);
       }
       resizeObserver.disconnect();
+      visibilityObserver.disconnect();
       fontSet?.removeEventListener?.('loadingdone', handleFontsReady);
       if (dataDisposable) {
         dataDisposable.dispose();
@@ -803,21 +742,34 @@ export function TerminalTile({
       if (pointerFocusCleanup) {
         pointerFocusCleanup();
       }
-      setPaneTerminalFocus(false);
+      titleDisposable.dispose();
+      bellDisposable.dispose();
+      if (bellTimeout) {
+        clearTimeout(bellTimeout);
+        bellTimeout = null;
+      }
       if (socket) {
         socket.close();
       }
       socketRef.current = null;
 
+      if (webglAddon) {
+        try {
+          webglAddon.dispose();
+        } catch {
+          // ignore
+        }
+        webglAddon = null;
+      }
       fitAddonRef.current = null;
       term.dispose();
     };
   }, [session.id, wsUrl]);
 
   return (
-    <div className="terminal-tile">
+    <div className="terminal-tile" ref={tileRef}>
       <div className="terminal-tile-header">
-        <span>{session.title}</span>
+        <span>{liveTitle || session.title}</span>
         <button
           type="button"
           className="terminal-close-btn"

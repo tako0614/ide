@@ -41,7 +41,16 @@ export const useDecks = ({
           listTerminals(deck.id)
             .then((sessions) => {
               if (!alive) return;
-              updateDeckState(deck.id, (state) => ({ ...state, terminals: sessions }));
+              updateDeckState(deck.id, (state) => ({
+                ...state,
+                terminals: sessions,
+                // 既存の選択を尊重しつつ、未設定なら先頭端末をアクティブに。
+                activeTerminalId:
+                  state.activeTerminalId &&
+                  sessions.some((s) => s.id === state.activeTerminalId)
+                    ? state.activeTerminalId
+                    : sessions[0]?.id ?? null
+              }));
             })
             .catch(() => undefined); // silent — deck just shows empty until retry
         });
@@ -125,7 +134,9 @@ export const useDecks = ({
         const session = await apiCreateTerminal(deckId, customTitle, command);
         updateDeckState(deckId, (state) => ({
           ...state,
-          terminals: [...state.terminals, { id: session.id, title: session.title }]
+          terminals: [...state.terminals, { id: session.id, title: session.title }],
+          // 新規端末は作成と同時にアクティブにする（新しいタブを開く挙動）。
+          activeTerminalId: session.id
         }));
       } catch (error: unknown) {
         setStatusMessage(
@@ -140,10 +151,15 @@ export const useDecks = ({
     async (deckId: string, terminalId: string) => {
       try {
         await apiDeleteTerminal(terminalId);
-        updateDeckState(deckId, (state) => ({
-          ...state,
-          terminals: state.terminals.filter((t) => t.id !== terminalId)
-        }));
+        updateDeckState(deckId, (state) => {
+          const terminals = state.terminals.filter((t) => t.id !== terminalId);
+          // 削除したのがアクティブ端末なら、残りの末尾（最新）にフォールバック。
+          const activeTerminalId =
+            state.activeTerminalId === terminalId
+              ? terminals[terminals.length - 1]?.id ?? null
+              : state.activeTerminalId;
+          return { ...state, terminals, activeTerminalId };
+        });
       } catch (error: unknown) {
         setStatusMessage(
           `ターミナルを削除できませんでした: ${getErrorMessage(error)}`
@@ -155,10 +171,14 @@ export const useDecks = ({
 
   const handleRemoveTerminalLocal = useCallback(
     (deckId: string, terminalId: string) => {
-      updateDeckState(deckId, (state) => ({
-        ...state,
-        terminals: state.terminals.filter((t) => t.id !== terminalId)
-      }));
+      updateDeckState(deckId, (state) => {
+        const terminals = state.terminals.filter((t) => t.id !== terminalId);
+        const activeTerminalId =
+          state.activeTerminalId === terminalId
+            ? terminals[terminals.length - 1]?.id ?? null
+            : state.activeTerminalId;
+        return { ...state, terminals, activeTerminalId };
+      });
     },
     [updateDeckState]
   );

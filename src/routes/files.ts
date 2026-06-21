@@ -206,6 +206,92 @@ export function createFileRouter(workspaces: Map<string, Workspace>) {
     }
   });
 
+  // Move / rename a file or directory within the workspace (Drive UI).
+  router.post('/move', async (c) => {
+    try {
+      const body = await readJson<{
+        workspaceId?: string;
+        from?: string;
+        to?: string;
+        overwrite?: boolean;
+      }>(c);
+      const workspaceId = body?.workspaceId;
+      if (!workspaceId) {
+        throw createHttpError('workspaceId is required', 400);
+      }
+      if (!body?.from || !body?.to) {
+        throw createHttpError('from and to are required', 400);
+      }
+      const workspace = requireWorkspace(workspaces, workspaceId);
+      const fromPath = await resolveSafePath(workspace.path, body.from);
+      const toPath = await resolveSafePath(workspace.path, body.to);
+
+      // Source must exist (throws ENOENT otherwise).
+      await fs.stat(fromPath);
+
+      // No-clobber unless the caller explicitly opts in.
+      if (!body.overwrite) {
+        try {
+          await fs.access(toPath);
+          throw createHttpError('Destination already exists', 409);
+        } catch (err: unknown) {
+          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+            throw err;
+          }
+        }
+      }
+
+      await fs.mkdir(path.dirname(toPath), { recursive: true });
+      await fs.rename(fromPath, toPath);
+      return c.json({ from: body.from, to: body.to, moved: true });
+    } catch (error) {
+      return handleError(c, error);
+    }
+  });
+
+  // Upload one or more files into a workspace directory (multipart form). The
+  // form field `file` may repeat. Filenames are reduced to their basename so an
+  // upload can never escape the target directory.
+  router.post('/upload', async (c) => {
+    try {
+      const form = await c.req.parseBody({ all: true });
+      const workspaceId = typeof form.workspaceId === 'string' ? form.workspaceId : undefined;
+      if (!workspaceId) {
+        throw createHttpError('workspaceId is required', 400);
+      }
+      const dir = typeof form.path === 'string' ? form.path : '';
+      const workspace = requireWorkspace(workspaces, workspaceId);
+
+      const field = form.file;
+      const files = (Array.isArray(field) ? field : [field]).filter(
+        (item): item is File => item instanceof File
+      );
+      if (files.length === 0) {
+        throw createHttpError('no files provided', 400);
+      }
+
+      const uploaded: string[] = [];
+      for (const file of files) {
+        if (file.size > MAX_FILE_SIZE) {
+          throw createHttpError(
+            `File too large: ${file.name} (${Math.round(file.size / 1024 / 1024)}MB). Maximum is ${Math.round(MAX_FILE_SIZE / 1024 / 1024)}MB.`,
+            413
+          );
+        }
+        const safeName = path.basename(file.name);
+        const rel = dir ? `${dir}/${safeName}` : safeName;
+        const target = await resolveSafePath(workspace.path, rel);
+        await fs.mkdir(path.dirname(target), { recursive: true });
+        const buffer = Buffer.from(await file.arrayBuffer());
+        await fs.writeFile(target, buffer);
+        uploaded.push(rel);
+      }
+      return c.json({ uploaded });
+    } catch (error) {
+      return handleError(c, error);
+    }
+  });
+
   // Delete directory
   router.delete('/dir', async (c) => {
     try {
