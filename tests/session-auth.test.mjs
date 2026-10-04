@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import WebSocket from 'ws';
 import { hashPassword } from '../dist/auth/password.js';
+import { TmuxTerminalAdapter } from '../dist/terminal/tmuxAdapter.js';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 async function freePort() {
@@ -23,6 +24,7 @@ async function startServer(settings, { ttlMs } = {}) {
   const port = await freePort();
   await writeFile(path.join(dir, 'settings.json'), JSON.stringify({ ...settings, port }));
   const env = { ...process.env, DECKIDE_DATA_DIR: dir, PORT: String(port), HOST: '127.0.0.1',
+    DECKIDE_TMUX_RUNTIME_DIR: path.join(dir, 'tm'),
     AGENT_BROWSER_AUTOSTART: 'false', AGENT_BROWSER_REAP_MCP: 'false',
     ...(ttlMs ? { NODE_ENV: 'test', DECKIDE_TEST_SESSION_TTL_MS: String(ttlMs) } : {}) };
   delete env.DECKIDE_AUTH_USER;
@@ -55,6 +57,10 @@ async function stopServer(fixture) {
     new Promise((resolve) => fixture.child.once('exit', resolve)),
     new Promise((resolve) => setTimeout(() => { fixture.child.kill('SIGKILL'); resolve(); }, 2000)),
   ]);
+  // HTTP shutdown now preserves tmux shells. Explicitly close only this
+  // fixture's new sessions before removing its temporary runtime.
+  const adapter = new TmuxTerminalAdapter({ runtimeDir: path.join(fixture.dir, 'tm') });
+  for (const meta of adapter.list()) adapter.close(meta);
   await rm(fixture.dir, { recursive: true, force: true });
 }
 function request(fixture, url, { method = 'GET', cookie, body, origin = true, csrf = true, authorization } = {}) {

@@ -349,7 +349,7 @@ export function createTerminal(
   return request<{ id: string; title: string }>('/api/terminals', {
     method: HTTP_METHOD_POST,
     headers: { 'Content-Type': CONTENT_TYPE_JSON },
-    body: JSON.stringify({ deckId, title, command })
+    body: JSON.stringify({ deckId, title, command, cols: 120, rows: 32 })
   });
 }
 

@@ -1,10 +1,11 @@
 import crypto from 'node:crypto';
 import { Hono } from 'hono';
-import { spawn } from 'node-pty';
-import type { IPty } from 'node-pty';
+import path from 'node:path';
+import { TerminalSnapshot } from '../terminal/snapshot.js';
+import { TmuxTerminalAdapter, type TmuxTerminalMeta } from '../terminal/tmuxAdapter.js';
 import type { WebSocket } from 'ws';
 import type { Deck, TerminalSession } from '../types.js';
-import { TERMINAL_BUFFER_LIMIT } from '../config.js';
+import { TERMINAL_BUFFER_LIMIT, dataDir } from '../config.js';
 import { createHttpError, handleError, readJson } from '../utils/error.js';
 import { getDefaultShell, getAvailableLocales, getShellBasename } from '../utils/shell.js';
 import { alignToUtf8Start, skipPartialEscapeSequence } from '../utils/utf8.js';
@@ -80,17 +81,57 @@ function pickFallbackUtf8Locale(inheritedLang: string | undefined): string | nul
   return utf8Locales[0];
 }
 
-// PTY flow-control thresholds (per terminal session).
-const FLOW_HIGH_WATER = 512 * 1024;   // pause the PTY above this backlog
-const FLOW_LOW_WATER = 64 * 1024;     // resume once drained below this
-const FLOW_CHECK_INTERVAL_MS = 100;   // how often to poll for drain while paused
-const FLOW_MAX_PAUSE_MS = 10_000;     // evict a stuck consumer after this long
-
 export function createTerminalRouter(
   decks: Map<string, Deck>,
   terminals: Map<string, TerminalSession>
 ) {
   const router = new Hono();
+  const backend = new TmuxTerminalAdapter({ runtimeDir: process.env.DECKIDE_TMUX_RUNTIME_DIR || path.resolve(dataDir, 'terminal-tmux') });
+  const restoring = new Map<string, Promise<void>>();
+
+  async function restoreSession(meta: TmuxTerminalMeta): Promise<void> {
+    if (terminals.get(meta.id)?.available) return;
+    const pending = restoring.get(meta.id);
+    if (pending) return pending;
+    const deck = decks.get(meta.deckId);
+    if (!deck) return; // Never close an unrecognized session during discovery.
+    const task = createTerminalSession(deck, meta.title, undefined, meta.cols, meta.rows, meta).then(() => undefined);
+    restoring.set(meta.id, task);
+    try { await task; } finally { restoring.delete(meta.id); }
+  }
+
+  async function restoreSessions(): Promise<void> {
+    const unavailable = new Set<string>();
+    const verifiedExited = new Set<string>();
+    const records = backend.list((id) => {
+      unavailable.add(id);
+      const session = terminals.get(id);
+      if (session?.available) {
+        session.detach();
+        for (const socket of session.sockets) {
+          try { socket.close(1013, 'Terminal identity unavailable'); } catch { /* closed */ }
+        }
+      }
+      console.warn(`[TERMINAL] ${id} unavailable; registry retained`);
+    }, (id) => verifiedExited.add(id));
+    const liveIds = new Set(records.map((meta) => meta.id));
+    for (const session of terminals.values()) {
+      if (!liveIds.has(session.id) && !unavailable.has(session.id)) {
+        session.detach();
+        if (verifiedExited.has(session.id)) handleTerminalExit(session.id);
+        else {
+          for (const socket of session.sockets) {
+            try { socket.close(1013, 'Terminal registry unavailable'); } catch { /* closed */ }
+          }
+          console.warn(`[TERMINAL] ${session.id} registry unavailable; shell state unknown`);
+        }
+      }
+    }
+    for (const meta of records) {
+      try { await restoreSession(meta); }
+      catch { console.warn(`[TERMINAL] ${meta.id} display unavailable; shell retained`); }
+    }
+  }
 
   function toBuffer(data: Buffer | string): Buffer {
     return Buffer.isBuffer(data) ? data : Buffer.from(data, 'utf8');
@@ -214,9 +255,6 @@ export function createTerminalRouter(
         deadSockets.add(socket);
       }
     });
-    // resizeOwner（主クライアント）の付け替え・昇格は WebSocket の close
-    // ハンドラに一元化する。ここで resizeOwner を null にすると、主ソケットが
-    // 切断されたときの「残りクライアントへの昇格」が動かなくなるため触らない。
     deadSockets.forEach((s) => {
       session.sockets.delete(s);
     });
@@ -233,17 +271,17 @@ export function createTerminalRouter(
       try { socket.close(1000, 'Terminal exited'); } catch { /* ignore */ }
     });
     session.sockets.clear();
-    session.resizeOwner = null;
   }
 
-  function createTerminalSession(
+  async function createTerminalSession(
     deck: Deck,
     title?: string,
     command?: string,
     cols: number = DEFAULT_TERMINAL_COLS,
-    rows: number = DEFAULT_TERMINAL_ROWS
-  ): TerminalSession {
-    const id = crypto.randomUUID();
+    rows: number = DEFAULT_TERMINAL_ROWS,
+    restored?: TmuxTerminalMeta
+  ): Promise<TerminalSession> {
+    const id = restored?.id || crypto.randomUUID();
 
     // Resolve shell and arguments
     let shell: string;
@@ -303,21 +341,20 @@ export function createTerminalRouter(
       }
     }
 
-    // Spawn PTY directly in this process
-    const isWindows = process.platform === 'win32';
-    const term: IPty = spawn(shell, shellArgs, {
-      cwd: deck.root,
-      cols,
-      rows,
-      env,
-      encoding: null,
-      ...(isWindows ? { useConpty: true } : {}),
-    } as any);
+    const resolvedTitle = restored?.title || getUniqueTerminalTitle(deck.id, title);
+    const createdAt = restored?.createdAt || new Date().toISOString();
+    const term = restored ? await backend.attach(restored) : await backend.create({
+      id, deckId: deck.id, title: resolvedTitle, command: command || null,
+      createdAt, shell, args: shellArgs, cwd: deck.root, cols, rows, env,
+    });
+    cols = term.meta.cols;
+    rows = term.meta.rows;
+    console.log(`[TERMINAL] ${restored ? 'Attached' : 'Created'} terminal ${id}: pid=${term.pid}`);
 
-    console.log(`[TERMINAL] Created terminal ${id}: shell=${shell}, cwd=${deck.root}, pid=${term.pid}`);
-
-    const resolvedTitle = getUniqueTerminalTitle(deck.id, title);
-    const createdAt = new Date().toISOString();
+    const screen = new TerminalSnapshot({ cols, rows, onResponse: (response) => {
+      try { term.write(response); } catch { /* Display disconnected; never retry a response. */ }
+    }, onFailure: () => disconnectBridge() });
+    let queuedScreenBytes = 0;
 
     const session: TerminalSession = {
       id,
@@ -325,116 +362,87 @@ export function createTerminalRouter(
       title: resolvedTitle,
       command: command || null,
       createdAt,
+      cols, rows, pid: term.pid, tmux: term.meta,
+      available: true, bufferEpoch: crypto.randomUUID(),
+      snapshot: () => screen.capture(),
       sockets: new Set(),
-      resizeOwner: null,
       bufferChunks: [],
       bufferLength: 0,
       bufferBase: 0,
       lastActive: Date.now(),
       write: (data) => {
-        const payload = Buffer.isBuffer(data) ? data : Buffer.from(data);
-        try { term.write(payload); } catch { /* terminal may be dying */ }
+        if (!session.available) throw createHttpError('Terminal transport unavailable; input was not retried', 503);
+        term.write(Buffer.isBuffer(data) ? data : Buffer.from(data));
       },
-      resize: (cols, rows) => { try { term.resize(cols, rows); } catch { /* terminal may be dying */ } },
-      kill: () => { try { term.kill(); } catch { /* already dead */ } },
-    };
-
-    // ── Flow control ────────────────────────────────────────────────────
-    // Instead of closing a slow client when its send buffer fills (which then
-    // reconnects and re-replays, looking like the terminal "freezes" or jumps
-    // during heavy output), pause the PTY when the slowest consumer falls
-    // behind and resume once it drains.  A stuck consumer is evicted after a
-    // grace period so it can't deadlock the terminal for everyone else.
-    let ptyPaused = false;
-    let resumeTimer: ReturnType<typeof setInterval> | null = null;
-    let pausedAt = 0;
-
-    const maxBufferedAmount = (): number => {
-      let max = 0;
-      session.sockets.forEach((socket) => {
-        if (socket.readyState === 1 && socket.bufferedAmount > max) {
-          max = socket.bufferedAmount;
-        }
-      });
-      return max;
-    };
-
-    const evictLaggards = (threshold: number): void => {
-      session.sockets.forEach((socket) => {
-        if (socket.readyState === 1 && socket.bufferedAmount > threshold) {
-          // close() で readyState は即 CLOSING になり、maxBufferedAmount の
-          // 集計（OPEN のみ）から外れる。socket の削除と resizeOwner の昇格は
-          // WebSocket の close ハンドラに任せる（主クライアント昇格のため）。
-          try { socket.close(1009, 'Terminal output overflow'); } catch { /* ignore */ }
-        }
-      });
-    };
-
-    const resumePty = (): void => {
-      if (resumeTimer) {
-        clearInterval(resumeTimer);
-        resumeTimer = null;
-      }
-      if (!ptyPaused) return;
-      ptyPaused = false;
-      try { term.resume(); } catch { /* terminal may be dying */ }
-    };
-
-    const pausePty = (): void => {
-      if (ptyPaused) return;
-      ptyPaused = true;
-      pausedAt = Date.now();
-      try { term.pause(); } catch { /* terminal may be dying */ }
-      resumeTimer = setInterval(() => {
-        if (maxBufferedAmount() < FLOW_LOW_WATER) {
-          resumePty();
-          return;
-        }
-        if (Date.now() - pausedAt > FLOW_MAX_PAUSE_MS) {
-          // A consumer is stuck — drop it rather than freeze everyone.
-          evictLaggards(FLOW_LOW_WATER);
-          if (maxBufferedAmount() < FLOW_LOW_WATER) {
-            resumePty();
-          } else {
-            pausedAt = Date.now();
+      resize: (nextCols, nextRows) => {
+        if (!session.available) throw createHttpError('Terminal transport unavailable', 503);
+        term.resize(nextCols, nextRows);
+        screen.resize(nextCols, nextRows, () => {
+          if (!session.available) return;
+          for (const socket of session.sockets) {
+            if (socket.readyState === 1) socket.send(JSON.stringify({ type: 'size', cols: nextCols, rows: nextRows }));
           }
-        }
-      }, FLOW_CHECK_INTERVAL_MS);
-      resumeTimer.unref?.();
+        });
+        session.cols = nextCols;
+        session.rows = nextRows;
+        session.tmux = term.meta;
+      },
+      kill: async () => { await term.close(); await screen.dispose(); },
+      detach: () => { session.available = false; term.detach(); screen.dispose(); },
     };
 
-    // Wire up PTY output → buffer + WebSocket broadcast
-    (term as unknown as { on(eventName: 'data', listener: (data: Buffer | string) => void): void }).on('data', (data) => {
-      appendToTerminalBuffer(session, data);
-      session.lastActive = Date.now();
-      broadcastToSockets(session, data);
-      if (!ptyPaused && maxBufferedAmount() > FLOW_HIGH_WATER) {
-        pausePty();
+    // Slow viewers are bounded individually by broadcastToSockets. A display
+    // projection backlog reconnects our client without interrupting the shell.
+    const disconnectBridge = () => {
+      if (terminals.get(id) !== session || !session.available) return;
+      session.available = false;
+      term.detach();
+      screen.dispose();
+      for (const socket of session.sockets) {
+        try { socket.close(1013, 'Terminal transport disconnected'); } catch { /* closed */ }
       }
+      void restoreSession(term.meta).catch(() => undefined);
+    };
+
+    // Project only live tmux display output. Snapshot serialization never writes to tmux.
+    term.on('data', (data) => {
+      if (!session.available) return;
+      const chunk = toBuffer(data);
+      queuedScreenBytes += chunk.length;
+      if (queuedScreenBytes > 4 * 1024 * 1024) { disconnectBridge(); return; }
+      screen.write(chunk, () => {
+        queuedScreenBytes -= chunk.length;
+        if (!session.available) return;
+        appendToTerminalBuffer(session, chunk);
+        session.lastActive = Date.now();
+        broadcastToSockets(session, chunk);
+      });
     });
 
     term.onExit(() => {
-      resumePty();
-      handleTerminalExit(id);
+      if (terminals.get(id) === session) handleTerminalExit(id);
+      screen.dispose();
     });
+    term.on('disconnect', disconnectBridge);
 
     terminals.set(id, session);
 
     return session;
   }
 
-  router.get('/', (c) => {
+  router.get('/', async (c) => {
     const deckId = c.req.query('deckId');
     if (!deckId) {
       return c.json({ error: 'deckId is required' }, 400);
     }
-    const sessions: Array<{ id: string; title: string; createdAt: string }> = [];
+    try { await restoreSessions(); } catch (error) { return handleError(c, error); }
+    const sessions: Array<Record<string, unknown>> = [];
     terminals.forEach((session) => {
       if (session.deckId === deckId) {
-        sessions.push({ id: session.id, title: session.title, createdAt: session.createdAt });
+        sessions.push({ id: session.id, title: session.title, createdAt: session.createdAt, cols: session.cols, rows: session.rows, pid: session.pid, tmux: session.tmux, available: session.available });
       }
     });
-    sessions.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    sessions.sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
     return c.json(sessions);
   });
 
@@ -453,8 +461,8 @@ export function createTerminalRouter(
       if (!deck) throw createHttpError('Deck not found', 404);
       const cols = normalizeTerminalSize(body?.cols, DEFAULT_TERMINAL_COLS);
       const rows = normalizeTerminalSize(body?.rows, DEFAULT_TERMINAL_ROWS);
-      const session = createTerminalSession(deck, body?.title, body?.command, cols, rows);
-      return c.json({ id: session.id, title: session.title }, 201);
+      const session = await createTerminalSession(deck, body?.title, body?.command, cols, rows);
+      return c.json({ id: session.id, title: session.title, cols: session.cols, rows: session.rows, pid: session.pid, tmux: session.tmux }, 201);
     } catch (error) {
       return handleError(c, error);
     }
@@ -466,15 +474,13 @@ export function createTerminalRouter(
       const session = terminals.get(terminalId);
       if (!session) throw createHttpError('Terminal not found', 404);
 
+      await session.kill();
       terminals.delete(terminalId);
 
       session.sockets.forEach((socket) => {
         try { socket.close(1000, 'Terminal deleted'); } catch { /* ignore */ }
       });
       session.sockets.clear();
-      session.resizeOwner = null;
-
-      session.kill();
 
       return c.body(null, 204);
     } catch (error) {
@@ -482,5 +488,18 @@ export function createTerminalRouter(
     }
   });
 
-  return router;
+  router.put('/:id/size', async (c) => {
+    try {
+      const session = terminals.get(c.req.param('id'));
+      if (!session) throw createHttpError('Terminal not found', 404);
+      const body = await readJson<{ cols?: number; rows?: number }>(c);
+      if (![body?.cols, body?.rows].every((value) => Number.isInteger(value) && value! >= 1 && value! <= 500)) {
+        throw createHttpError('cols and rows must be integers from 1 to 500', 400);
+      }
+      session.resize(body.cols!, body.rows!);
+      return c.json({ id: session.id, cols: session.cols, rows: session.rows });
+    } catch (error) { return handleError(c, error); }
+  });
+
+  return Object.assign(router, { restoreSessions });
 }

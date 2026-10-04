@@ -1,0 +1,10 @@
+[Unit]
+Wants=deckide-tmux-broker.service
+After=deckide-tmux-broker.service
+
+[Service]
+Environment=DECKIDE_TMUX_RUNTIME_DIR=/var/lib/deckide-tmux/terminal-tmux
+Environment=DECKIDE_TMUX_BROKER_SOCKET=/run/deckide-tmux-broker/broker.sock
+Environment=DECKIDE_TMUX_BROKER_REQUIRED=1
+ExecStart=
+ExecStart=@@HTTP_EXEC_START@@

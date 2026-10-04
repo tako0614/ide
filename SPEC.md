@@ -10,7 +10,7 @@
 |------|------|
 | **ワークスペース** | shell の開始ディレクトリ。既存 API では workspace として保持する |
 | **デッキ** | ワークスペースに紐づくターミナルのグループ。タブで切り替え、最大3つまで分割表示 |
-| **ターミナルセッション** | node-pty による PTY プロセス。出力はサーバー側でバッファリングされ、再接続時に再生される |
+| **ターミナルセッション** | private socket と安定 ID を持つ tmux shell。node-pty は表示クライアントを接続し、headless xterm の画面を再接続時に復元する |
 
 ## アーキテクチャ
 
@@ -24,9 +24,9 @@
 └──────┼─────────┼─────────┼──────────────────┘
        │         │         │
 ┌──────┼─────────┼─────────┼──────────────────┐
-│  Server (Hono + node-pty)                    │
+│  HTTP (Hono + tmux display clients)                    │
 │  ┌───┴───┐ ┌───┴───┐ ┌───┴───┐              │
-│  │ PTY1  │ │ PTY2  │ │ PTY3  │              │
+│  │ view1 │ │ view2 │ │ view3 │              │
 │  └───────┘ └───────┘ └───────┘              │
 │  ┌──────────────────────────────┐            │
 │  │  SQLite (node:sqlite)        │            │
@@ -35,39 +35,39 @@
 └──────────────────────────────────────────────┘
 ```
 
-## ターミナルバッファ管理
+## ターミナルの所有と同期
 
-サーバーは各ターミナルの PTY 出力をリングバッファに保持する（上限: `TERMINAL_BUFFER_LIMIT`、デフォルト 500KB）。
+shell は各端末専用の tmux server が所有する。HTTP は node-pty で表示クライアントを
+接続し、headless xterm で出力を解析する。通常画面・代替画面、未完了の UTF-8／ANSI
+列、live output offset を順番に同期する。リングバッファは同期中の出力差分用で
+既定500KB、入力の再送や shell の再起動には使わない。
 
-### 再接続フロー
+再接続時は `{ type: "sync", offsetBase, reset: true, cols, rows, epoch, snapshotBytes }`、
+全画面スナップショット、未完了の parser tail、同期後の出力、`ready` の順に送る。
+画面 capture と出力の間に欠落があれば capture をやり直す。画面同期の前に切断した
+viewer を登録しない。端末問い合わせへの応答は headless xterm が一度だけ送る。
 
-1. クライアントが `?bufferOffset=N&reconnect=1` 付きで WebSocket 接続
-2. サーバーが `{ type: "sync", offsetBase, reset }` を送信
-3. バッファデータをバイナリフレームで送信（UTF-8 境界・ANSI エスケープシーケンス境界を考慮）
-4. `{ type: "ready" }` を送信して同期完了を通知
-5. クライアントはリプレイ中のリサイズをロックし、完了後にキャッチアップ fit を実行
+復元 registry は端末 UUID、deck、title、サイズ、native ID、PID、生成 ID、socket など
+必要な lifecycle メタデータだけを owner-only で保存する。環境値と launch command は
+保存・ログ出力しない。生成 ID、所有者、socket、native ID の不一致は拒否し、未知の
+セッションを自動再作成・終了しない。同一ユーザー専用の broker は stdin と private
+Unix socket で新規作成の環境を受け渡し、独立したサービス cgroup 内で tmux を起動する。
 
-### バッファ安全性
+## 描画と明示的なサイズ変更
 
-- UTF-8 マルチバイト文字の途中で切断しない（`alignToUtf8Start` / `alignToUtf8End`）
-- ANSI エスケープシーケンス（CSI、OSC、DCS、APC）の途中で切断しない（`skipPartialEscapeSequence`）
-- リプレイ中は xterm.js のリサイズをロック（`replayResizeLock`）して描画崩れを防止
+初期サイズは明示的に120列32行を選ぶ。tmux は `window-size manual` と明示的な
+`resize-window` を使い、内部 client は `ignore-size` で attach する。小さな外部 client が
+通常の attach をしても共有グリッドを縮小しない。API／MCP による明示的なサイズ変更は
+整数1〜500に制限し、WebSocket では `explicit: true` が必要になる。
 
-## 描画とリサイズ制御
+xterm.js 6 の標準 DOM renderer と DEC 2026 の同期描画を使う。フォントはローカルの
+等幅フォントと日本語 fallback、既定14px、11〜22pxで変更できる。viewport と文字サイズ
+の変更は既存 xterm と接続を維持したまま全フレームを同一倍率でローカル拡縮する。
+共有 PTY サイズは変えない。文字サイズの保存、既存のヘッダー、順序、分割、手動配置
+コントロールは維持する。追加の zoom／lock 操作は設けない。
 
-xterm.js 6 の標準 DOM renderer を使う。DEC 2026 の同期描画中は途中の画面更新を
-保留し、終了後にまとめて描画する。フォントはローカルの等幅フォントと日本語の
-fallback を使い、既定14px、11〜22pxで変更できる。文字サイズの変更は既存の
-xterm と接続を維持したまま適用し、ブラウザに保存する。
-
-ターミナルの fit ロジックは以下の条件でリサイズを抑制する:
-
-- **リプレイロック中**: バッファリプレイ完了まで全リサイズをブロック
-- **連続する変更**: 通常のサイズ変更は100ms待ってまとめて fit
-- **表示・文字サイズの変更**: 非表示からの復帰や文字サイズ変更では直ちに fit
-- **同じ行・列数**: fit 後の行・列数が変わらなければサーバーへ送らない
-
-再接続の増分位置は xterm の保留中の write を完了してから決める。
+外部 tmux attach、detach、固定サイズポリシー、更新と rollback の具体的な手順は
+[terminal-tmux.md](docs/terminal-tmux.md) に定義する。
 
 ## 任意の Computer パネル
 
@@ -131,9 +131,11 @@ Computer POSTにはOrigin / CSRF検証を適用する。停止・server終了・
 
 ## プロセスの寿命と再接続
 
-- workspace と deck は SQLite に保存する。PTY と出力バッファはサーバープロセス内に保持する。
-- ブラウザの切断は shell を終了しない。サーバーの停止・再起動は shell を終了する。
+- workspace と deck は SQLite に保存する。shell は tmux、画面 snapshot は HTTP が保持する。
+- ブラウザの切断と開発 HTTP プロセスの再起動は shell を終了しない。
+- 本番 systemd の HTTP 停止をまたぐには独立 broker cgroup が必要。unit と updater は同梱するが、ここでは未適用・未実証。
+- 旧方式の実行中端末を自動移行・終了しない。更新前に利用者が終了するまで旧 HTTP を維持する。
 - 接続失敗は1秒から最大30秒へ間隔を伸ばし、端末を閉じるまで再試行する。
 - 端末の削除・終了・不存在は再試行対象ではない。
 - WebSocket 圧縮を対応クライアントと交渉する。出力・入力の意味は変更しない。
-- 端末問い合わせへの応答は主クライアントだけが送り、履歴再生中は送らない。
+- 端末問い合わせへの応答は headless xterm が一度だけ送り、viewer の履歴再生では送らない。

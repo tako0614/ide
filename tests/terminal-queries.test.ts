@@ -108,6 +108,33 @@ test('CSI 14;2 is consumed without a size reply, and DSR still responds', async 
   term.dispose();
 });
 
+test('private cursor DSR is consumed and respects primary and replay gates', async () => {
+  const replies: string[] = [];
+  const onData: string[] = [];
+  let isPrimary = false;
+  let replaying = false;
+  const term = createTerminal((response) => {
+    if (!isPrimary || replaying) return;
+    replies.push(response);
+  });
+  term.onData((data) => onData.push(data));
+
+  await write(term, '\x1b[?6n');
+  assert.deepEqual(replies, []);
+  assert.deepEqual(onData, [], 'xterm built-in private CPR must be consumed');
+
+  isPrimary = true;
+  await write(term, '\x1b[?6n');
+  assert.deepEqual(replies, ['\x1b[?1;1R']);
+  assert.deepEqual(onData, [], 'primary response uses the callback, not xterm onData');
+
+  replaying = true;
+  await write(term, '\x1b[?6n');
+  assert.deepEqual(replies, ['\x1b[?1;1R']);
+  assert.deepEqual(onData, []);
+  term.dispose();
+});
+
 test('synchronized redraw mode reports whether a TUI update is in progress', async () => {
   const replies: string[] = [];
   const term = createTerminal((response) => replies.push(response));

@@ -19,10 +19,10 @@ const HEARTBEAT_INTERVAL_MS = 30_000;
 
 type ClientControlMessage =
   | { type: 'claim' }
-  | { type: 'resize'; cols: number; rows: number };
+  | { type: 'resize'; cols: number; rows: number; explicit: true };
 
 type ServerControlMessage =
-  | { type: 'sync'; offsetBase: number; reset: boolean }
+  | { type: 'sync'; offsetBase: number; reset: boolean; cols: number; rows: number; epoch: string; snapshotBytes: number }
   | { type: 'ready' }
   // この接続が「主」クライアントか。端末クエリ（DSR/DA など）への応答は
   // 主クライアントのみが返し、複数クライアント時の二重応答を防ぐ。
@@ -201,21 +201,7 @@ function sendControl(socket: WebSocket, message: ServerControlMessage): boolean 
   }
 }
 
-// 制御権（resizeOwner = 主クライアント）を付け替え、新旧クライアントへ
-// primary 状態を通知する。主クライアントだけが端末クエリへ応答する。
-function assignResizeOwner(session: TerminalSession, socket: WebSocket): void {
-  const previous = session.resizeOwner;
-  if (previous === socket) {
-    return;
-  }
-  session.resizeOwner = socket;
-  if (previous) {
-    sendControl(previous, { type: 'primary', value: false });
-  }
-  sendControl(socket, { type: 'primary', value: true });
-}
-
-function readBufferedRange(session: TerminalSession, startOffset: number, endOffset: number): Buffer {
+function readBufferedRange(session: TerminalSession, startOffset: number, endOffset: number, align = true): Buffer {
   const relativeStart = Math.max(0, startOffset - session.bufferBase);
   const relativeEnd = Math.max(relativeStart, Math.min(session.bufferLength, endOffset - session.bufferBase));
 
@@ -253,6 +239,8 @@ function readBufferedRange(session: TerminalSession, startOffset: number, endOff
     raw = Buffer.concat(slices); // concat always creates a new Buffer
   }
 
+  if (!align) return raw;
+
   // Align start: skip orphaned continuation bytes
   const alignedStart = alignToUtf8Start(raw, 0);
   // Align end: don't cut a multi-byte character in half
@@ -267,7 +255,8 @@ function readBufferedRange(session: TerminalSession, startOffset: number, endOff
 export function setupWebSocketServer(
   server: HttpServer | HttpsServer,
   terminals: Map<string, TerminalSession>,
-  browserService?: AgentBrowserService
+  browserService?: AgentBrowserService,
+  ensureAttached?: (id: string) => Promise<void>
 ): WebSocketServer {
   const wss = new WebSocketServer({
     server,
@@ -296,7 +285,7 @@ export function setupWebSocketServer(
   }, HEARTBEAT_INTERVAL_MS);
   heartbeatInterval.unref?.();
 
-  wss.on('connection', (socket: WebSocket, req) => {
+  wss.on('connection', async (socket: WebSocket, req) => {
     // wss.clients includes sockets in their close handshake, including after
     // an administrative clear. Cap the actual live set as well as tracked IPs.
     if (wss.clients.size > MAX_GLOBAL_CONNECTIONS) {
@@ -306,6 +295,12 @@ export function setupWebSocketServer(
     const socketId = crypto.randomUUID();
     const clientIP = getClientIP(req);
     heartbeatState.set(socket, true);
+    // Install cleanup before asynchronous restore/capture: a viewer may leave
+    // while either barrier is still pending.
+    socket.on('close', () => {
+      heartbeatState.delete(socket);
+      untrackConnection(clientIP, socket);
+    });
 
     // Validate Origin to prevent Cross-Site WebSocket Hijacking. Never skipped:
     // these sockets carry PTY input/output and agent-browser control.
@@ -403,6 +398,13 @@ export function setupWebSocketServer(
     }
 
     const id = match[1];
+    if (ensureAttached && !terminals.get(id)?.available) {
+      try { await ensureAttached(id); } catch {
+        untrackConnection(clientIP, socket);
+        socket.close(1013, 'Terminal transport unavailable');
+        return;
+      }
+    }
     const session = terminals.get(id);
     if (!session) {
       untrackConnection(clientIP, socket);
@@ -410,59 +412,46 @@ export function setupWebSocketServer(
       return;
     }
 
-    const hadNoSockets = session.sockets.size === 0;
-    session.sockets.add(socket);
-    if (hadNoSockets && !session.resizeOwner) {
-      session.resizeOwner = socket;
-    }
     session.lastActive = Date.now();
-
-    // Send buffer content if available
-    // bufferOffset: absolute byte count the client already processed
-    // bufferBase: absolute byte position of buffer[0] (bytes dropped from start)
-    const offsetParam = url.searchParams.get('bufferOffset');
-    const clientOffset = offsetParam ? Math.max(0, parseInt(offsetParam, 10) || 0) : 0;
-    const bufferStart = session.bufferBase;
-    const bufferEnd = session.bufferBase + session.bufferLength;
-    let replayStartOffset = clientOffset;
-    let resetTerminal = false;
-
-    if (clientOffset <= bufferStart) {
-      replayStartOffset = bufferStart;
-      resetTerminal = session.bufferLength > 0;
-    } else if (clientOffset >= bufferEnd) {
-      replayStartOffset = bufferEnd;
-    }
-
-    if (!sendControl(socket, { type: 'sync', offsetBase: replayStartOffset, reset: resetTerminal })) {
-      return;
-    }
-
-    if (session.bufferLength > 0) {
-      try {
-        let bufferToSend: Buffer = Buffer.alloc(0);
-
-        if (clientOffset <= bufferStart) {
-          // Client's last position is before (or at) what we have — send everything
-          bufferToSend = readBufferedRange(session, bufferStart, bufferEnd);
-        } else if (clientOffset >= bufferEnd) {
-          // Client is fully up to date
-          bufferToSend = Buffer.alloc(0);
-        } else {
-          // Send only the delta
-          bufferToSend = readBufferedRange(session, clientOffset, bufferEnd);
-        }
-
-        if (bufferToSend.length > 0 && canSendToSocket(socket)) {
-          socket.send(bufferToSend, { binary: true });
-        }
-      } catch (error) {
-        console.error(`Failed to send buffer to socket ${socketId}:`, error);
+    // A full canonical snapshot has its own byte length; offset remains a cursor
+    // in the live display stream. Subscribe only after snapshot+queued tail are sent.
+    let snapshot: Awaited<ReturnType<TerminalSession['snapshot']>>;
+    try {
+      snapshot = await session.snapshot();
+      // Output may have advanced beyond the bounded raw tail during capture.
+      // A fresh barrier replaces that missing prefix; never join across a gap.
+      for (let attempt = 0; snapshot.offset < session.bufferBase; attempt++) {
+        if (attempt === 2) throw new Error('Terminal output advanced beyond snapshot tail');
+        snapshot = await session.snapshot();
       }
     }
+    catch {
+      untrackConnection(clientIP, socket);
+      heartbeatState.delete(socket);
+      socket.close(1013, 'Terminal snapshot unavailable');
+      return;
+    }
+    if (socket.readyState !== WebSocket.OPEN || terminals.get(id) !== session || !session.available) {
+      untrackConnection(clientIP, socket);
+      heartbeatState.delete(socket);
+      if (socket.readyState === WebSocket.OPEN) socket.close(1013, 'Terminal transport unavailable');
+      return;
+    }
+    if (!sendControl(socket, {
+      type: 'sync', offsetBase: snapshot.offset, reset: true,
+      cols: snapshot.cols, rows: snapshot.rows, epoch: session.bufferEpoch,
+      snapshotBytes: snapshot.data.length,
+    })) return;
+    if (snapshot.data.length) socket.send(snapshot.data, { binary: true });
+    const bufferEnd = session.bufferBase + session.bufferLength;
+    if (bufferEnd > snapshot.offset) {
+      // These bytes may finish a fragment included in the snapshot parser tail.
+      // Do not trim UTF-8 or ANSI at either edge of this exact live-stream range.
+      socket.send(readBufferedRange(session, snapshot.offset, bufferEnd, false), { binary: true });
+    }
+    session.sockets.add(socket);
     sendControl(socket, { type: 'ready' });
-    // この接続が現在の主クライアントかを通知（既定では先頭接続が主）。
-    sendControl(socket, { type: 'primary', value: session.resizeOwner === socket });
+    sendControl(socket, { type: 'primary', value: false }); // The headless display bridge owns query replies.
 
     socket.on('message', (data, isBinary) => {
       try {
@@ -493,16 +482,13 @@ export function setupWebSocketServer(
           }
 
           if (control?.type === 'claim') {
-            assignResizeOwner(session, socket);
+            sendControl(socket, { type: 'primary', value: false });
             return;
           }
 
           if (control?.type === 'resize') {
-            if (session.resizeOwner && session.resizeOwner !== socket) {
-              return;
-            }
-
-            assignResizeOwner(session, socket);
+            // Legacy viewer fit events cannot change the canonical tmux window.
+            if (control.explicit !== true) return;
             const cols = validateTerminalSize(control.cols);
             const rows = validateTerminalSize(control.rows);
 
@@ -536,15 +522,6 @@ export function setupWebSocketServer(
 
     socket.on('close', () => {
       session.sockets.delete(socket);
-      if (session.resizeOwner === socket) {
-        session.resizeOwner = null;
-        // 主クライアントが去ったら、残っている接続のいずれかを主に昇格させ、
-        // 端末クエリへ応答するクライアントが居なくならないようにする。
-        const next = session.sockets.values().next().value;
-        if (next) {
-          assignResizeOwner(session, next);
-        }
-      }
       session.lastActive = Date.now();
       heartbeatState.delete(socket);
       untrackConnection(clientIP, socket);
@@ -560,4 +537,3 @@ export function setupWebSocketServer(
 
   return wss;
 }
-

@@ -1,0 +1,22 @@
+[Unit]
+Description=DeckIDE private tmux creation broker
+After=local-fs.target
+Before=@@HTTP_UNIT@@
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=@@PACKAGE@@
+RuntimeDirectory=deckide-tmux-broker
+RuntimeDirectoryMode=0700
+StateDirectory=deckide-tmux deckide-tmux/terminal-tmux
+StateDirectoryMode=0700
+Environment=DECKIDE_TMUX_RUNTIME_DIR=/var/lib/deckide-tmux/terminal-tmux
+Environment=DECKIDE_TMUX_BROKER_SOCKET=/run/deckide-tmux-broker/broker.sock
+ExecStart=@@NODE@@ @@PACKAGE@@/dist/terminal/tmuxBroker.js --serve
+KillMode=control-group
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

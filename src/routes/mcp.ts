@@ -481,10 +481,7 @@ function terminalWrite(terminals: Map<string, TerminalSession>, args: JsonRecord
 }
 
 function terminalResize(terminals: Map<string, TerminalSession>, args: JsonRecord) {
-  // 注意: ブラウザクライアントが接続中の場合、そのクライアントの
-  // ResizeObserver/fit が次のフレームでサイズを再設定するため、この
-  // リサイズは一時的になる。クライアント未接続（ヘッドレス）の端末では
-  // 指定サイズがそのまま維持される。
+  // Canonical dimensions change only through an explicit resize request.
   const terminalId = stringArg(args, 'terminalId');
   const cols = numberArg(args, 'cols');
   const rows = numberArg(args, 'rows');

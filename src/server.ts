@@ -167,6 +167,7 @@ export async function createServer() {
   app.route('/api/decks', createDeckRouter(db, workspaces, decks, terminals));
 
   const terminalRouter = createTerminalRouter(decks, terminals);
+  await terminalRouter.restoreSessions();
   app.route('/api/terminals', terminalRouter);
   app.route('/api/git', createGitRouter(workspaces));
   app.route('/api/browser', createBrowserRouter(browserService));
@@ -220,7 +221,7 @@ export async function createServer() {
   }
 
   const server = serve({ fetch: app.fetch, port: PORT, hostname: HOST }) as Server;
-  setupWebSocketServer(server, terminals, browserService);
+  setupWebSocketServer(server, terminals, browserService, async () => terminalRouter.restoreSessions());
 
   server.on('listening', () => {
     const baseUrl = `http://localhost:${PORT}`;
@@ -246,12 +247,12 @@ export async function createServer() {
     if (shutdownPromise) return shutdownPromise;
 
     shutdownPromise = (async () => {
-      // Kill all terminals
+      // Detach our tmux display clients; the shells belong to tmux.
       terminals.forEach((session) => {
         session.sockets.forEach((socket) => {
           try { socket.close(1000, 'Server shutting down'); } catch { /* ignore */ }
         });
-        session.kill();
+        session.detach();
       });
       terminals.clear();
       stopMcpReaper?.();

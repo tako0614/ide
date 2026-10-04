@@ -104,7 +104,7 @@ export function createDeckRouter(
     sockets.clear();
   }
 
-  router.delete('/:id', (c) => {
+  router.delete('/:id', async (c) => {
     try {
       const deckId = c.req.param('id');
       if (!decks.has(deckId)) {
@@ -115,14 +115,13 @@ export function createDeckRouter(
         .filter((session) => session.deckId === deckId)
         .map((session) => session.id);
 
-      deckTerminalIds.forEach((terminalId) => {
+      for (const terminalId of deckTerminalIds) {
         const session = terminals.get(terminalId);
-        if (!session) return;
+        if (!session) continue;
+        await session.kill();
         terminals.delete(terminalId);
-        session.resizeOwner = null;
         closeDeckTerminalSockets(session.sockets, 'Deck deleted');
-        session.kill();
-      });
+      }
 
       deleteDeckStmt.run(deckId);
       decks.delete(deckId);

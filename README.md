@@ -6,15 +6,18 @@
 
 - **マルチターミナル** — shell をグリッドに並べ、必要な端末を最大化
 - **デッキ** — 作業ディレクトリごとのグループ、並び替え、最大3デッキの分割表示
-- **再接続** — 出力の増分再生、長い切断後も上限30秒の間隔で再試行
+- **再接続** — 通常画面・代替画面のスナップショット復元、長い切断後も上限30秒の間隔で再試行
 - **通信圧縮** — 対応ブラウザと WebSocket 圧縮を交渉し、端末出力を内容を変えずに送信
-- **端末描画** — xterm.js 6 の同期描画、文字サイズの保存、連続リサイズの抑制
+- **端末描画** — xterm.js 6 の同期描画、文字サイズの保存、固定グリッド全体のローカル拡縮
 - **セッション認証** — ログイン画面、HttpOnly Cookie、ログアウト時の接続失効
 - **モバイル対応** — 端末切り替えとソフトキーボードに合わせた表示
 
-出力の再生はサーバー内のリングバッファ（既定500KB）の範囲です。ブラウザを閉じても
-shell は動作しますが、DeckIDE サーバーの停止・再起動で shell プロセスは終了します。
-再起動をまたぐ shell の継続は現在の実装では保証しません。
+新しい端末は tmux の安定した ID・private socket を持ち、通常の `tmux attach` でも操作できます。
+ブラウザ再接続と開発 HTTP プロセスの再起動をまたいで同じ shell を維持します。
+本番の `KillMode=control-group` では独立した broker サービスが必要です。
+この候補には未適用の unit と guarded updater を同梱しています。
+既存の旧方式端末は自動移行しません。固定サイズ・外部 attach・更新と rollback の手順は
+[tmux lifecycle](docs/terminal-tmux.md) を参照してください。tmux は実行時の必須依存です。
 
 ## クイックスタート
 
@@ -287,6 +290,7 @@ MCP tools からはワークスペース、ファイル、ディレクトリ、�
 | GET | `/api/terminals` | 一覧 |
 | POST | `/api/terminals` | 作成 |
 | DELETE | `/api/terminals/:id` | 削除 |
+| PUT | `/api/terminals/:id/size` | 明示的な共有グリッド変更（整数 1〜500） |
 | WS | `/api/terminals/:id` | WebSocket 接続 |
 
 ### ブラウザ
@@ -337,16 +341,17 @@ MCP tools からはワークスペース、ファイル、ディレクトリ、�
 ターミナル接続は `/api/terminals/:id` WebSocket エンドポイントを使用します。ブラウザ接続は `/api/browser/ws` で JPEG screencast とマウス・キー入力イベントを送受信します。ブラウザ音声は `/api/browser/audio/ws` で WebM/Opus のバイナリチャンクを送ります。
 
 **クライアント → サーバー:**
-- `{ type: "claim" }` — リサイズ権限を取得
-- `{ type: "resize", cols, rows }` — PTY サイズ変更
+- `{ type: "resize", cols, rows, explicit: true }` — 明示的な共有グリッド変更
+- viewer のサイズ変更や文字サイズ変更 — ローカルの全体拡縮のみ
 - バイナリフレーム — キーボード入力
 
 **サーバー → クライアント:**
-- `{ type: "sync", offsetBase, reset }` — バッファ同期開始
+- `{ type: "sync", offsetBase, reset: true, cols, rows, epoch, snapshotBytes }` — 全画面同期開始
 - `{ type: "ready" }` — 同期完了、入力受付可能
 - バイナリフレーム — ターミナル出力
 
-再接続時はバッファオフセットを指定して差分のみ取得可能（`?bufferOffset=N&reconnect=1`）。
+再接続ごとに全画面スナップショットと未完了の UTF-8／ANSI 列を同期し、その後の出力を順番に送ります。
+`bufferOffset` は履歴差分の取得には使いません。入力と起動要求は再送しません。
 
 ## ライセンス
 

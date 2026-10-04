@@ -52,6 +52,21 @@ export function registerTerminalQueryHandlers(
     return false;
   });
 
+  // DEC DSR (private CSI ? Ps n). xterm.js answers ?6n through onData,
+  // bypassing the caller's primary-client and replay gates. Route the
+  // supported private CPR through sendResponse and consume all private DSRs
+  // so non-primary browser clients cannot emit a duplicate reply.
+  term.parser.registerCsiHandler({ prefix: '?', final: 'n' }, (params) => {
+    const param = params.length > 0 ? params[0] as number : 0;
+    if (param === 6) {
+      const buffer = term.buffer.active;
+      const row = buffer.cursorY + 1;
+      const col = buffer.cursorX + 1;
+      sendResponse(`\x1b[?${row};${col}R`);
+    }
+    return true;
+  });
+
   // DA1 (Primary Device Attributes) - CSI c
   term.parser.registerCsiHandler({ final: 'c' }, () => {
     // Keep the device attributes conservative: no sixel/windowing claims.

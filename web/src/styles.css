@@ -610,6 +610,20 @@
   touch-action: pan-y;
 }
 
+/* A terminal keeps its canonical cell grid and scales as one local frame. */
+.terminal-frame-viewport { display: block; position: relative; }
+.terminal-frame-wrapper { position: relative; flex: none; overflow: visible; }
+.terminal-frame-content {
+  box-sizing: border-box;
+  flex: none;
+  transform-origin: top left;
+}
+.terminal-frame-content > .xterm {
+  box-sizing: border-box;
+  width: 100%; height: 100%; padding: 10px;
+  background: #181818;
+}
+
 /* ── Browser Pane ── */
 .browser-layout {
   flex: 1;
