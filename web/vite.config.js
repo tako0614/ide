@@ -4,6 +4,8 @@ import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
+  // Installed noVNC 1.7 uses top-level await for feature detection.
+  build: { target: 'es2022' },
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {

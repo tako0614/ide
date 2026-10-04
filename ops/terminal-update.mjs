@@ -8,8 +8,8 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { assertStartupConfiguration } from './startup-check.mjs';
 import {
-  CANDIDATE_VERSION, BROKER_UNIT, BROKER_SOCKET, TERMINAL_RUNTIME, DROPIN_NAME,
-  assertInitialBrokerResourcesAbsent, classifyTerminalRuntimeEntries,
+  CANDIDATE_VERSION, BROKER_UNIT, BROKER_SOCKET, TERMINAL_RUNTIME, CHATGPT_STATE_ROOT, DROPIN_NAME,
+  assertInitialBrokerResourcesAbsent, createChatGPTStateRoot, classifyTerminalRuntimeEntries,
   safeAbsolutePath, safeServiceUnit, safeControlGroup, parseShowProperties, assertHttpService,
   assertInactiveHttpService, assertEmptyServiceCgroup,
   parseDeckideExecStart, parseKnownRollbackLaunch, readProcTree, assertNoLegacyPtys, assertBrokerCgroups,
@@ -431,7 +431,10 @@ export function renderedUnits(releasePackage, httpUnit, launch, nodePath) {
     NODE: safeAbsolutePath(nodePath, 'Node binary'), PACKAGE: releasePackage, HTTP_UNIT: httpUnit,
   });
   const candidateEntry = path.join(releasePackage, launch.entry);
-  const args = launch.publicArgs.join(' ');
+  if (launch.publicArgs.includes('--chatgpt-desktop')) {
+    throw new Error('Previous HTTP launch unexpectedly includes the candidate ChatGPT flag');
+  }
+  const args = [...launch.publicArgs, '--chatgpt-desktop'].join(' ');
   const execStart = launch.direct
     ? `${candidateEntry}${args ? ` ${args}` : ''}`
     : `${safeAbsolutePath(launch.nodePath, 'Original Node binary')} ${candidateEntry}${args ? ` ${args}` : ''}`;
@@ -479,10 +482,12 @@ function assertExactFile(file, expectedHash, label) {
   }
 }
 
-function assertPrivateDirectory(directory, label) {
+function assertPrivateDirectory(directory, label, { expectedGid, exactMode } = {}) {
   const info = fs.lstatSync(directory);
   if (!info.isDirectory() || info.isSymbolicLink() || (info.mode & 0o777) !== 0o700 ||
-      (process.getuid && info.uid !== 0)) {
+      (process.getuid && info.uid !== 0) ||
+      (expectedGid !== undefined && info.gid !== expectedGid) ||
+      (exactMode !== undefined && (info.mode & 0o7777) !== exactMode)) {
     throw new Error(`${label} must be a root-owned 0700 directory`);
   }
 }
@@ -889,6 +894,7 @@ async function apply(stateDir, options) {
   state.phase = 'broker-unit-written'; writeState(stateDir, state);
   systemctl('daemon-reload');
   assertInitialBrokerResourcesAbsent(); // Do not let systemd retake a path created after initial preflight.
+  createChatGPTStateRoot(); // Create only the empty trusted owner root before candidate HTTP startup.
   systemctl('enable', '--now', BROKER_UNIT);
   const broker = systemdShow(BROKER_UNIT, BROKER_PROPERTIES);
   if (broker.ActiveState !== 'active' || broker.KillMode !== 'control-group' ||
@@ -916,7 +922,8 @@ async function apply(stateDir, options) {
       loaded.ControlGroup !== preflight.httpMeta.ControlGroup) {
     throw new Error('HTTP process changed while loading candidate drop-in');
   }
-  parseDeckideExecStart(loaded.ExecStart, state.releasePackage);
+  parseDeckideExecStart(loaded.ExecStart, state.releasePackage, fs.realpathSync,
+    { allowChatgptDesktop: true, requireChatgptDesktop: true });
   state.phase = 'dropin-loaded'; writeState(stateDir, state);
   // Recheck process and cgroup boundaries after the drop-in is loaded,
   // immediately before the only HTTP restart.
@@ -936,18 +943,20 @@ async function verifyState(state) {
   assertExactFile(paths.dropin, state.httpDropinSha256, 'HTTP drop-in');
   const httpMeta = systemdShow(state.httpUnit, HTTP_PROPERTIES);
   assertHttpService(httpMeta);
-  parseDeckideExecStart(httpMeta.ExecStart, state.releasePackage);
+  parseDeckideExecStart(httpMeta.ExecStart, state.releasePackage, fs.realpathSync,
+    { allowChatgptDesktop: true, requireChatgptDesktop: true });
   const brokerMeta = systemdShow(BROKER_UNIT, BROKER_PROPERTIES);
   if (brokerMeta.LoadState !== 'loaded' || brokerMeta.ActiveState !== 'active' ||
       brokerMeta.KillMode !== 'control-group' || brokerMeta.ControlGroup === httpMeta.ControlGroup) {
     throw new Error('Broker is not independently active');
   }
   const socket = fs.lstatSync(BROKER_SOCKET);
-  for (const [directory, label] of [
+  for (const [directory, label, requirements] of [
     ['/run/deckide-tmux-broker', 'Broker socket directory'],
     ['/var/lib/deckide-tmux', 'Broker state directory'],
     [TERMINAL_RUNTIME, 'Terminal runtime directory'],
-  ]) assertPrivateDirectory(directory, label);
+    [CHATGPT_STATE_ROOT, 'ChatGPT owner state root', { expectedGid: 0, exactMode: 0o700 }],
+  ]) assertPrivateDirectory(directory, label, requirements);
   if (!socket.isSocket() || socket.isSymbolicLink() || (socket.mode & 0o777) !== 0o600 ||
       (process.getuid && socket.uid !== 0)) {
     throw new Error('Broker IPC socket is not private');

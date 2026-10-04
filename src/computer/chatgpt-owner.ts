@@ -15,6 +15,7 @@ type ProcessIdentity = { pid: number; start: number; uid: number; gid: number; p
 type Binding = { sessionId: string; supervisor: ProcessIdentity; ownerPid: number };
 type Lease = Pick<BorrowedDesktopLease, 'check'>;
 type Spawn = (command: string, args: readonly string[], options: SpawnOptions) => ChildProcess;
+type ExitOutcome = { code: number | null; signal: NodeJS.Signals | null };
 export type ChatgptOwnerDependencies = {
   spawn?: Spawn;
   loadLease?: (descriptor: string) => Promise<BorrowedDesktopLease>;
@@ -27,8 +28,9 @@ export type ChatgptOwnerDependencies = {
 };
 export type OwnedChatgptDesktop = Readonly<{ lease: BorrowedDesktopLease; snapshot: BorrowedDesktopSnapshot }>;
 type Retained = {
-  child: ChildProcess; identity: ProcessIdentity; exit: Promise<void>;
-  exited: boolean; protocolValid: boolean; lease?: BorrowedDesktopLease; sessionId?: string;
+  child: ChildProcess; identity: ProcessIdentity; exit: Promise<ExitOutcome>;
+  exited: boolean; exitOutcome?: ExitOutcome; protocolValid: boolean;
+  lease?: BorrowedDesktopLease; sessionId?: string;
 };
 
 function fail(): never { throw new Error('ChatGPT desktop ownership could not be verified'); }
@@ -152,10 +154,11 @@ export class ChatgptOwner {
     if (!identity || identity.pid !== pid || identity.uid !== 0 || identity.gid !== 0 ||
       identity.ppid !== process.pid || ['Z', 'X', 'z', 'x'].includes(identity.state)) fail();
     const retained: Retained = { child, identity, exited: false, protocolValid: true,
-      exit: Promise.resolve() };
-    retained.exit = new Promise((resolve) => child.once('exit', () => {
+      exit: Promise.resolve({ code: null, signal: null }) };
+    retained.exit = new Promise((resolve) => child.once('exit', (code, signal) => {
       retained.exited = true;
-      resolve();
+      retained.exitOutcome = { code, signal };
+      resolve(retained.exitOutcome);
     }));
     child.on('error', () => { retained.protocolValid = false; });
     return retained;
@@ -251,7 +254,9 @@ export class ChatgptOwner {
       }
       if (this.starting) await this.starting.catch(() => undefined);
       const retained = this.retained;
-      if (!retained || retained.exited) return;
+      if (!retained) return;
+      // A child that exited before the guarded stop has not completed our close.
+      if (retained.exited) fail();
       if (!retained.lease || !retained.sessionId) fail();
       this.binding(retained, retained.lease);
       this.deps.verifyLauncher(this.launcher);
@@ -267,7 +272,8 @@ export class ChatgptOwner {
       });
       const code = await waitWithTimeout(stopExit, Math.max(1, deadline - Date.now()));
       if (code !== 0) fail();
-      await waitWithTimeout(retained.exit, Math.max(1, deadline - Date.now()));
+      const outcome = await waitWithTimeout(retained.exit, Math.max(1, deadline - Date.now()));
+      if (outcome.code !== 0 || outcome.signal !== null) fail();
     } catch { fail(); }
   }
 }

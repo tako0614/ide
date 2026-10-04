@@ -5,11 +5,13 @@ export const CANDIDATE_VERSION = '3.5.49-combined.20261004.1';
 export const BROKER_UNIT = 'deckide-tmux-broker.service';
 export const BROKER_SOCKET = '/run/deckide-tmux-broker/broker.sock';
 export const TERMINAL_RUNTIME = '/var/lib/deckide-tmux/terminal-tmux';
+export const CHATGPT_STATE_ROOT = '/var/lib/deckide-chatgpt';
 export const DROPIN_NAME = '99-deckide-tmux.conf';
 export const INITIAL_BROKER_RESOURCES = [
   '/run/deckide-tmux-broker',
   '/var/lib/deckide-tmux',
   '/var/lib/deckide-tmux/terminal-tmux',
+  CHATGPT_STATE_ROOT,
   BROKER_SOCKET,
 ];
 
@@ -18,9 +20,32 @@ const SAFE_PATH = /^\/[A-Za-z0-9_./+@-]+$/;
 const SHELL_NAMES = new Set(['sh', 'bash', 'dash', 'zsh', 'fish', 'ksh', 'csh', 'tcsh', 'login']);
 const TERMINAL_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
+function assertTrustedCanonicalDirectory(directory, expectedUid) {
+  if (!path.isAbsolute(directory) || path.normalize(directory) !== directory) {
+    throw new Error('State parent path is not canonical');
+  }
+  let info;
+  try { info = fs.lstatSync(directory); }
+  catch { throw new Error('Cannot verify trusted state parent'); }
+  if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== expectedUid ||
+      (info.mode & 0o022) || fs.realpathSync(directory) !== directory) {
+    throw new Error('State parent is not root-trusted and canonical');
+  }
+}
+
+/** The private ChatGPT root may only be placed below trusted canonical /var/lib parents. */
+export function assertChatGPTStateParentsTrusted({ varRoot = '/var', libRoot = '/var/lib', expectedUid = 0 } = {}) {
+  if (libRoot !== path.join(varRoot, 'lib')) throw new Error('State parent hierarchy is not canonical');
+  assertTrustedCanonicalDirectory(varRoot, expectedUid);
+  assertTrustedCanonicalDirectory(libRoot, expectedUid);
+  return libRoot;
+}
+
 /** No service-owned directory or socket may be adopted by an initial install. */
-export function assertInitialBrokerResourcesAbsent(resources = INITIAL_BROKER_RESOURCES) {
-  for (const resource of resources) {
+export function assertInitialBrokerResourcesAbsent(resources) {
+  const defaults = resources === undefined;
+  if (defaults) assertChatGPTStateParentsTrusted();
+  for (const resource of resources ?? INITIAL_BROKER_RESOURCES) {
     try { fs.lstatSync(resource); }
     catch (error) {
       if (error?.code === 'ENOENT') continue;
@@ -28,6 +53,39 @@ export function assertInitialBrokerResourcesAbsent(resources = INITIAL_BROKER_RE
     }
     throw new Error('Reserved broker resource already exists; refusing initial install');
   }
+}
+
+/** Create only the empty owner state root, exclusively, after initial-install preflight. */
+export function createChatGPTStateRoot({ stateRoot = CHATGPT_STATE_ROOT,
+  varRoot = '/var', libRoot = '/var/lib', expectedUid = 0, expectedGid = 0 } = {}) {
+  assertChatGPTStateParentsTrusted({ varRoot, libRoot, expectedUid });
+  if (stateRoot !== path.join(libRoot, 'deckide-chatgpt')) {
+    throw new Error('ChatGPT state root is not the reviewed reserved path');
+  }
+  try { fs.lstatSync(stateRoot); throw new Error('ChatGPT state root already exists; refusing to adopt it'); }
+  catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+  try { fs.mkdirSync(stateRoot, { mode: 0o700 }); }
+  catch { throw new Error('Cannot create the exclusive ChatGPT state root'); }
+  try {
+    let info = fs.lstatSync(stateRoot);
+    if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== expectedUid ||
+        info.gid !== expectedGid || (info.mode & 0o7000)) {
+      throw new Error('New ChatGPT state root must be root-owned, root-group, and free of special mode bits');
+    }
+    if ((info.mode & 0o777) !== 0o700) fs.chmodSync(stateRoot, 0o700);
+    info = fs.lstatSync(stateRoot);
+    if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== expectedUid ||
+        info.gid !== expectedGid || (info.mode & 0o7777) !== 0o700 ||
+        fs.realpathSync(stateRoot) !== stateRoot) {
+      throw new Error('New ChatGPT state root is not private and canonical');
+    }
+  } catch (error) {
+    if (/ChatGPT state root/.test(error?.message)) throw error;
+    throw new Error('Cannot verify the new ChatGPT state root');
+  }
+  return stateRoot;
 }
 
 /** Unknown JSON-like files are uncertain registry state, not permission to ignore a session. */
@@ -156,7 +214,8 @@ function strictArgv(raw) {
 }
 
 /** Parse only public launch shapes. Never log or persist the raw ExecStart property. */
-export function parseDeckideExecStart(raw, previousPackage, realpath = fs.realpathSync) {
+export function parseDeckideExecStart(raw, previousPackage, realpath = fs.realpathSync,
+  { allowChatgptDesktop = false, requireChatgptDesktop = false } = {}) {
   const match = /^\{\s*path=([^;]+?)\s*;\s*argv\[\]=([^;]+?)\s*;[^{}]*\}$/.exec(raw.trim());
   if (!match) throw new Error('Unrecognized HTTP ExecStart shape; operator review required');
   const binary = match[1].trim();
@@ -182,22 +241,30 @@ export function parseDeckideExecStart(raw, previousPackage, realpath = fs.realpa
     else throw new Error('HTTP entry does not belong to previous package');
   }
   const publicArgs = args.slice(entryIndex + 1);
+  const chatgptFlag = '--chatgpt-desktop';
+  const chatgptFlagCount = publicArgs.filter((arg) => arg === chatgptFlag).length;
+  const hasChatgptFlag = chatgptFlagCount === 1 && publicArgs.at(-1) === chatgptFlag;
+  if ((chatgptFlagCount && (!allowChatgptDesktop || !hasChatgptFlag)) ||
+      (requireChatgptDesktop && !hasChatgptFlag)) {
+    throw new Error('HTTP launcher has an unrecognized flag; operator review required');
+  }
+  const validatedArgs = hasChatgptFlag ? publicArgs.slice(0, -1) : publicArgs;
   if (entry === 'dist/index.js') {
-    if (publicArgs.length) throw new Error('Direct server entry has unknown arguments');
+    if (validatedArgs.length) throw new Error('Direct server entry has unknown arguments');
   } else {
-    if (publicArgs[0] !== 'start' || !publicArgs.includes('--fg')) {
+    if (validatedArgs[0] !== 'start' || !validatedArgs.includes('--fg')) {
       throw new Error('CLI service must run start --fg');
     }
-    for (let i = 1; i < publicArgs.length; i++) {
-      const arg = publicArgs[i];
+    for (let i = 1; i < validatedArgs.length; i++) {
+      const arg = validatedArgs[i];
       if (arg === '--fg' || arg === '--no-open') continue;
       if (arg === '-p' || arg === '--port') {
-        const port = Number(publicArgs[++i]);
+        const port = Number(validatedArgs[++i]);
         if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid public port flag');
         continue;
       }
       if (arg === '--host') {
-        const host = publicArgs[++i];
+        const host = validatedArgs[++i];
         if (!host || !/^[A-Za-z0-9.:[\]-]+$/.test(host)) throw new Error('Invalid public host flag');
         continue;
       }
@@ -210,10 +277,12 @@ export function parseDeckideExecStart(raw, previousPackage, realpath = fs.realpa
 
 /** Rollback observes the effective unit, since daemon-reload and state writes are not atomic. */
 export function parseKnownRollbackLaunch(raw, previousPackage, candidatePackage, realpath = fs.realpathSync) {
-  for (const [kind, packageRoot] of [['previous', previousPackage], ['candidate', candidatePackage]]) {
-    try { return { kind, launch: parseDeckideExecStart(raw, packageRoot, realpath) }; }
-    catch { /* The other known package may own this effective ExecStart. */ }
-  }
+  try { return { kind: 'previous', launch: parseDeckideExecStart(raw, previousPackage, realpath) }; }
+  catch { /* The staged candidate may own this effective ExecStart. */ }
+  try {
+    return { kind: 'candidate', launch: parseDeckideExecStart(raw, candidatePackage, realpath,
+      { allowChatgptDesktop: true, requireChatgptDesktop: true }) };
+  } catch { /* Neither known package owns a recognized launch shape. */ }
   throw new Error('HTTP ExecStart belongs to neither the previous nor staged candidate package');
 }
 

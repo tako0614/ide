@@ -176,7 +176,39 @@ test('graceful close uses one guarded stop then waits for retained child exit', 
   queueMicrotask(() => f.child.finish(0));
   await closing;
   assert.deepEqual(f.child.signals, []);
+  await f.owner.close();
+  assert.equal(f.calls.length, 2);
   await assert.rejects(f.owner.start(), /ownership could not be verified/);
+});
+
+test('an already exited foreground child cannot make close succeed or start a replacement', async () => {
+  for (const [code, signal] of [[0, null], [1, null], [null, 'SIGKILL']]) {
+    const f = fixture();
+    const started = f.owner.start();
+    f.ready();
+    await started;
+    f.child.finish(code, signal);
+    await assert.rejects(f.owner.close(), /ownership could not be verified/);
+    await assert.rejects(f.owner.close(), /ownership could not be verified/);
+    await assert.rejects(f.owner.start(), /ownership could not be verified/);
+    assert.equal(f.calls.length, 1);
+  }
+});
+
+test('a successful guarded stop still requires normal supervisor exit', async () => {
+  for (const [code, signal] of [[1, null], [null, 'SIGKILL']]) {
+    const f = fixture({ stopCode: 0 });
+    const started = f.owner.start();
+    f.ready();
+    await started;
+    const closing = f.owner.close();
+    f.child.finish(code, signal);
+    await assert.rejects(closing, /ownership could not be verified/);
+    await assert.rejects(f.owner.close(), /ownership could not be verified/);
+    await assert.rejects(f.owner.start(), /ownership could not be verified/);
+    assert.equal(f.calls.length, 2);
+    assert.deepEqual(f.calls[1].args, ['stop', '--session-id', SESSION_ID]);
+  }
 });
 
 test('changed lease or stale stop failure never retries or adopts another generation', async () => {

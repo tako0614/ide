@@ -1,11 +1,18 @@
 # Guarded combined DeckIDE service update (unqualified preparation)
 
 The combined source is still awaiting final sealed GUI synchronization and an
-authenticated frame/input smoke. No reviewed combined tarball exists yet.
+authenticated frame/input/reconnect smoke. Any packaged checkpoint is
+UNQUALIFIED; consult the workspace report for its exact identity and gates.
 The commands below describe the future operator path, not an instruction to
 activate this preparation checkpoint.
 
-This operator-run tool is prepared for a future production cutover. Merely
+This operator-run tool is prepared for a future production cutover. The frozen
+GUI v3 source is merged, but its authenticated nonempty frame, input and
+reconnect smoke remains unqualified. The owner is preparing identity-bound
+geometry readback: launcher descriptors have no geometry fields, and the
+current launcher uses 1440x960x24 while the current RFB gate expects 1280x720.
+The candidate retains the negotiated-frame check pending the exact owner patch.
+This is separate from tmux's fixed canonical cell grid. Merely
 building, packaging, running `plan`, or running `stage` does not stop or restart
 DeckIDE. Do not run `apply` while an older direct-PTY terminal is in use.
 
@@ -16,7 +23,9 @@ loaded `deckide.service` ExecStart metadata in memory against this path and
 accepts only known direct CLI or Node launch shapes. It never prints or stores
 the full command, service environment, credentials, or settings. Its new
 drop-in replaces the package entry with the candidate's matching entry and
-keeps recognized public flags exactly as they were. The base unit and previous
+keeps recognized public flags and adds the reviewed foreground
+`--chatgpt-desktop` flag. The flag enables lazy authenticated owned-app start;
+starting HTTP alone does not launch ChatGPT. The base unit and previous
 installed package are not edited.
 
 Run from the built candidate source directory, after the candidate tarball and
@@ -84,9 +93,16 @@ node ops/terminal-update.mjs apply \
 node ops/terminal-update.mjs verify
 ```
 
-`plan` and initial `apply` refuse existing reserved broker directories and socket
+`plan` and initial `apply` refuse existing reserved broker directories, socket,
+and `/var/lib/deckide-chatgpt`
 before any unit mutation, avoiding systemd changes to existing permissions.
-`apply` creates only the new broker unit and HTTP drop-in. It starts the broker
+`apply` also exclusively creates the empty root:root `0700` ChatGPT state
+directory below canonical root-owned, non-writable `/var/lib` parents. It
+rejects an existing path, inherited wrong group, or special mode bits; it never
+adopts or changes an existing app state directory. Private descriptor/control
+state is created there only by a later explicit authenticated app start.
+Rollback preserves this directory and never imports live app configuration.
+`apply` creates the new broker unit and HTTP drop-in. It starts the broker
 before loading the HTTP drop-in. The broker has an independent cgroup and no
 reverse dependency on the HTTP service. Systemd creates its private
 `/run/deckide-tmux-broker` and `/var/lib/deckide-tmux/terminal-tmux` directories
@@ -104,7 +120,9 @@ under protected `/run`: root:app-group directory `0750`, files `0640`. Every
 ancestor must allow app traversal and forbid app writes. Private descriptor,
 control, authority, live config, runtime, logs and evidence stay separate.
 No broad release or `/root` permission change is needed. The app remains a
-foreground direct child with schema-v2 owner/lease checks; GUI borrowers do not
+foreground direct child with schema-v2 owner/lease checks. HTTP shutdown closes
+its verified app generation; the app is not claimed to survive HTTP restarts.
+GUI borrowers do not
 adopt or terminate unrelated app sessions.
 
 Before restarting HTTP, the tool verifies every owned tmux registry record's

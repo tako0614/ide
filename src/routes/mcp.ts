@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import type { TerminalSession } from '../types.js';
+import type { HostComputerSessions } from '../computer/host-session.js';
 import { alignToUtf8Start, alignToUtf8End } from '../utils/utf8.js';
 import {
   CORS_ORIGIN,
@@ -30,6 +31,7 @@ type AuthorizationCode = {
   scopes: string[];
   resource: string;
   expiresAt: number;
+  issuerSessionKey?: string;
 };
 
 type AccessToken = {
@@ -38,6 +40,7 @@ type AccessToken = {
   scopes: string[];
   resource: string;
   expiresAt: number;
+  issuerSessionKey?: string;
 };
 
 type McpTool = {
@@ -53,11 +56,14 @@ type McpTool = {
 type ToolContext = {
   resource: string;
   actor: string;
+  grantExpiresAt: number;
+  issuerSessionKey?: string;
 };
 
 type CreateMcpRouterOptions = {
   apiFetch: (request: Request) => Promise<Response>;
   terminals: Map<string, TerminalSession>;
+  computerHostSessions?: HostComputerSessions;
 };
 
 class ToolExecutionError extends Error {
@@ -83,11 +89,38 @@ const OAUTH_SCOPE = 'deckide:all';
 const clients = new Map<string, OAuthClient>();
 const authorizationCodes = new Map<string, AuthorizationCode>();
 const accessTokens = new Map<string, AccessToken>();
+const grantRevocationListeners = new Set<() => void>();
 
 /** Credential rotation removes grants issued under the former operator authority. */
 export function revokeMcpGrants(): void {
   authorizationCodes.clear();
   accessTokens.clear();
+  for (const listener of grantRevocationListeners) listener();
+}
+
+export function onMcpGrantsRevoked(listener: () => void): () => void {
+  grantRevocationListeners.add(listener);
+  return () => grantRevocationListeners.delete(listener);
+}
+
+/** Trusted in-process check only; no actor or issuer value from an MCP argument. */
+export function activeMcpActorGrant(actor: string, issuerSessionKey: string, expiresAt: number): boolean {
+  if (!/^oauth:[a-f0-9]{64}$/.test(actor)) return false;
+  for (const record of accessTokens.values()) {
+    if (record.expiresAt === expiresAt && record.expiresAt > Date.now() &&
+      record.issuerSessionKey === issuerSessionKey &&
+      actor === 'oauth:' + crypto.createHash('sha256').update(record.token).digest('hex')) return true;
+  }
+  return false;
+}
+
+export function mcpGrantForActor(actor: string): { issuerSessionKey: string; expiresAt: number } | null {
+  for (const record of accessTokens.values()) {
+    if (record.expiresAt > Date.now() && record.issuerSessionKey &&
+      actor === 'oauth:' + crypto.createHash('sha256').update(record.token).digest('hex'))
+      return { issuerSessionKey: record.issuerSessionKey, expiresAt: record.expiresAt };
+  }
+  return null;
 }
 
 function cleanExpiredGrants(): void {
@@ -1012,11 +1045,64 @@ function buildTools(options: CreateMcpRouterOptions): McpTool[] {
     {
       name: 'deckide.computer.launch',
       title: 'Launch desktop application',
-      description: 'Open a terminal or sandboxed browser on the private desktop. Browser launch requires a non-root server. Only HTTP/HTTPS URLs are accepted.',
-      inputSchema: schema({ app: { type: 'string', enum: ['browser', 'terminal'] }, url: { type: 'string' } }, ['app']),
-      handler: apiTool(api, 'POST', '/api/computer/launch', (args) => ({
-        app: stringArg(args, 'app'), url: stringArg(args, 'url', false),
-      })),
+      description: 'Launch an application ID returned by computer.apps or computer.register on the private Linux desktop. Register your own developed executable within your current authorized workspace scope; no per-app human approval is needed. IDs are bound to this grant and runtime. No shell strings or arbitrary launch flags. Browser requires a non-root server and accepts HTTP(S)/about:blank.',
+      inputSchema: schema({ app: { type: 'string', description: 'Catalog or owned registration ID from computer.apps or computer.register.' }, url: { type: 'string' } }, ['app']),
+      handler: apiTool(api, 'POST', '/api/computer/launch', (args) => args),
+    },
+    {
+      name: 'deckide.computer.apps',
+      title: 'List desktop applications and owned windows',
+      description: 'Enumerate installed GUI applications, this grant\'s registered developed apps and authorized developmentScopes, plus instances/windows launched on this private desktop. Scope IDs select existing authority; they cannot grant access. Does not enumerate the host desktop.',
+      inputSchema: emptySchema(),
+      annotations: { readOnlyHint: true },
+      handler: apiTool(api, 'GET', '/api/computer/apps'),
+    },
+    {
+      name: 'deckide.computer.register',
+      title: 'Register a developed GUI application',
+      description: 'Register an executable you created inside a developmentScope returned by computer.apps. Supply exact argv and cwd; paths may be relative to that scope or contained absolute paths. No human registration step or screen-control lease is required. The backend validates the verified grant, existing scope, executable and paths, then returns an opaque runtime-bound ID for computer.launch. This does not expand permissions or execute a shell string.',
+      inputSchema: schema({
+        scopeId: { type: 'string', description: 'Existing authorized scope ID from computer.apps.' },
+        executable: { type: 'string', maxLength: 4096 },
+        args: { type: 'array', maxItems: 32, items: { type: 'string', maxLength: 512 } },
+        cwd: { type: 'string', maxLength: 4096 },
+      }, ['scopeId', 'executable', 'args', 'cwd']),
+      handler: apiTool(api, 'POST', '/api/computer/register', (args) => args),
+    },
+    ...(options.computerHostSessions ? [{
+      name: 'deckide.computer.bind_session',
+      title: 'Bind this grant to its host terminal workspace',
+      description: 'Consume the one-use capability issued only to an interactive terminal in the explicitly host-authorized startup workspace. The server checks the terminal owner and live OAuth grant; no path or workspace selector is accepted.',
+      inputSchema: schema({ capability: { type: 'string' } }, ['capability']),
+      handler: (args: JsonRecord, ctx: ToolContext) => {
+        if (Object.keys(args).some((key) => key !== 'capability'))
+          throw new ToolExecutionError('Invalid host-session binding fields', 400);
+        if (!ctx.issuerSessionKey) throw new ToolExecutionError('Signed-in OAuth issuer required', 403);
+        return options.computerHostSessions!.bind(ctx.actor, stringArg(args, 'capability')!,
+          ctx.grantExpiresAt, ctx.issuerSessionKey);
+      },
+    }] satisfies McpTool[] : []),
+    {
+      name: 'deckide.computer.focus',
+      title: 'Focus an owned desktop window',
+      description: 'Focus a window returned by computer.apps. Instance and window ownership are revalidated; a human control lease blocks other actors.',
+      inputSchema: schema({ instanceId: idParam, windowId: idParam }, ['instanceId', 'windowId']),
+      handler: apiTool(api, 'POST', '/api/computer/focus', (args) => args),
+    },
+    {
+      name: 'deckide.computer.close',
+      title: 'Close an owned desktop application',
+      description: 'Close only the application instance launched by this private desktop. Does not target arbitrary existing processes or host windows.',
+      inputSchema: schema({ instanceId: idParam }, ['instanceId']),
+      annotations: { destructiveHint: true },
+      handler: apiTool(api, 'POST', '/api/computer/close', (args) => args),
+    },
+    {
+      name: 'deckide.computer.control',
+      title: 'Claim, renew or release desktop control',
+      description: 'Claim a short-lived agent control lease, renew it, or release it for human use. Humans may take over; agents cannot override human control. Reads do not renew the lease.',
+      inputSchema: schema({ action: { type: 'string', enum: ['claim', 'heartbeat', 'release'] } }, ['action']),
+      handler: apiTool(api, 'POST', '/api/computer/control', (args) => args),
     },
     {
       name: 'deckide.computer.screenshot',
@@ -1030,14 +1116,22 @@ function buildTools(options: CreateMcpRouterOptions): McpTool[] {
     {
       name: 'deckide.computer.input',
       title: 'Operate desktop',
-      description: 'Click, type, press a key, scroll, or drag using a fresh observationId from this MCP grant. Coordinates are pixels in the 960 x 540 screenshot. Each input consumes its observation; observe again before the next input.',
+      description: 'Operate the private display with this grant’s fresh observationId, subject to control ownership. Send one action or a prevalidated batch of at most 32 actions. Coordinates use the 960 x 540 screenshot. Every batch consumes the observation; observe again. Unicode and remote clipboard require separately supported runtime capabilities.',
       inputSchema: schema({
         observationId: { type: 'string' },
         action: { type: 'string', enum: ['click', 'type', 'key', 'scroll', 'drag'] },
         x: { type: 'number' }, y: { type: 'number' }, toX: { type: 'number' }, toY: { type: 'number' },
         text: { type: 'string', maxLength: 16384 }, key: { type: 'string' },
         direction: { type: 'string', enum: ['up', 'down'] }, steps: { type: 'number' },
-      }, ['observationId', 'action']),
+        button: { type: 'string', enum: ['left', 'middle', 'right'] }, count: { type: 'integer', enum: [1, 2] },
+        actions: { type: 'array', minItems: 1, maxItems: 32, items: schema({
+          action: { type: 'string', enum: ['click', 'type', 'key', 'scroll', 'drag'] },
+          x: { type: 'integer' }, y: { type: 'integer' }, toX: { type: 'integer' }, toY: { type: 'integer' },
+          text: { type: 'string', maxLength: 10000 }, key: { type: 'string', maxLength: 64 },
+          direction: { type: 'string', enum: ['up', 'down'] }, steps: { type: 'integer', minimum: 1, maximum: 10 },
+          button: { type: 'string', enum: ['left', 'middle', 'right'] }, count: { type: 'integer', enum: [1, 2] },
+        }, ['action']) },
+      }, ['observationId']),
       annotations: { destructiveHint: true },
       handler: apiTool(api, 'POST', '/api/computer/input', (args) => args),
     },
@@ -1126,7 +1220,8 @@ export function createMcpRouter(options: CreateMcpRouterOptions) {
   const tools = buildTools(options);
   const toolByName = new Map(tools.map((tool) => [tool.name, tool]));
 
-  async function handleMcpRequest(message: JsonRecord, resource: string, actor: string) {
+  async function handleMcpRequest(message: JsonRecord, resource: string, actor: string,
+    grantExpiresAt: number, issuerSessionKey?: string) {
     const id = (message.id ?? null) as RequestId;
     const method = message.method;
 
@@ -1173,7 +1268,7 @@ export function createMcpRouter(options: CreateMcpRouterOptions) {
           return jsonRpcError(id, -32602, `Unknown tool: ${name}`);
         }
         try {
-          const result = await tool.handler(args, { resource, actor });
+          const result = await tool.handler(args, { resource, actor, grantExpiresAt, issuerSessionKey });
           return jsonRpcResult(id, tool.imageResult ? screenshotToolResult(result) : toolResult(result));
         } catch (error) {
           return jsonRpcResult(id, toolErrorResult(error));
@@ -1313,6 +1408,7 @@ export function createMcpRouter(options: CreateMcpRouterOptions) {
         scopes: validated.scopes,
         resource: validated.resource,
         expiresAt: Date.now() + AUTH_CODE_TTL_MS,
+        issuerSessionKey: isAuthEnabled() ? currentSession(c)?.key : undefined,
       });
 
       return redirectWithParams(validated.redirectUri, {
@@ -1366,6 +1462,7 @@ export function createMcpRouter(options: CreateMcpRouterOptions) {
       scopes: record.scopes,
       resource: record.resource,
       expiresAt: Date.now() + ACCESS_TOKEN_TTL_SECONDS * 1000,
+      issuerSessionKey: record.issuerSessionKey,
     });
 
     return c.json({
@@ -1424,7 +1521,7 @@ export function createMcpRouter(options: CreateMcpRouterOptions) {
     if (Array.isArray(payload)) {
       if (payload.length > 64) return c.json(jsonRpcError(null, -32600, 'Batch is too large'), 400);
       const responses = (await Promise.all(payload.map((item) =>
-        isObject(item) ? handleMcpRequest(item, resource, actor) : jsonRpcError(null, -32600, 'Invalid JSON-RPC request')
+        isObject(item) ? handleMcpRequest(item, resource, actor, token.expiresAt, token.issuerSessionKey) : jsonRpcError(null, -32600, 'Invalid JSON-RPC request')
       ))).filter(Boolean);
       if (responses.length === 0) return c.body(null, 202);
       return c.json(responses);
@@ -1434,7 +1531,7 @@ export function createMcpRouter(options: CreateMcpRouterOptions) {
       return c.json(jsonRpcError(null, -32600, 'Invalid JSON-RPC request'), 400);
     }
 
-    const response = await handleMcpRequest(payload, resource, actor);
+    const response = await handleMcpRequest(payload, resource, actor, token.expiresAt, token.issuerSessionKey);
     if (!response) return c.body(null, 202);
     return c.json(response);
   });

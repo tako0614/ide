@@ -4,8 +4,11 @@ import path from 'node:path';
 import { TerminalSnapshot } from '../terminal/snapshot.js';
 import { TmuxTerminalAdapter, type TmuxTerminalMeta } from '../terminal/tmuxAdapter.js';
 import type { WebSocket } from 'ws';
-import type { Deck, TerminalSession } from '../types.js';
-import { TERMINAL_BUFFER_LIMIT, dataDir } from '../config.js';
+import type { Deck, TerminalSession, Workspace } from '../types.js';
+import type { HostComputerSessions, HostSessionCreator } from '../computer/host-session.js';
+import { currentSession, isAuthEnabled, verifiedInternalActor } from '../middleware/auth.js';
+import { mcpGrantForActor } from './mcp.js';
+import { PORT, TERMINAL_BUFFER_LIMIT, dataDir } from '../config.js';
 import { createHttpError, handleError, readJson } from '../utils/error.js';
 import { getDefaultShell, getAvailableLocales, getShellBasename } from '../utils/shell.js';
 import { alignToUtf8Start, skipPartialEscapeSequence } from '../utils/utf8.js';
@@ -83,7 +86,8 @@ function pickFallbackUtf8Locale(inheritedLang: string | undefined): string | nul
 
 export function createTerminalRouter(
   decks: Map<string, Deck>,
-  terminals: Map<string, TerminalSession>
+  terminals: Map<string, TerminalSession>,
+  options: { hostSessions?: HostComputerSessions; workspaces?: Map<string, Workspace> } = {}
 ) {
   const router = new Hono();
   const backend = new TmuxTerminalAdapter({ runtimeDir: process.env.DECKIDE_TMUX_RUNTIME_DIR || path.resolve(dataDir, 'terminal-tmux') });
@@ -261,6 +265,7 @@ export function createTerminalRouter(
   }
 
   function handleTerminalExit(id: string): void {
+    options.hostSessions?.revokeTerminal(id);
     const session = terminals.get(id);
     if (!session) return;
 
@@ -279,7 +284,8 @@ export function createTerminalRouter(
     command?: string,
     cols: number = DEFAULT_TERMINAL_COLS,
     rows: number = DEFAULT_TERMINAL_ROWS,
-    restored?: TmuxTerminalMeta
+    restored?: TmuxTerminalMeta,
+    creator?: HostSessionCreator
   ): Promise<TerminalSession> {
     const id = restored?.id || crypto.randomUUID();
 
@@ -316,6 +322,18 @@ export function createTerminalRouter(
     for (const [key, value] of Object.entries(process.env)) {
       if (value !== undefined) env[key] = value;
     }
+    // A process-level environment cannot authorize a new or restored terminal.
+    // Only a fresh interactive shell receives its own one-use capability.
+    delete env.DECKIDE_COMPUTER_SESSION_CAPABILITY;
+    delete env.DECKIDE_COMPUTER_MCP_URL;
+    delete env.DECKIDE_MCP_ACCESS_TOKEN;
+    delete env.DECKIDE_MCP_ACCESS_TOKEN_FD;
+    const capability = !restored && !command && creator && options.hostSessions
+      ? options.hostSessions.issueForTerminal(id, deck, creator) : null;
+    if (capability) {
+      env.DECKIDE_COMPUTER_SESSION_CAPABILITY = capability;
+      env.DECKIDE_COMPUTER_MCP_URL = `http://127.0.0.1:${PORT}/mcp`;
+    }
     env.TERM = env.TERM || 'xterm-256color';
     env.COLORTERM = 'truecolor';
     env.TERM_PROGRAM = 'xterm.js';
@@ -343,10 +361,16 @@ export function createTerminalRouter(
 
     const resolvedTitle = restored?.title || getUniqueTerminalTitle(deck.id, title);
     const createdAt = restored?.createdAt || new Date().toISOString();
-    const term = restored ? await backend.attach(restored) : await backend.create({
-      id, deckId: deck.id, title: resolvedTitle, command: command || null,
-      createdAt, shell, args: shellArgs, cwd: deck.root, cols, rows, env,
-    });
+    let term;
+    try {
+      term = restored ? await backend.attach(restored) : await backend.create({
+        id, deckId: deck.id, title: resolvedTitle, command: command || null,
+        createdAt, shell, args: shellArgs, cwd: deck.root, cols, rows, env,
+      });
+    } catch (error) {
+      if (capability) options.hostSessions?.revokeTerminal(id);
+      throw error;
+    }
     cols = term.meta.cols;
     rows = term.meta.rows;
     console.log(`[TERMINAL] ${restored ? 'Attached' : 'Created'} terminal ${id}: pid=${term.pid}`);
@@ -426,6 +450,19 @@ export function createTerminalRouter(
     term.on('disconnect', disconnectBridge);
 
     terminals.set(id, session);
+    if (capability && options.hostSessions) {
+      let attempts = 0;
+      const activate = () => {
+        if (options.hostSessions?.activateTerminal(id, term.pid, session)) return;
+        if (++attempts >= 25 || terminals.get(id) !== session) {
+          options.hostSessions?.revokeTerminal(id);
+          return;
+        }
+        const retry = setTimeout(activate, 20);
+        retry.unref();
+      };
+      activate();
+    }
 
     return session;
   }
@@ -459,9 +496,21 @@ export function createTerminalRouter(
       if (!deckId) throw createHttpError('deckId is required', 400);
       const deck = decks.get(deckId);
       if (!deck) throw createHttpError('Deck not found', 404);
+      let creator: HostSessionCreator | undefined;
+      if (options.hostSessions && options.workspaces && isAuthEnabled()) {
+        const browser = currentSession(c);
+        const oauthActor = verifiedInternalActor(c);
+        if (browser && !browser.session.guest) {
+          creator = { kind: 'browser', sessionKey: browser.key };
+        } else if (oauthActor) {
+          const grant = mcpGrantForActor(oauthActor);
+          if (grant) creator = { kind: 'oauth', actor: oauthActor,
+            issuerSessionKey: grant.issuerSessionKey };
+        }
+      }
       const cols = normalizeTerminalSize(body?.cols, DEFAULT_TERMINAL_COLS);
       const rows = normalizeTerminalSize(body?.rows, DEFAULT_TERMINAL_ROWS);
-      const session = await createTerminalSession(deck, body?.title, body?.command, cols, rows);
+      const session = await createTerminalSession(deck, body?.title, body?.command, cols, rows, undefined, creator);
       return c.json({ id: session.id, title: session.title, cols: session.cols, rows: session.rows, pid: session.pid, tmux: session.tmux }, 201);
     } catch (error) {
       return handleError(c, error);
@@ -476,6 +525,7 @@ export function createTerminalRouter(
 
       await session.kill();
       terminals.delete(terminalId);
+      options.hostSessions?.revokeTerminal(terminalId);
 
       session.sockets.forEach((socket) => {
         try { socket.close(1000, 'Terminal deleted'); } catch { /* ignore */ }

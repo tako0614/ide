@@ -30,7 +30,9 @@ test('screenshot and input use only verified actor resolver', async () => {
   assert.equal((await request('prepare', { 'x-test-verified-session': 'yes' })).status, 200);
   assert.equal((await request('stop', { 'x-test-verified-session': 'yes' })).status, 200);
   assert.equal((await request('launch', { 'x-test-verified-session': 'yes' },
-    { app: 'terminal', actor: 'forged-client-actor' })).status, 200);
+    { app: 'terminal', actor: 'forged-client-actor' })).status, 400);
+  assert.equal((await request('launch', { 'x-test-verified-session': 'yes' },
+    { app: 'terminal' })).status, 200);
   assert.equal((await request('screenshot', { 'x-test-verified-session': 'yes' })).status, 200);
   assert.equal((await request('input', { 'x-test-verified-session': 'yes' })).status, 200);
   assert.deepEqual(seen, ['prepare', 'stop', 'launch', 'verified-actor', 'verified-actor']);

@@ -10,6 +10,8 @@ import { checkRequestOrigin, resolveHostHeader } from './middleware/origin.js';
 import { isAuthEnabled, onSessionRevoked, validWebSocketOrigin, verifyWebSocketAuth } from './middleware/auth.js';
 import { alignToUtf8Start, alignToUtf8End } from './utils/utf8.js';
 import type { AgentBrowserService } from './utils/agent-browser.js';
+import type { DesktopComputer } from './computer/desktop.js';
+import type { ComputerStreamTickets } from './computer/stream-tickets.js';
 
 const MIN_TERMINAL_SIZE = 1;
 const MAX_TERMINAL_SIZE = 500;
@@ -256,7 +258,8 @@ export function setupWebSocketServer(
   server: HttpServer | HttpsServer,
   terminals: Map<string, TerminalSession>,
   browserService?: AgentBrowserService,
-  ensureAttached?: (id: string) => Promise<void>
+  ensureAttached?: (id: string) => Promise<void>,
+  computerStream?: { computer: DesktopComputer; tickets: ComputerStreamTickets }
 ): WebSocketServer {
   const wss = new WebSocketServer({
     server,
@@ -345,6 +348,47 @@ export function setupWebSocketServer(
     socket.on('close', unsubscribe);
 
     const url = new URL(req.url || '', `http://localhost:${PORT}`);
+    const streamPath = '/api/computer/vnc/ws';
+    const token = url.searchParams.get('token') ?? '';
+    if (url.pathname !== streamPath && computerStream?.tickets.reserved(token)) {
+      socket.close(1008, 'Desktop stream ticket has a different route');
+      return;
+    }
+    if (url.pathname === streamPath) {
+      const epoch = Number(url.searchParams.get('epoch'));
+      if (!isAuthEnabled() || !computerStream || !Number.isSafeInteger(epoch) ||
+          !url.searchParams.has('epoch') || !computerStream.tickets.consume(token, authSessionKey, epoch)) {
+        socket.close(1008, 'Invalid desktop stream ticket');
+        return;
+      }
+      // RFB is a byte stream: preserve ordering and close a slow peer rather
+      // than dropping a fragment. The backend gates every client message.
+      void computerStream.computer.attachVncSocket(`browser:${authSessionKey}`, epoch).then(({ socket: upstream, gate, close }) => {
+        if (socket.readyState !== WebSocket.OPEN) { close(); return; }
+        socket.once('close', close);
+        upstream.once('close', () => { if (socket.readyState === WebSocket.OPEN) socket.close(1000, 'Desktop stream ended'); });
+        upstream.once('error', () => { if (socket.readyState === WebSocket.OPEN) socket.close(1011, 'Desktop stream unavailable'); });
+        upstream.on('data', (data: Buffer) => {
+          if (socket.readyState !== WebSocket.OPEN || socket.bufferedAmount > MAX_SOCKET_BUFFERED_AMOUNT) {
+            close();
+            if (socket.readyState === WebSocket.OPEN) socket.close(1009, 'Desktop viewer too slow');
+            return;
+          }
+          socket.send(data, { binary: true }, (error) => { if (error) close(); });
+        });
+        socket.on('message', (raw: RawData) => {
+          try {
+            if (upstream.writableLength > MAX_SOCKET_BUFFERED_AMOUNT) throw new Error('Desktop input overflow');
+            for (const message of gate.acceptClient(rawDataToBuffer(raw))) upstream.write(message);
+          } catch {
+            close();
+            socket.close(1008, 'Invalid or unauthorized desktop protocol');
+          }
+        });
+        upstream.resume();
+      }).catch(() => { if (socket.readyState === WebSocket.OPEN) socket.close(1011, 'Desktop stream unavailable'); });
+      return;
+    }
     if (url.pathname === '/api/browser/ws') {
       if (!browserService) {
         untrackConnection(clientIP, socket);

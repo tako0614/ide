@@ -29,7 +29,7 @@ import {
 import { securityHeaders } from './middleware/security.js';
 import { corsMiddleware } from './middleware/cors.js';
 import { originGuard } from './middleware/origin.js';
-import { currentSession, generateWsToken, isAuthEnabled, login, logout, sessionGuard, sessionStatus, validBrowserMutation, verifiedInternalActor } from './middleware/auth.js';
+import { currentSession, generateWsToken, isAuthEnabled, login, logout, onSessionRevoked, sessionGuard, sessionStatus, validBrowserMutation, verifiedInternalActor } from './middleware/auth.js';
 import { initializeCredentials } from './auth/credentials.js';
 import {
   checkDatabaseIntegrity,
@@ -43,10 +43,16 @@ import { createFileRouter } from './routes/files.js';
 import { createTerminalRouter } from './routes/terminals.js';
 import { createGitRouter } from './routes/git.js';
 import { createSettingsRouter } from './routes/settings.js';
-import { createMcpRouter } from './routes/mcp.js';
+import { activeMcpActorGrant, createMcpRouter, onMcpGrantsRevoked } from './routes/mcp.js';
 import { createBrowserRouter } from './routes/browser.js';
 import { AgentBrowserService } from './utils/agent-browser.js';
-import { DesktopComputer } from './computer/desktop.js';
+import { DesktopComputer, type DevelopmentScopeSource } from './computer/desktop.js';
+import { loadBorrowedDesktopDescriptor } from './computer/borrowed-desktop.js';
+import { HostComputerSessions } from './computer/host-session.js';
+import { ComputerStreamTickets } from './computer/stream-tickets.js';
+import type { VncSandboxPolicy } from './computer/desktop.js';
+import { ChatgptOwner } from './computer/chatgpt-owner.js';
+import { ChatgptController } from './computer/chatgpt-controller.js';
 import { createComputerRouter } from './routes/computer.js';
 import { startMcpReaper } from './utils/browser-maintenance.js';
 import {
@@ -79,7 +85,25 @@ const requestIdMiddleware: MiddlewareHandler = async (c, next) => {
   }
 };
 
-export async function createServer() {
+export type CreateServerOptions = {
+  // Trusted runtime integration only: bind the verified actor to its already
+  // authorized workspace/runtime. No request, settings or workspace-create
+  // route can populate this authority. Empty means no developed-app access.
+  computerDevelopmentScopes?: DevelopmentScopeSource;
+  // Explicit, ephemeral CLI startup authority. The CLI passes its canonical
+  // working directory only with --computer-host-session; absent by default.
+  computerHostSessionRoot?: string;
+  // Default off. Reviewed process-only network restriction for a dedicated
+  // VNC child; no request, environment or persisted setting enables it.
+  computerVncSandbox?: VncSandboxPolicy;
+  // Trusted startup-only handoff from the root-owned desktop supervisor.
+  // These paths never come from an HTTP body, environment variable or setting.
+  computerBorrowedDesktop?: { descriptorPath: string; producerStateDir: string };
+  // Fixed reviewed startup mode. Construction never starts the app.
+  computerOwnedChatgpt?: { stateRoot: string; producerStateDir: string };
+};
+
+export async function createServer(options: CreateServerOptions = {}) {
   await initializeCredentials();
   // Check database integrity before opening
   if (fsSync.existsSync(dbPath) && !checkDatabaseIntegrity(dbPath)) {
@@ -95,7 +119,62 @@ export async function createServer() {
   const decks = new Map<string, Deck>();
   const terminals = new Map<string, TerminalSession>();
   const browserService = new AgentBrowserService();
-  const computer = new DesktopComputer();
+  let computer!: DesktopComputer;
+  const hostSessions = options.computerHostSessionRoot ? new HostComputerSessions({
+    root: options.computerHostSessionRoot, workspaces, decks, terminals,
+    onRevoked: (actor, scopeId) => { void computer.revokeDevelopedScope(actor, scopeId); },
+    onIssuerRevoked: onSessionRevoked,
+    grantAlive: activeMcpActorGrant,
+  }) : undefined;
+  const configuredScopes = options.computerDevelopmentScopes;
+  const scopes: DevelopmentScopeSource = async (actor) => [
+    ...(configuredScopes ? typeof configuredScopes === 'function'
+      ? await configuredScopes(actor) : configuredScopes : []),
+    ...(hostSessions?.scopeFor(actor) ?? []),
+  ];
+  computer = new DesktopComputer(undefined, scopes, { vncSandbox: options.computerVncSandbox });
+  if (options.computerOwnedChatgpt &&
+      (!options.computerVncSandbox || options.computerBorrowedDesktop)) {
+    await computer.shutdown();
+    db.close();
+    throw new Error('Owned ChatGPT requires an exclusive private VNC desktop');
+  }
+  let appController: ChatgptController | null = null;
+  let appClosing = false;
+  const ownedDesktop = options.computerOwnedChatgpt ? {
+    prepare: async () => {
+      if (appClosing) throw new Error('ChatGPT desktop is closing');
+      if (!appController) appController = new ChatgptController(
+        new ChatgptOwner(options.computerOwnedChatgpt.stateRoot), computer,
+        options.computerOwnedChatgpt.producerStateDir);
+      return appController.prepare();
+    },
+    close: async () => {
+      const controller = appController;
+      if (!controller) return;
+      appClosing = true;
+      try {
+        await controller.close();
+        if (appController === controller) appController = null;
+      } finally { appClosing = false; }
+    },
+  } : undefined;
+  if (options.computerBorrowedDesktop) {
+    try {
+      if (!options.computerVncSandbox)
+        throw new Error('Borrowed desktop requires a private VNC sandbox policy');
+      const lease = await loadBorrowedDesktopDescriptor(options.computerBorrowedDesktop.descriptorPath);
+      await computer.attachBorrowedDesktop(lease, options.computerBorrowedDesktop.producerStateDir);
+    } catch (error) {
+      await computer.shutdown().catch(() => undefined);
+      try { db.close(); } catch { /* preserve the descriptor failure */ }
+      throw error;
+    }
+  }
+  const computerTickets = new ComputerStreamTickets();
+  const stopGrantRevocation = hostSessions ? onMcpGrantsRevoked(() => hostSessions.revokeAll()) : undefined;
+  const hostAuditTimer = hostSessions ? setInterval(() => hostSessions.audit(), 1_000) : undefined;
+  hostAuditTimer?.unref();
 
   // 共有ブラウザを起動時から常駐させ、BrowserPane を開いていなくても
   // Codex/Claude の chrome MCP（--browserUrl 127.0.0.1:9222）が常に使えるようにする。
@@ -166,7 +245,7 @@ export async function createServer() {
   app.route('/api/workspaces', createWorkspaceRouter(db, workspaces, workspacePathIndex));
   app.route('/api/decks', createDeckRouter(db, workspaces, decks, terminals));
 
-  const terminalRouter = createTerminalRouter(decks, terminals);
+  const terminalRouter = createTerminalRouter(decks, terminals, { hostSessions, workspaces });
   await terminalRouter.restoreSessions();
   app.route('/api/terminals', terminalRouter);
   app.route('/api/git', createGitRouter(workspaces));
@@ -174,7 +253,7 @@ export async function createServer() {
   app.route('/api/computer', createComputerRouter(computer, (c) => {
     const session = currentSession(c);
     return session ? 'browser:' + session.key : verifiedInternalActor(c);
-  }));
+  }, computerTickets, ownedDesktop));
 
   app.get('/api/config', getConfigHandler());
 
@@ -208,6 +287,7 @@ export async function createServer() {
   app.route('/', createMcpRouter({
     apiFetch: (request) => Promise.resolve(app.fetch(request)),
     terminals,
+    computerHostSessions: hostSessions,
   }));
 
   if (hasStatic) {
@@ -221,7 +301,8 @@ export async function createServer() {
   }
 
   const server = serve({ fetch: app.fetch, port: PORT, hostname: HOST }) as Server;
-  setupWebSocketServer(server, terminals, browserService, async () => terminalRouter.restoreSessions());
+  setupWebSocketServer(server, terminals, browserService,
+    async () => terminalRouter.restoreSessions(), { computer, tickets: computerTickets });
 
   server.on('listening', () => {
     const baseUrl = `http://localhost:${PORT}`;
@@ -255,7 +336,14 @@ export async function createServer() {
         session.detach();
       });
       terminals.clear();
+      hostSessions?.revokeAll();
+      stopGrantRevocation?.();
+      if (hostAuditTimer) clearInterval(hostAuditTimer);
       stopMcpReaper?.();
+      appClosing = true;
+      if (appController) await appController.shutdown().catch(() => {
+        console.error('[SHUTDOWN] Owned ChatGPT cleanup could not be verified');
+      });
       await computer.shutdown();
       await browserService.stop();
 

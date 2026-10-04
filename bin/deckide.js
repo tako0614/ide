@@ -198,6 +198,11 @@ function stopServer() {
 const args = process.argv.slice(2);
 const command = args[0];
 
+if (args.includes('--chatgpt-desktop') && (command !== 'start' || !args.includes('--fg'))) {
+  console.error('--chatgpt-desktop is supported only with `deckide start --fg`.');
+  process.exit(1);
+}
+
 // ── deckide version ──
 if (command === '--version' || command === '-v') {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf-8'));
@@ -216,6 +221,7 @@ Usage:
   deckide restart                Restart server
   deckide status                 Show server status
   deckide logs                   Show server logs
+  deckide computer <subcommand>  Use an inherited, temporary host session grant
 
   deckide port                   Show current port
   deckide port <number>          Change port (auto-restarts)
@@ -235,6 +241,9 @@ Options (for start):
   --host <host>                  Host (default: 127.0.0.1, loopback only)
   --no-open                      Don't open browser
   --fg                           Run in foreground
+  --computer-host-session        Pin this CLI's current directory as an ephemeral
+                                GUI development scope (local authenticated use)
+  --chatgpt-desktop              Enable explicit owned ChatGPT desktop launch (foreground only)
 
 To reach Deck IDE from another device, bind a wider address AND enable auth:
   deckide auth on <user> <password>
@@ -246,6 +255,18 @@ arbitrary commands as your user.
 }
 
 // Convert one-time legacy settings before commands read or mutate them.
+if (command === 'computer') {
+  const { runComputerClient } = await import('./deckide-computer.js');
+  await runComputerClient(args.slice(1));
+  process.exit(0);
+}
+
+if (args.includes('--computer-host-session') &&
+    (command === 'restart' || !process.env.DECKIDE_DATA_DIR)) {
+  console.error('--computer-host-session requires a fresh start and an explicit isolated DECKIDE_DATA_DIR.');
+  process.exit(1);
+}
+
 await migrateLegacySettings(loadSettings());
 
 // ── deckide config ──
@@ -537,7 +558,7 @@ if (!isStart) {
 }
 
 const startArgs = command === 'start' ? args.slice(1) : args;
-const startOptions = { port: null, host: null, open: true, fg: false };
+const startOptions = { port: null, host: null, open: true, fg: false, computerHostSession: false, chatgptDesktop: false };
 
 for (let i = 0; i < startArgs.length; i++) {
   const arg = startArgs[i];
@@ -551,12 +572,22 @@ for (let i = 0; i < startArgs.length; i++) {
     startOptions.open = false;
   } else if (arg === '--fg') {
     startOptions.fg = true;
+  } else if (arg === '--computer-host-session') {
+    startOptions.computerHostSession = true;
+  } else if (arg === '--chatgpt-desktop') {
+    startOptions.chatgptDesktop = true;
   }
 }
 
 const settings = loadSettings();
 const port = startOptions.port || settings.port || 8787;
 const host = startOptions.host || settings.host || '127.0.0.1';
+
+if (startOptions.computerHostSession &&
+    (process.platform !== 'linux' || !isLoopbackHost(host) || !isAuthConfigured(settings))) {
+  console.error('--computer-host-session requires Linux, a loopback host and enabled session authentication.');
+  process.exit(1);
+}
 
 // The server enforces this too (src/config.ts), but in background mode its
 // stderr only reaches the log file — check here so the user sees why.
@@ -574,6 +605,10 @@ if (!isLoopbackHost(host) && !isAuthConfigured(settings) && process.env.DECKIDE_
 
 // Check if already running on the target port
 if (isServerRunningOnPort(port)) {
+  if (startOptions.computerHostSession) {
+    console.error('--computer-host-session requires a fresh server; the target port is already in use.');
+    process.exit(1);
+  }
   console.log(`Server is already running on http://localhost:${port}`);
   process.exit(0);
 }
@@ -583,6 +618,10 @@ if (isServerRunningOnPort(port)) {
 if (!startOptions.fg) {
   const oldPid = getRunningPid();
   if (oldPid) {
+    if (startOptions.computerHostSession) {
+      console.error('--computer-host-session will not stop or reuse an existing server.');
+      process.exit(1);
+    }
     console.log('Stopping old server...');
     stopServer();
   }
@@ -596,6 +635,7 @@ if (!startOptions.fg) {
   const err = fs.openSync(logFile, 'a');
 
   const fgArgs = ['start', '--fg', '--no-open', '-p', String(port), '--host', host];
+  if (startOptions.computerHostSession) fgArgs.push('--computer-host-session');
   const child = spawn(process.execPath, [fileURLToPath(import.meta.url), ...fgArgs], {
     detached: true,
     stdio: ['ignore', out, err],
@@ -611,7 +651,7 @@ if (!startOptions.fg) {
   let ready = false;
   while (Date.now() - startTime < 8000) {
     await new Promise(r => setTimeout(r, 300));
-    if (isServerRunning()) { ready = true; break; }
+    if (isServerRunningOnPort(port)) { ready = true; break; }
   }
 
   if (ready) {
@@ -627,6 +667,7 @@ if (!startOptions.fg) {
     }
   } else {
     console.error('Server failed to start. Check logs: deckide logs');
+    if (startOptions.computerHostSession) process.exit(1);
   }
 
   process.exit(0);
@@ -638,7 +679,15 @@ process.env.PORT = String(port);
 process.env.HOST = host;
 
 const { createServer } = await import(path.join(__dirname, '..', 'dist', 'server.js'));
-await createServer();
+const createServerOptions = {};
+if (startOptions.chatgptDesktop) {
+  const { ownedChatgptStartupOptions } = await import(path.join(__dirname, '..', 'dist', 'computer', 'chatgpt-startup.js'));
+  Object.assign(createServerOptions, await ownedChatgptStartupOptions());
+}
+if (startOptions.computerHostSession) {
+  createServerOptions.computerHostSessionRoot = fs.realpathSync(process.cwd());
+}
+await createServer(createServerOptions);
 
 if (startOptions.open) {
   const url = `http://localhost:${port}`;

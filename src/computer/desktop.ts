@@ -420,6 +420,16 @@ export class DesktopComputer {
     try { await work; } finally { if (this.pendingCleanup === work) this.pendingCleanup = null; }
   }
 
+  /** An owner may revoke only its own borrowed lease, never a replacement. */
+  async detachBorrowedDesktop(lease: BorrowedDesktopLease): Promise<void> {
+    if (this.runtime?.borrowed !== lease) return;
+    await this.revokeBorrowedDesktop();
+  }
+
+  assertLifecycleControl(actor: string): void {
+    this.requireControl(actor);
+  }
+
   private vncCapacityUsed(): number {
     return this.vncPending + [...this.owned].filter((child) => child.role === 'vnc').length;
   }

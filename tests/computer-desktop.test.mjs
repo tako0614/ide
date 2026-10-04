@@ -17,7 +17,7 @@ test('input validation rejects option injection and validates a whole drag befor
   assert.throws(() => desktopInputCommands({ action: 'scroll', direction: 'down', steps: 11 }),
     /Scroll steps/);
   assert.deepEqual(desktopInputCommands({ action: 'click', x: 959, y: 539 }),
-    [['mousemove', '--sync', '1279', '719', 'click', '1']]);
+    [['mousemove', '1279', '719', 'click', '1']]);
 });
 
 test('native desktop isolates state, binds observations, bounds apps, and cleans up', async (t) => {
@@ -39,32 +39,32 @@ test('native desktop isolates state, binds observations, bounds apps, and cleans
     assert.equal(computer.runtime.env.DECKIDE_COMPUTER_TEST_SECRET, undefined);
     assert.equal(computer.runtime.env.WAYLAND_DISPLAY, undefined);
 
-    const first = await computer.screenshot('actor-a');
+    const first = await computer.screenshot('browser:actor-a');
     assert.equal(first.width, 960);
     assert.equal(first.height, 540);
     assert.equal(first.image.mimeType, 'image/jpeg');
     assert.ok(Buffer.from(first.image.data, 'base64').length < 3 * 1024 * 1024);
-    await assert.rejects(computer.input('actor-b', {
+    await assert.rejects(computer.input('browser:actor-b', {
       observationId: first.observationId, action: 'click', x: 2, y: 2,
     }), /fresh screenshot/);
-    await assert.rejects(computer.input('actor-a', {
+    await assert.rejects(computer.input('browser:actor-a', {
       observationId: first.observationId, action: 'drag', x: 2, y: 2, toX: 960, toY: 3,
     }), /Coordinates are outside/);
     // Invalid actions do not consume a valid observation. A successful action
     // consumes it and invalidates all actors' observations of the old screen.
-    const peer = await computer.screenshot('actor-b');
-    assert.deepEqual(await computer.input('actor-a', {
+    const peer = await computer.screenshot('browser:actor-b');
+    assert.deepEqual(await computer.input('browser:actor-a', {
       observationId: first.observationId, action: 'click', x: 2, y: 2,
     }), { executed: true, requiresObservation: true });
-    await assert.rejects(computer.input('actor-b', {
+    await assert.rejects(computer.input('browser:actor-b', {
       observationId: peer.observationId, action: 'key', key: 'Enter',
     }), /fresh screenshot/);
-    const unchanged = await computer.screenshot('actor-a', first.hash);
+    const unchanged = await computer.screenshot('browser:actor-a', first.hash);
     assert.equal(unchanged.unchanged, true);
     assert.equal('image' in unchanged, false);
     assert.notEqual(unchanged.observationId, first.observationId);
     computer.observations.get(unchanged.observationId).createdAt -= 31_000;
-    await assert.rejects(computer.input('actor-a', {
+    await assert.rejects(computer.input('browser:actor-a', {
       observationId: unchanged.observationId, action: 'key', key: 'Enter',
     }), /fresh screenshot/);
 
@@ -74,7 +74,7 @@ test('native desktop isolates state, binds observations, bounds apps, and cleans
     await assert.rejects(computer.launch({ app: 'terminal' }), /app limit/);
     assert.equal((await computer.stop()).running, false);
     await assert.rejects(fs.stat(dir), { code: 'ENOENT' });
-    await assert.rejects(computer.screenshot('actor-a'), /Prepare the desktop first/);
+    await assert.rejects(computer.screenshot('browser:actor-a'), /Prepare the desktop first/);
     assert.equal((await computer.status()).running, false);
     assert.equal(computer.owned.size, 0);
     await assert.rejects(fs.stat(`/proc/${xvfbPid}`), { code: 'ENOENT' });
@@ -132,17 +132,19 @@ test('unexpected Xvfb death cleans its desktop and permits fresh preparation', a
   } finally { await computer.shutdown(); }
 });
 
-test('Xvfb exit between readiness and registration cannot report running', async (t) => {
+test('Xvfb exit during readiness retries on a different isolated display', async (t) => {
   const computer = new DesktopComputer();
   if (!(await computer.status()).supported) return t.skip('Native Linux X11 tools unavailable');
   const originalReadFile = fs.readFile;
   let injected = false;
+  let killedPid;
   fs.readFile = async (...args) => {
     const result = await originalReadFile(...args);
     if (!injected && /^\/tmp\/\.X\d+-lock$/.test(String(args[0]))) {
       const xvfb = [...computer.owned].find((entry) => entry.role === 'desktop')?.process;
       assert.ok(xvfb?.pid);
       injected = true;
+      killedPid = xvfb.pid;
       const exited = new Promise((resolve) => xvfb.once('exit', resolve));
       process.kill(xvfb.pid, 'SIGKILL');
       await exited;
@@ -150,9 +152,15 @@ test('Xvfb exit between readiness and registration cannot report running', async
     return result;
   };
   try {
-    await assert.rejects(computer.prepare(), /X11 display exited during preparation/);
+    const prepared = await computer.prepare();
     assert.equal(injected, true);
-    assert.equal((await computer.status()).running, false);
+    assert.equal(prepared.running, true);
+    const replacementPid = computer.runtime?.xvfb.pid;
+    assert.ok(replacementPid);
+    assert.notEqual(replacementPid, killedPid);
+    assert.equal((await computer.status()).running, true);
+    assert.doesNotThrow(() => process.kill(replacementPid, 0));
+    await assert.rejects(fs.stat(`/proc/${killedPid}`), { code: 'ENOENT' });
   } finally {
     fs.readFile = originalReadFile;
     await computer.shutdown();

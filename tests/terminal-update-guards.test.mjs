@@ -7,7 +7,8 @@ import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
-  assertInitialBrokerResourcesAbsent, classifyTerminalRuntimeEntries,
+  assertInitialBrokerResourcesAbsent, assertChatGPTStateParentsTrusted, createChatGPTStateRoot,
+  CHATGPT_STATE_ROOT, classifyTerminalRuntimeEntries,
   parseShowProperties, assertHttpService, assertInactiveHttpService,
   assertEmptyServiceCgroup, parseDeckideExecStart, parseKnownRollbackLaunch,
   parseProcStat, readProcTree, assertNoLegacyPtys, assertBrokerCgroups,
@@ -234,12 +235,14 @@ test('initial install leaves existing broker-owned paths untouched', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'deckide-broker-resource-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const paths = [path.join(root, 'run'), path.join(root, 'state'),
-    path.join(root, 'state/terminal-tmux'), path.join(root, 'run/broker.sock')];
+    path.join(root, 'state/terminal-tmux'), path.join(root, 'run/broker.sock'),
+    path.join(root, 'state/deckide-chatgpt')];
   assert.doesNotThrow(() => assertInitialBrokerResourcesAbsent(paths));
   for (let index = 0; index < paths.length; index++) {
     const fixture = path.join(root, `case-${index}`);
     const resources = [path.join(fixture, 'run'), path.join(fixture, 'state'),
-      path.join(fixture, 'state/terminal-tmux'), path.join(fixture, 'run/broker.sock')];
+      path.join(fixture, 'state/terminal-tmux'), path.join(fixture, 'run/broker.sock'),
+      path.join(fixture, 'state/deckide-chatgpt')];
     const selected = resources[index];
     fs.mkdirSync(path.dirname(selected), { recursive: true });
     if (index === 3) fs.writeFileSync(selected, 'fixture');
@@ -247,6 +250,53 @@ test('initial install leaves existing broker-owned paths untouched', (t) => {
     const mode = fs.lstatSync(selected).mode & 0o777;
     assert.throws(() => assertInitialBrokerResourcesAbsent(resources), /already exists/);
     assert.equal(fs.lstatSync(selected).mode & 0o777, mode, 'preflight never changes existing permissions');
+  }
+});
+
+test('ChatGPT owner state root is created exclusively below trusted canonical parents', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'deckide-chatgpt-state-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const varRoot = path.join(root, 'var');
+  const libRoot = path.join(varRoot, 'lib');
+  fs.mkdirSync(libRoot, { recursive: true, mode: 0o755 });
+  fs.chmodSync(varRoot, 0o755);
+  fs.chmodSync(libRoot, 0o755);
+  const parentInfo = fs.statSync(libRoot);
+  const expectedUid = parentInfo.uid;
+  const expectedGid = parentInfo.gid;
+  const stateRoot = path.join(libRoot, 'deckide-chatgpt');
+  assert.equal(assertChatGPTStateParentsTrusted({ varRoot, libRoot, expectedUid }), libRoot);
+  assert.equal(createChatGPTStateRoot({ stateRoot, varRoot, libRoot, expectedUid, expectedGid }), stateRoot);
+  assert.equal(fs.lstatSync(stateRoot).mode & 0o777, 0o700);
+  assert.deepEqual(fs.readdirSync(stateRoot), [], 'updater creates no descriptors, credentials, or descendants');
+  assert.throws(() => createChatGPTStateRoot({ stateRoot, varRoot, libRoot, expectedUid, expectedGid }), /already exists/);
+  assert.equal(CHATGPT_STATE_ROOT, '/var/lib/deckide-chatgpt');
+
+  const symlinkVar = path.join(root, 'var-link');
+  fs.symlinkSync(varRoot, symlinkVar);
+  assert.throws(() => assertChatGPTStateParentsTrusted({ varRoot: symlinkVar,
+    libRoot: path.join(symlinkVar, 'lib'), expectedUid }), /canonical|trusted/);
+  fs.chmodSync(libRoot, 0o777);
+  assert.throws(() => assertChatGPTStateParentsTrusted({ varRoot, libRoot, expectedUid }), /trusted/);
+
+  if (process.getuid?.() === 0) {
+    const inheritedRoot = path.join(root, 'inherited-var');
+    const inheritedLib = path.join(inheritedRoot, 'lib');
+    fs.mkdirSync(inheritedLib, { recursive: true, mode: 0o755 });
+    const foreignGid = expectedGid === 65534 ? 65533 : 65534;
+    fs.chownSync(inheritedLib, expectedUid, foreignGid);
+    fs.chmodSync(inheritedLib, 0o2755);
+    const before = fs.lstatSync(inheritedLib);
+    const inheritedState = path.join(inheritedLib, 'deckide-chatgpt');
+    assert.throws(() => createChatGPTStateRoot({ stateRoot: inheritedState,
+      varRoot: inheritedRoot, libRoot: inheritedLib, expectedUid, expectedGid }),
+    /root-group|special mode bits/);
+    const after = fs.lstatSync(inheritedLib);
+    const rejected = fs.lstatSync(inheritedState);
+    assert.equal(after.gid, before.gid, 'refusal does not chown an existing parent');
+    assert.equal(after.mode & 0o7777, before.mode & 0o7777, 'refusal does not chmod an existing parent');
+    assert.equal(rejected.gid, foreignGid, 'mismatched inherited group is not repaired');
+    assert.ok(rejected.mode & 0o2000, 'inherited setgid is rejected without clearing the bit');
   }
 });
 
@@ -365,6 +415,37 @@ test('previous package launcher is recognized without retaining arbitrary flags 
     (value) => value), /unrecognized flag/);
   assert.throws(() => parseDeckideExecStart(raw.replace(`${root}/bin/deckide.js`, '/opt/other/bin/deckide.js'), root,
     (value) => value), /previous package/);
+  assert.throws(() => parseDeckideExecStart(raw.replace(' ; ignore_errors=no ; }',
+    ' --chatgpt-desktop ; ignore_errors=no ; }'), root,
+    (value) => value), /unrecognized flag/);
+});
+
+test('candidate launcher accepts only one trailing ChatGPT flag while preserving its launch form', () => {
+  const candidate = '/opt/new/deckide';
+  const node = '/usr/local/bin/node';
+  const resolve = (value) => value;
+  const cli = `{ path=${node} ; argv[]=${node} ${candidate}/bin/deckide.js start --fg --no-open --chatgpt-desktop ; }`;
+  const parsedCli = parseDeckideExecStart(cli, candidate, resolve,
+    { allowChatgptDesktop: true, requireChatgptDesktop: true });
+  assert.equal(parsedCli.entry, 'bin/deckide.js');
+  assert.deepEqual(parsedCli.publicArgs, ['start', '--fg', '--no-open', '--chatgpt-desktop']);
+  assert.equal(parsedCli.nodePath, node);
+
+  const direct = `{ path=${node} ; argv[]=${node} ${candidate}/dist/index.js --chatgpt-desktop ; }`;
+  const parsedDirect = parseDeckideExecStart(direct, candidate, resolve,
+    { allowChatgptDesktop: true, requireChatgptDesktop: true });
+  assert.equal(parsedDirect.entry, 'dist/index.js');
+  assert.deepEqual(parsedDirect.publicArgs, ['--chatgpt-desktop']);
+  assert.equal(parsedDirect.nodePath, node);
+  assert.throws(() => parseDeckideExecStart(cli, candidate, resolve), /unrecognized flag/);
+  assert.throws(() => parseDeckideExecStart(cli.replace('--no-open --chatgpt-desktop',
+    '--chatgpt-desktop --no-open'), candidate, resolve,
+  { allowChatgptDesktop: true, requireChatgptDesktop: true }), /unrecognized flag/);
+  assert.throws(() => parseDeckideExecStart(cli.replace('--chatgpt-desktop',
+    '--chatgpt-desktop --chatgpt-desktop'), candidate, resolve,
+  { allowChatgptDesktop: true, requireChatgptDesktop: true }), /unrecognized flag/);
+  assert.throws(() => parseDeckideExecStart(cli.replace(' --chatgpt-desktop', ''), candidate, resolve,
+    { allowChatgptDesktop: true, requireChatgptDesktop: true }), /unrecognized flag/);
 });
 
 test('rollback accepts either known effective launcher across daemon-reload and state-write crash', () => {
@@ -374,7 +455,14 @@ test('rollback accepts either known effective launcher across daemon-reload and 
   const raw = (root) => `{ path=${node} ; argv[]=${node} ${root}/bin/deckide.js start --fg ; }`;
   const resolve = (value) => value;
   assert.equal(parseKnownRollbackLaunch(raw(previous), previous, candidate, resolve).kind, 'previous');
-  assert.equal(parseKnownRollbackLaunch(raw(candidate), previous, candidate, resolve).kind, 'candidate');
+  assert.equal(parseKnownRollbackLaunch(`${raw(candidate).replace(' ; }', ' --chatgpt-desktop ; }')}`,
+    previous, candidate, resolve).kind, 'candidate');
+  assert.equal(parseKnownRollbackLaunch(
+    `{ path=${node} ; argv[]=${node} ${candidate}/bin/deckide.js start --fg --chatgpt-desktop ; }`,
+    previous, candidate, resolve).kind, 'candidate');
+  assert.throws(() => parseKnownRollbackLaunch(
+    `{ path=${node} ; argv[]=${node} ${candidate}/bin/deckide.js start --fg --chatgpt-desktop --no-open ; }`,
+    previous, candidate, resolve), /neither/);
   assert.throws(() => parseKnownRollbackLaunch(raw('/opt/other/deckide'), previous, candidate, resolve),
     /neither/);
 });
@@ -606,7 +694,7 @@ test('rendered candidate unit appends redacted startup validation with preserved
   const rendered = renderedUnits(packageRoot, 'deckide.service', launch, originalNode);
   assert.match(rendered.dropin,
     /^ExecStartPre=\/opt\/old-runtime\/bin\/node \/opt\/deckide\/releases\/combined\/node_modules\/deckide\/ops\/startup-check\.mjs$/m);
-  assert.match(rendered.execStart, /^\/opt\/old-runtime\/bin\/node \/opt\/deckide\/releases\/combined\/node_modules\/deckide\/bin\/deckide\.js start --fg$/);
+  assert.match(rendered.execStart, /^\/opt\/old-runtime\/bin\/node \/opt\/deckide\/releases\/combined\/node_modules\/deckide\/bin\/deckide\.js start --fg --chatgpt-desktop$/);
   assert.doesNotMatch(rendered.dropin, /^ExecStartPre=$/m, 'existing base ExecStartPre directives are not reset');
   assert.deepEqual(rendered.dropin.match(/^Environment=.*$/gm), [
     'Environment=DECKIDE_TMUX_RUNTIME_DIR=/var/lib/deckide-tmux/terminal-tmux',
@@ -622,6 +710,17 @@ test('rendered candidate unit appends redacted startup validation with preserved
   assert.match(direct.dropin,
     /^ExecStartPre=\/usr\/local\/bin\/node \/opt\/deckide\/releases\/combined\/node_modules\/deckide\/ops\/startup-check\.mjs$/m,
   'direct CLI services use the separately reviewed Node binary for the checker');
+  assert.match(direct.execStart,
+    /^\/opt\/deckide\/releases\/combined\/node_modules\/deckide\/bin\/deckide\.js start --fg --chatgpt-desktop$/);
+  const directServer = renderedUnits(packageRoot, 'deckide.service', {
+    entry: 'dist/index.js', nodePath: '/opt/old-runtime/bin/node', publicArgs: [], direct: false,
+  }, originalNode);
+  assert.match(directServer.execStart,
+    /^\/opt\/old-runtime\/bin\/node \/opt\/deckide\/releases\/combined\/node_modules\/deckide\/dist\/index\.js --chatgpt-desktop$/);
+  assert.throws(() => renderedUnits(packageRoot, 'deckide.service', {
+    entry: 'bin/deckide.js', nodePath: '/opt/old-runtime/bin/node',
+    publicArgs: ['start', '--fg', '--chatgpt-desktop'], direct: false,
+  }, originalNode), /unexpectedly includes/);
 
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'deckide-plan-startup-'));
   t.after(() => fs.rmSync(temp, { recursive: true, force: true }));

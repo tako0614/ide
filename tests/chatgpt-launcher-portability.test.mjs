@@ -8,7 +8,8 @@ import { promisify } from 'node:util';
 import { test } from 'node:test';
 
 const run = promisify(execFile);
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const root = path.resolve(process.env.DECKIDE_CANDIDATE_PACKAGE_ROOT || sourceRoot);
 const launcherRoot = path.join(root, 'ops/chatgpt-launcher');
 const files = ['launch-chatgpt.sh', 'session-supervisor.py', 'desktop-session.py',
   'session-bus.conf', 'test-session-lifecycle.py'];
@@ -19,7 +20,7 @@ const canonical = (value) => value && typeof value === 'object'
   : JSON.stringify(value);
 
 async function fixture(t) {
-  const temporary = path.join(root, 'tmp');
+  const temporary = path.join(sourceRoot, 'tmp');
   await mkdir(temporary, { recursive: true, mode: 0o700 });
   const directory = await mkdtemp(path.join(temporary, 'chatgpt-portability-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
