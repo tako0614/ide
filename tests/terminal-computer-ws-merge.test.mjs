@@ -38,11 +38,12 @@ test('private desktop tickets stay on their route while tmux restore callback st
   const { hashPassword } = await import('../dist/auth/password.js');
   await writeFile(path.join(dir, 'settings.json'), JSON.stringify({ authEnabled: true,
     authUser: 'owner', authPasswordHash: await hashPassword('test-password-only-2026') }));
-  const [{ initializeCredentials }, auth, { ComputerStreamTickets },
+  const [{ initializeCredentials }, auth, { ComputerStreamTickets }, { RfbClientGate },
     { setupWebSocketServer, getConnectionStats }] = await Promise.all([
     import('../dist/auth/credentials.js'),
     import('../dist/middleware/auth.js'),
     import('../dist/computer/stream-tickets.js'),
+    import('../dist/computer/rfb.js'),
     import('../dist/websocket.js'),
   ]);
   await initializeCredentials();
@@ -65,7 +66,7 @@ test('private desktop tickets stay on their route while tmux restore callback st
       upstream.write = (message) => { accepted.push(Buffer.from(message)); return true; };
       const close = () => upstream.destroy();
       attached.push({ actor, epoch, upstream, accepted });
-      return { socket: upstream, gate: { acceptClient: (raw) => [raw] }, close };
+      return { socket: upstream, gate: new RfbClientGate(1440, 960, () => true), close };
     },
   };
   const restoreCalls = [];
@@ -89,8 +90,46 @@ test('private desktop tickets stay on their route while tmux restore callback st
     return socket;
   };
   const closeReason = async (socket) => {
-    const [code, reason] = await once(socket, 'close');
+    const [code, reason] = await once(socket, 'close', { signal: AbortSignal.timeout(2000) });
     return { code, reason: reason.toString() };
+  };
+  const waitForWrites = async (entry, count) => {
+    for (let attempt = 0; entry.accepted.length < count && attempt < 80; attempt++)
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(entry.accepted.length, count, 'RFB client input must reach the parser and upstream');
+  };
+  const upstreamMessage = async (socket, entry, bytes) => {
+    const output = new Promise((resolve, reject) => {
+      const parts = [];
+      const timeout = setTimeout(() => { socket.off('message', receive); reject(new Error('RFB server output timeout')); }, 2000);
+      const receive = (chunk, binary) => {
+        assert.equal(binary, true);
+        parts.push(Buffer.from(chunk));
+        if (Buffer.concat(parts).length >= bytes.length) {
+          clearTimeout(timeout);
+          socket.off('message', receive);
+          resolve(Buffer.concat(parts));
+        }
+      };
+      socket.on('message', receive);
+    });
+    entry.upstream.push(bytes);
+    assert.deepEqual(await output, bytes);
+  };
+  const negotiate = async (socket, entry) => {
+    const version = Buffer.from('RFB 003.008\n');
+    await upstreamMessage(socket, entry, version);
+    socket.send(version);
+    await waitForWrites(entry, 1);
+    await upstreamMessage(socket, entry, Buffer.from([1, 2]));
+    socket.send(Buffer.from([2]));
+    await waitForWrites(entry, 2);
+    await upstreamMessage(socket, entry, Buffer.alloc(16, 0x51));
+    socket.send(Buffer.alloc(16, 0x52));
+    await waitForWrites(entry, 3);
+    await upstreamMessage(socket, entry, Buffer.alloc(4));
+    socket.send(Buffer.from([1]));
+    await waitForWrites(entry, 4);
   };
 
   const wrongRoute = connect('/api/terminals/missing', tickets.issue(sessionKey, 7));
@@ -112,21 +151,44 @@ test('private desktop tickets stay on their route while tmux restore callback st
     await new Promise((resolve) => setTimeout(resolve, 5));
   assert.equal(attached.length, 1);
   assert.deepEqual([attached[0].actor, attached[0].epoch], [`browser:${sessionKey}`, 7]);
-  const output = once(socket, 'message');
-  attached[0].upstream.push(Buffer.from([0, 1, 2, 255]));
-  const [chunk, binary] = await output;
-  assert.equal(binary, true);
-  assert.deepEqual(Buffer.from(chunk), Buffer.from([0, 1, 2, 255]));
-  socket.send(Buffer.from([3, 4, 5]));
-  for (let attempt = 0; attached[0].accepted.length === 0 && attempt < 40; attempt++)
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  assert.deepEqual(attached[0].accepted, [Buffer.from([3, 4, 5])]);
+  await negotiate(socket, attached[0]);
+  const geometry = Buffer.alloc(4);
+  geometry.writeUInt16BE(1440, 0); geometry.writeUInt16BE(960, 2);
+  await upstreamMessage(socket, attached[0], geometry);
+  const header = Buffer.alloc(20);
+  header.writeUInt32BE(0, 16);
+  await upstreamMessage(socket, attached[0], header);
+  await upstreamMessage(socket, attached[0], Buffer.from([0, 1, 2, 255]));
+  const update = Buffer.alloc(10);
+  update[0] = 3;
+  update.writeUInt16BE(1440, 6); update.writeUInt16BE(960, 8);
+  socket.send(update);
+  await waitForWrites(attached[0], 5);
+  assert.deepEqual(attached[0].accepted[4], update);
   socket.close();
   await once(socket, 'close');
   assert.equal(attached[0].upstream.destroyed, true);
   const replay = connect('/api/computer/vnc/ws', ticket, 7);
   assert.deepEqual(await closeReason(replay), { code: 1008, reason: 'Unauthorized' });
   assert.equal(attached.length, 1);
+
+  const mismatch = connect('/api/computer/vnc/ws', tickets.issue(sessionKey, 9), 9);
+  await once(mismatch, 'open');
+  for (let attempt = 0; attached.length < 2 && attempt < 40; attempt++)
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(attached.length, 2);
+  await negotiate(mismatch, attached[1]);
+  const mismatchedGeometry = Buffer.alloc(4);
+  mismatchedGeometry.writeUInt16BE(1280, 0); mismatchedGeometry.writeUInt16BE(720, 2);
+  const forwardedAfterMismatch = [];
+  mismatch.on('message', (chunk) => forwardedAfterMismatch.push(Buffer.from(chunk)));
+  attached[1].upstream.push(mismatchedGeometry.subarray(0, 2));
+  attached[1].upstream.push(mismatchedGeometry.subarray(2));
+  assert.deepEqual(await closeReason(mismatch), { code: 1008, reason: 'Invalid desktop protocol' });
+  assert.deepEqual(forwardedAfterMismatch, [], 'unverified dimension bytes never reach the viewer');
+  assert.equal(attached[1].upstream.destroyed, true);
+  for (let attempt = 0; getConnectionStats().some((entry) => entry.count) && attempt < 40; attempt++)
+    await new Promise((resolve) => setTimeout(resolve, 5));
   assert.equal(getConnectionStats().reduce((sum, item) => sum + item.count, 0), 0);
 
   // Exercise the real tmux lifecycle with a host-session spy: a fresh shell

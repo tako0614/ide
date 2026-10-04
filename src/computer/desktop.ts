@@ -38,6 +38,16 @@ export type DevelopmentScope = { id: string; root: string };
 export type DevelopmentScopeSource = readonly DevelopmentScope[] |
   ((actor: string) => readonly DevelopmentScope[] | Promise<readonly DevelopmentScope[]>);
 export type VncSandboxPolicy = { expectedFilterSha256: string; expectedLauncherSha256: string };
+export type DesktopFramebuffer = Readonly<{ width: number; height: number }>;
+/** Startup authority only. Never populated from a request or guessed from RFB. */
+export function trustedDesktopFramebuffer(value: DesktopFramebuffer): DesktopFramebuffer {
+  if (!value || Object.keys(value).sort().join(',') !== 'height,width' ||
+    !Number.isSafeInteger(value.width) || !Number.isSafeInteger(value.height) ||
+    value.width < 1 || value.height < 1 || value.width > 8192 || value.height > 8192 ||
+    value.width * value.height > 16 * 1024 * 1024)
+    throw createHttpError('Trusted framebuffer geometry is invalid', 503);
+  return Object.freeze({ width: value.width, height: value.height });
+}
 type ResolvedDevelopmentScope = DevelopmentScope & { dev: number; ino: number };
 type DevelopedRegistration = { label: string; command: string; args: string[];
   cwd: string; root: string; rootDev: number; rootIno: number;
@@ -87,7 +97,7 @@ type OwnedChild = {
   closed?: boolean;
 };
 type Runtime = { dir: string; display: string; authority: string; env: NodeJS.ProcessEnv;
-  xvfb?: ChildProcess; borrowed?: BorrowedDesktopLease };
+  xvfb?: ChildProcess; borrowed?: BorrowedDesktopLease; framebuffer?: DesktopFramebuffer };
 type VncStream = { epoch: number; runtime: Runtime; filterFile: string; binary: string; launcher: string;
   setpriv: string; passwordFile: string; passwordFileHash: string; password: string };
 type VncConnection = { actor: string; epoch: number; socket: Socket; gate: RfbClientGate;
@@ -350,10 +360,12 @@ export class DesktopComputer {
   private readonly borrowedProducerDirs = new Set<string>();
 
   /** Startup-only attachment. The producer directory contains only our VNC assets. */
-  async attachBorrowedDesktop(lease: BorrowedDesktopLease, producerStateDir: string): Promise<DesktopStatus> {
+  async attachBorrowedDesktop(lease: BorrowedDesktopLease, producerStateDir: string,
+    configuredFramebuffer: DesktopFramebuffer): Promise<DesktopStatus> {
     return this.withOperation(async () => {
       if (this.runtime || this.preparingDir || this.owned.size) throw createHttpError('Desktop is busy', 409);
       if (!(lease instanceof BorrowedDesktopLease)) throw createHttpError('Invalid desktop lease', 503);
+      const framebuffer = trustedDesktopFramebuffer(configuredFramebuffer);
       const snapshot = lease.check();
       const base = await fs.realpath(producerStateDir);
       const baseStat = await fs.lstat(base);
@@ -368,7 +380,7 @@ export class DesktopComputer {
         const generation = ++this.epoch;
         this.borrowedMode = true;
         this.runtime = { dir, display: snapshot.display, authority: snapshot.authority,
-          env: safeEnvironment(dir, snapshot.display, snapshot.authority), borrowed: lease };
+          env: safeEnvironment(dir, snapshot.display, snapshot.authority), borrowed: lease, framebuffer };
         this.borrowedProducerDirs.add(dir);
         this.borrowedWatcher = lease.watch(() => { void this.revokeBorrowedDesktop(); });
         this.borrowedTimer = setInterval(() => {
@@ -432,6 +444,11 @@ export class DesktopComputer {
 
   private vncCapacityUsed(): number {
     return this.vncPending + [...this.owned].filter((child) => child.role === 'vnc').length;
+  }
+
+  private streamFramebuffer(runtime: Runtime): DesktopFramebuffer {
+    return runtime.borrowed ? trustedDesktopFramebuffer(runtime.framebuffer!) :
+      { width: NATIVE_WIDTH, height: NATIVE_HEIGHT };
   }
 
   // Runtime state is ephemeral and always outside the checkout. A private
@@ -575,11 +592,12 @@ export class DesktopComputer {
       if (!this.vncSandboxPolicy) throw createHttpError('Private VNC sandbox is disabled', 503);
       const runtime = this.requireStreamRuntime();
       const borrowed = this.borrowedSnapshot(runtime);
+      const framebuffer = this.streamFramebuffer(runtime);
       if (this.vnc) {
         if (this.vnc.runtime !== runtime || this.vnc.epoch !== this.epoch)
           throw createHttpError('Private desktop stream is unavailable', 503);
         await this.validateVncPreparation(this.vnc);
-        return { epoch: this.epoch, width: NATIVE_WIDTH, height: NATIVE_HEIGHT, password: this.vnc.password };
+        return { epoch: this.epoch, ...framebuffer, password: this.vnc.password };
       }
       const binaries = await vettedVncBinaries();
       if (!binaries)
@@ -651,7 +669,7 @@ export class DesktopComputer {
       this.publishVncPreparation(credential.exitCode, credential.signalCode,
         { epoch: this.epoch, runtime, filterFile, binary, setpriv, launcher,
           passwordFile, passwordFileHash: await sha256File(passwordFile), password });
-      return { epoch: this.epoch, width: NATIVE_WIDTH, height: NATIVE_HEIGHT, password };
+      return { epoch: this.epoch, ...framebuffer, password };
     });
   }
 
@@ -850,7 +868,8 @@ export class DesktopComputer {
       if (finalWitness?.start !== child.start || finalWitness.group !== proc.pid)
         throw new Error('Private child identity changed');
       const connection = {} as VncConnection;
-      const gate = new RfbClientGate(NATIVE_WIDTH, NATIVE_HEIGHT,
+      const framebuffer = this.streamFramebuffer(runtime);
+      const gate = new RfbClientGate(framebuffer.width, framebuffer.height,
         (kind, active) => this.vncInput(connection, kind, active));
       Object.assign(connection, { actor, epoch, socket, gate, controlled: false, child });
       this.vncConnections.add(connection);
@@ -988,8 +1007,8 @@ export class DesktopComputer {
       ? await this.dependencies() : { missing: ['Linux'] };
     const supported = missing.length === 0;
     return { supported, running: Boolean(this.runtime) && (!this.runtime.borrowed || borrowed),
-      width: this.borrowedMode ? NATIVE_WIDTH : IMAGE_WIDTH,
-      height: this.borrowedMode ? NATIVE_HEIGHT : IMAGE_HEIGHT,
+      width: this.borrowedMode ? this.runtime?.framebuffer?.width ?? 0 : IMAGE_WIDTH,
+      height: this.borrowedMode ? this.runtime?.framebuffer?.height ?? 0 : IMAGE_HEIGHT,
       epoch: this.epoch, transport: this.borrowedMode ? 'private-rfb' : 'sampled-jpeg',
       control: this.controlState(actor),
       capabilities: { unicode: false, clipboard: false, developedApps: scopes.length > 0 },

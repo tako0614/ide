@@ -39,9 +39,10 @@ async function fixture(t, options = {}) {
   };
   const desktop = {
     attached: null, attaches: 0, detaches: 0, path: null,
-    async attachBorrowedDesktop(candidate, dir) {
+    async attachBorrowedDesktop(candidate, dir, framebuffer) {
       this.attaches++;
       this.path = dir;
+      this.framebuffer = framebuffer;
       events.push('desktop.attach');
       if (options.attachGate) await options.attachGate.promise;
       if (options.attachError) throw new Error('private attach detail');
@@ -60,7 +61,8 @@ async function fixture(t, options = {}) {
     },
   };
   return { producer, events, owner, desktop, lease, snapshot,
-    controller: new ChatgptController(owner, desktop, producer) };
+    controller: new ChatgptController(owner, desktop, producer,
+      options.framebuffer ?? { width: 1440, height: 960 }) };
 }
 
 test('construction is inert and concurrent explicit prepare shares one owner and attach', async (t) => {
@@ -75,8 +77,19 @@ test('construction is inert and concurrent explicit prepare shares one owner and
   assert.equal((await first).transport, 'private-rfb');
   assert.equal(f.desktop.attaches, 1);
   assert.equal(f.desktop.path, f.producer);
+  assert.deepEqual(f.desktop.framebuffer, { width: 1440, height: 960 });
   await assert.rejects(f.controller.prepare(), /generation is unavailable/);
   assert.equal(f.owner.starts, 1, 'later prepare cannot adopt or restart a generation');
+});
+
+test('trusted geometry is snapshotted before an asynchronous owned prepare', async (t) => {
+  const framebuffer = { width: 1440, height: 960 };
+  const f = await fixture(t, { framebuffer });
+  framebuffer.width = 1280;
+  framebuffer.height = 720;
+  await f.controller.prepare();
+  assert.deepEqual(f.desktop.framebuffer, { width: 1440, height: 960 });
+  assert.equal(Object.isFrozen(f.desktop.framebuffer), true);
 });
 
 test('v1 and malformed owner lease are refused before attaching', async (t) => {

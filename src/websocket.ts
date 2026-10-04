@@ -12,6 +12,7 @@ import { alignToUtf8Start, alignToUtf8End } from './utils/utf8.js';
 import type { AgentBrowserService } from './utils/agent-browser.js';
 import type { DesktopComputer } from './computer/desktop.js';
 import type { ComputerStreamTickets } from './computer/stream-tickets.js';
+import { RfbServerProtocolError } from './computer/rfb.js';
 
 const MIN_TERMINAL_SIZE = 1;
 const MAX_TERMINAL_SIZE = 500;
@@ -365,8 +366,22 @@ export function setupWebSocketServer(
       // than dropping a fragment. The backend gates every client message.
       void computerStream.computer.attachVncSocket(`browser:${authSessionKey}`, epoch).then(({ socket: upstream, gate, close }) => {
         if (socket.readyState !== WebSocket.OPEN) { close(); return; }
+        const rejectRfb = (phase: string, reason: string) => {
+          logSecurityEvent('WS_DESKTOP_RFB_CLOSED', { phase, reason, code: 1008 });
+          close();
+          if (socket.readyState === WebSocket.OPEN) socket.close(1008, 'Invalid desktop protocol');
+        };
         socket.once('close', close);
-        upstream.once('close', () => { if (socket.readyState === WebSocket.OPEN) socket.close(1000, 'Desktop stream ended'); });
+        upstream.once('close', () => {
+          if (socket.readyState !== WebSocket.OPEN) return;
+          try { gate.assertServerComplete(); }
+          catch (error) {
+            if (error instanceof RfbServerProtocolError) rejectRfb(error.phase, error.reason);
+            else rejectRfb('server', 'unexpected');
+            return;
+          }
+          socket.close(1000, 'Desktop stream ended');
+        });
         upstream.once('error', () => { if (socket.readyState === WebSocket.OPEN) socket.close(1011, 'Desktop stream unavailable'); });
         upstream.on('data', (data: Buffer) => {
           if (socket.readyState !== WebSocket.OPEN || socket.bufferedAmount > MAX_SOCKET_BUFFERED_AMOUNT) {
@@ -374,15 +389,20 @@ export function setupWebSocketServer(
             if (socket.readyState === WebSocket.OPEN) socket.close(1009, 'Desktop viewer too slow');
             return;
           }
-          socket.send(data, { binary: true }, (error) => { if (error) close(); });
+          try {
+            for (const part of gate.observeServer(data))
+              socket.send(part, { binary: true }, (error) => { if (error) close(); });
+          } catch (error) {
+            if (error instanceof RfbServerProtocolError) rejectRfb(error.phase, error.reason);
+            else rejectRfb('server', 'unexpected');
+          }
         });
         socket.on('message', (raw: RawData) => {
           try {
             if (upstream.writableLength > MAX_SOCKET_BUFFERED_AMOUNT) throw new Error('Desktop input overflow');
             for (const message of gate.acceptClient(rawDataToBuffer(raw))) upstream.write(message);
           } catch {
-            close();
-            socket.close(1008, 'Invalid or unauthorized desktop protocol');
+            rejectRfb('client', 'invalid_or_unauthorized');
           }
         });
         upstream.resume();

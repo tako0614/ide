@@ -17,8 +17,6 @@ interface ComputerVncViewProps {
 
 const MAX_ATTEMPTS = 3;
 const HANDSHAKE_MS = 8000;
-const VNC_WIDTH = 1280;
-const VNC_HEIGHT = 720;
 
 export function ComputerVncView({ epoch, onState, onActivity, onUnavailable }: ComputerVncViewProps) {
   const targetRef = useRef<HTMLDivElement>(null);
@@ -90,7 +88,10 @@ export function ComputerVncView({ epoch, onState, onActivity, onUnavailable }: C
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', signal: request.signal,
         });
         if (disposed || serial !== attempt || document.visibilityState !== 'visible') return;
-        if (!credentials.password || credentials.epoch !== epoch || credentials.width !== VNC_WIDTH || credentials.height !== VNC_HEIGHT)
+        if (!credentials.password || credentials.epoch !== epoch ||
+          !Number.isSafeInteger(credentials.width) || !Number.isSafeInteger(credentials.height) ||
+          credentials.width < 1 || credentials.height < 1 || credentials.width > 8192 || credentials.height > 8192 ||
+          credentials.width * credentials.height > 16 * 1024 * 1024)
           throw new Error('コンピューターの世代または画面サイズが変わりました。');
         const ticket = await apiJson<VncTicket>('/api/computer/vnc-ticket', {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ epoch }), signal: request.signal,

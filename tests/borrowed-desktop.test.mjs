@@ -5,6 +5,8 @@ import { test } from 'node:test';
 import { BorrowedDesktopLease } from '../src/computer/borrowed-desktop.ts';
 import { DesktopComputer } from '../src/computer/desktop.ts';
 
+const TRUSTED_FRAMEBUFFER = Object.freeze({ width: 1440, height: 960 });
+
 function processEntry(pid, comm, ppid, pgid, uid = 993, gid = 982) {
   return { pid, starttime_ticks: pid * 100, owner_uid: uid, owner_gid: gid, comm, ppid, pgid };
 }
@@ -282,7 +284,7 @@ test('borrowed descriptor rejects symlink metadata, unexpected ownership and unk
 test('borrowed stop and shutdown retain own diagnostics and leave external desktop untouched', async (t) => {
   const f = await withFixture(t);
   const computer = new DesktopComputer();
-  await computer.attachBorrowedDesktop(f.load(), f.base);
+  await computer.attachBorrowedDesktop(f.load(), f.base, TRUSTED_FRAMEBUFFER);
   const producerDir = computer.runtime.dir;
   const diagnostic = path.join(producerDir, `stderr-${'a'.repeat(32)}.log`);
   await fs.writeFile(diagnostic, 'private diagnostic', { mode: 0o600 });
@@ -302,7 +304,7 @@ test('borrowed stop and shutdown retain own diagnostics and leave external deskt
   assert.equal((await fs.stat(producerDir)).mode & 0o7777, 0o700);
   assert.equal(await fs.readFile(diagnostic, 'utf8'), 'private diagnostic');
   assert.equal(await fs.readFile(path.join(f.runtime, 'sentinel'), 'utf8'), 'external state');
-  await computer.attachBorrowedDesktop(f.load(), f.base);
+  await computer.attachBorrowedDesktop(f.load(), f.base, TRUSTED_FRAMEBUFFER);
   const secondDiagnostic = path.join(computer.runtime.dir, `stderr-${'b'.repeat(32)}.log`);
   await fs.writeFile(secondDiagnostic, 'shutdown diagnostic', { mode: 0o600 });
   await computer.shutdown();
@@ -310,10 +312,27 @@ test('borrowed stop and shutdown retain own diagnostics and leave external deskt
   assert.equal(await fs.readFile(path.join(f.runtime, 'sentinel'), 'utf8'), 'external state');
 });
 
+test('borrowed attachment requires exact startup-owned framebuffer geometry', async (t) => {
+  const computer = new DesktopComputer();
+  t.after(() => computer.shutdown());
+  const f = await withFixture(t);
+  for (const geometry of [undefined, {}, { width: 1440, height: 960, display: ':2000' },
+    { width: 1440, height: 960, inferred: true }, { width: 0, height: 960 },
+    { width: 8192, height: 8192 }]) {
+    await assert.rejects(computer.attachBorrowedDesktop(f.load(), f.base, geometry),
+      /Trusted framebuffer geometry is invalid/);
+    assert.equal(computer.runtime, null, 'invalid geometry cannot create a borrowed runtime');
+  }
+  const status = await computer.attachBorrowedDesktop(f.load(), f.base, TRUSTED_FRAMEBUFFER);
+  assert.deepEqual([status.width, status.height], [1440, 960]);
+  assert.deepEqual(computer.runtime.framebuffer, TRUSTED_FRAMEBUFFER);
+  assert.equal(Object.isFrozen(computer.runtime.framebuffer), true);
+});
+
 test('revocation detaches the borrowed transport and never prepares a replacement display', async (t) => {
   const f = await withFixture(t);
   const computer = new DesktopComputer();
-  await computer.attachBorrowedDesktop(f.load(), f.base);
+  await computer.attachBorrowedDesktop(f.load(), f.base, TRUSTED_FRAMEBUFFER);
   const producerDir = computer.runtime.dir;
   const diagnostic = path.join(producerDir, `stderr-${'c'.repeat(32)}.log`);
   await fs.writeFile(diagnostic, 'revoked diagnostic', { mode: 0o600 });

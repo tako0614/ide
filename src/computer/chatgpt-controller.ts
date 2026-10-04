@@ -1,5 +1,5 @@
 import type { BorrowedDesktopLease, BorrowedDesktopSnapshot } from './borrowed-desktop.js';
-import type { DesktopStatus } from './desktop.js';
+import { trustedDesktopFramebuffer, type DesktopFramebuffer, type DesktopStatus } from './desktop.js';
 
 export type ChatgptControllerOwner = {
   start(): Promise<{ lease: BorrowedDesktopLease; snapshot: BorrowedDesktopSnapshot }>;
@@ -7,7 +7,8 @@ export type ChatgptControllerOwner = {
 };
 
 export type ChatgptControllerDesktop = {
-  attachBorrowedDesktop(lease: BorrowedDesktopLease, producerStateDir: string): Promise<DesktopStatus>;
+  attachBorrowedDesktop(lease: BorrowedDesktopLease, producerStateDir: string,
+    framebuffer: DesktopFramebuffer): Promise<DesktopStatus>;
   detachBorrowedDesktop(lease: BorrowedDesktopLease): Promise<void>;
   status(): Promise<DesktopStatus>;
 };
@@ -22,10 +23,13 @@ export class ChatgptController {
   private closing: Promise<DesktopStatus> | null = null;
   private teardown: Promise<void> | null = null;
   private lease: BorrowedDesktopLease | null = null;
+  private readonly framebuffer: DesktopFramebuffer;
 
   constructor(private readonly owner: ChatgptControllerOwner,
     private readonly desktop: ChatgptControllerDesktop,
-    private readonly producerStateDir: string) {}
+    private readonly producerStateDir: string, framebuffer: DesktopFramebuffer) {
+    this.framebuffer = trustedDesktopFramebuffer(framebuffer);
+  }
 
   prepare(): Promise<DesktopStatus> {
     if (this.closed || this.closing) return Promise.reject(new Error('ChatGPT desktop generation is unavailable'));
@@ -48,7 +52,8 @@ export class ChatgptController {
         !/^[a-f0-9]{32}$/.test(checked.sessionId ?? '') ||
         checked.sessionId !== owned.snapshot.sessionId || this.closed) unavailable();
       this.lease = owned.lease;
-      const status = await this.desktop.attachBorrowedDesktop(owned.lease, this.producerStateDir);
+      const status = await this.desktop.attachBorrowedDesktop(owned.lease, this.producerStateDir,
+        this.framebuffer);
       if (this.closed || status.running !== true || status.transport !== 'private-rfb') unavailable();
       const confirmed = owned.lease.check();
       if (confirmed.lifecycleMode !== 'deckide-owned' || confirmed.sessionId !== checked.sessionId) unavailable();

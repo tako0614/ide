@@ -51,7 +51,7 @@ test('candidate stage extracts verified tar and runs npm ci at the published shr
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const packageRoot = path.join(root, 'package');
   fs.mkdirSync(path.join(packageRoot, 'bin'), { recursive: true });
-  const version = '3.5.49-combined.20261004.1';
+  const version = '3.5.49-combined.20261004.2';
   fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({
     name: 'deckide', version, bin: { deckide: 'bin/deckide.js' }, dependencies: {},
   }));
@@ -625,14 +625,14 @@ test('ChatGPT launcher inventory is exact and part of staged package identity', 
   const makePackage = (directory, version) => {
     for (const subdir of ['bin', 'dist', 'web/dist']) fs.mkdirSync(path.join(directory, subdir), { recursive: true });
     fs.writeFileSync(path.join(directory, 'package.json'), JSON.stringify({ name: 'deckide', version }));
-    if (version === '3.5.49-combined.20261004.1') {
+    if (version === '3.5.49-combined.20261004.2') {
       fs.mkdirSync(path.join(directory, 'ops'), { recursive: true });
       fs.writeFileSync(path.join(directory, startupCheckPackagePath), 'startup checker fixture\n');
     }
   };
   const release = path.join(root, 'release');
   const previous = path.join(root, 'previous');
-  makePackage(release, '3.5.49-combined.20261004.1');
+  makePackage(release, '3.5.49-combined.20261004.2');
   makePackage(previous, '3.5.48');
   assert.doesNotThrow(() => publicTreeDigest(previous), 'legacy package without the app inventory remains accepted');
   fs.mkdirSync(path.join(release, 'ops/chatgpt-launcher/product'), { recursive: true });

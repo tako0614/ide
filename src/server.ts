@@ -46,7 +46,7 @@ import { createSettingsRouter } from './routes/settings.js';
 import { activeMcpActorGrant, createMcpRouter, onMcpGrantsRevoked } from './routes/mcp.js';
 import { createBrowserRouter } from './routes/browser.js';
 import { AgentBrowserService } from './utils/agent-browser.js';
-import { DesktopComputer, type DevelopmentScopeSource } from './computer/desktop.js';
+import { DesktopComputer, type DesktopFramebuffer, type DevelopmentScopeSource } from './computer/desktop.js';
 import { loadBorrowedDesktopDescriptor } from './computer/borrowed-desktop.js';
 import { HostComputerSessions } from './computer/host-session.js';
 import { ComputerStreamTickets } from './computer/stream-tickets.js';
@@ -98,9 +98,13 @@ export type CreateServerOptions = {
   computerVncSandbox?: VncSandboxPolicy;
   // Trusted startup-only handoff from the root-owned desktop supervisor.
   // These paths never come from an HTTP body, environment variable or setting.
-  computerBorrowedDesktop?: { descriptorPath: string; producerStateDir: string };
+  computerBorrowedDesktop?: { descriptorPath: string; producerStateDir: string;
+    // Explicit agreed owner launch contract, bound to this startup lease/epoch.
+    // ServerInit must match exactly; no HTTP/env/settings authority is accepted.
+    framebuffer: DesktopFramebuffer };
   // Fixed reviewed startup mode. Construction never starts the app.
-  computerOwnedChatgpt?: { stateRoot: string; producerStateDir: string };
+  computerOwnedChatgpt?: { stateRoot: string; producerStateDir: string;
+    framebuffer: DesktopFramebuffer };
 };
 
 export async function createServer(options: CreateServerOptions = {}) {
@@ -146,7 +150,7 @@ export async function createServer(options: CreateServerOptions = {}) {
       if (appClosing) throw new Error('ChatGPT desktop is closing');
       if (!appController) appController = new ChatgptController(
         new ChatgptOwner(options.computerOwnedChatgpt.stateRoot), computer,
-        options.computerOwnedChatgpt.producerStateDir);
+        options.computerOwnedChatgpt.producerStateDir, options.computerOwnedChatgpt.framebuffer);
       return appController.prepare();
     },
     close: async () => {
@@ -164,7 +168,8 @@ export async function createServer(options: CreateServerOptions = {}) {
       if (!options.computerVncSandbox)
         throw new Error('Borrowed desktop requires a private VNC sandbox policy');
       const lease = await loadBorrowedDesktopDescriptor(options.computerBorrowedDesktop.descriptorPath);
-      await computer.attachBorrowedDesktop(lease, options.computerBorrowedDesktop.producerStateDir);
+      await computer.attachBorrowedDesktop(lease, options.computerBorrowedDesktop.producerStateDir,
+        options.computerBorrowedDesktop.framebuffer);
     } catch (error) {
       await computer.shutdown().catch(() => undefined);
       try { db.close(); } catch { /* preserve the descriptor failure */ }
