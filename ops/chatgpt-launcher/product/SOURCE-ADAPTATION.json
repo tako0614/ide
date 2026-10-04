@@ -1,0 +1,70 @@
+{
+  "adaptations": [
+    {
+      "change": "Resolve session-supervisor.py beside the actual launcher path instead of the origin workspace.",
+      "path": "launch-chatgpt.sh"
+    },
+    {
+      "change": "Resolve executable helper/config paths beside this product file; keep descriptor, lock and log paths at the original private state root by default.",
+      "path": "session-supervisor.py"
+    },
+    {
+      "change": "Allow an explicit CHATGPT_LAUNCHER_STATE_ROOT only for an existing canonical root-owned 0700 directory with trusted parent directories, outside source/product files; preserve the original app-owned app-work path.",
+      "path": "session-supervisor.py"
+    },
+    {
+      "change": "Pass the explicit state-root override to bounded _serve; leave app account HOME, runtime, environment and lifecycle policy unchanged.",
+      "path": "session-supervisor.py"
+    },
+    {
+      "change": "Before nonroot desktop launch, hash-check only the two fixed public helper files, stage root-owned 0644 generation-specific copies inside the private app runtime, use those runtime paths for DBus and Python, and remove only inode/owner/hash-matching staged files on cleanup.",
+      "path": "session-supervisor.py"
+    }
+  ],
+  "format": "deckide-chatgpt-launcher-source-adaptation/v1",
+  "product_files": [
+    {
+      "changed": true,
+      "path": "launch-chatgpt.sh",
+      "product_sha256": "54fd0aec3c12bccf941374a96d3a59c04fc6b6560a7211bd8c4a140e5cfe3483",
+      "source_sha256": "f6af7aa3cef0c03a219c639f0a9b814855feb88d926a247e38db606e0ea3a7a6"
+    },
+    {
+      "changed": true,
+      "path": "session-supervisor.py",
+      "product_sha256": "0ea0f6eabb0a9b7498ef58f74271c6d22a261283100c6cae26ca3f3590ec61e5",
+      "source_sha256": "44b24ea74e652344210dff456bd72c12f7c41fed173b94c16ae062cb80e08241"
+    },
+    {
+      "changed": false,
+      "path": "desktop-session.py",
+      "product_sha256": "388664cd9740251d0b5808e7c7aab139d29b32f16454611ce7ef03eb0709e7af",
+      "source_sha256": "388664cd9740251d0b5808e7c7aab139d29b32f16454611ce7ef03eb0709e7af"
+    },
+    {
+      "changed": false,
+      "path": "session-bus.conf",
+      "product_sha256": "4a39a9fd1ada39a52ff6a3e13222a84e5edfb5f8dcee41c8752ed40d3ab6a145",
+      "source_sha256": "4a39a9fd1ada39a52ff6a3e13222a84e5edfb5f8dcee41c8752ed40d3ab6a145"
+    },
+    {
+      "changed": false,
+      "path": "test-session-lifecycle.py",
+      "product_sha256": "29f4eba1aca3e92204c4ff29d81b9ee33b6e3c3ff70f0b71cfa0ff6acf032540",
+      "source_sha256": "29f4eba1aca3e92204c4ff29d81b9ee33b6e3c3ff70f0b71cfa0ff6acf032540"
+    }
+  ],
+  "source_archive_sha256": "90ba4b3b5e50d8cdf46dcd1c684f7a34112ab99ef57988f73f6525b82c1b746e",
+  "source_manifest_sha256": "f6acdc23c56dde5ef1d7f6ab5b2c03901c9697bcf3366a63ceb51a6da065fbcf",
+  "source_package_id": "deckide-chatgpt-launcher-source-sha256-727257708d6562495374122099cc707a94d48322658039c0af6fe30abaf87855",
+  "source_seal_applies_to_product": false,
+  "state_contract": {
+    "app_work": "/root/dev/deckide-chatgpt-20261004/app-work",
+    "control_and_logs": ".app-session-control",
+    "default_root": "/root/dev/deckide-chatgpt-20261004",
+    "descriptor": "app-session.json",
+    "optional_root_environment": "CHATGPT_LAUNCHER_STATE_ROOT",
+    "override_scope": "descriptor, control lock and logs only",
+    "public_helper_staging": "desktop-session.py and session-bus.conf only, under /run/chatgpt-app per owned generation; staged files are runtime-only and excluded from the package"
+  }
+}

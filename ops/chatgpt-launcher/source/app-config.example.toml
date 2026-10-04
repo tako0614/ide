@@ -1,0 +1,9 @@
+# Public defaults for a new isolated app HOME only. Never copy root auth/config.
+# Do not overwrite an existing app configuration or login state.
+model = "gpt-6.1-sol"
+model_provider = "openai"
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+
+[mcp_servers.openaiDeveloperDocs]
+url = "https://developers.openai.com/mcp"

@@ -78,12 +78,80 @@ function readPublicPackage(packageDir) {
   return { version: manifest.version };
 }
 
+const APP_PUBLIC_FILES = [
+  'ops/chatgpt-launcher/source/launch-chatgpt.sh',
+  'ops/chatgpt-launcher/source/session-supervisor.py',
+  'ops/chatgpt-launcher/source/desktop-session.py',
+  'ops/chatgpt-launcher/source/session-bus.conf',
+  'ops/chatgpt-launcher/source/test-session-lifecycle.py',
+  'ops/chatgpt-launcher/source/app-config.example.toml',
+  'ops/chatgpt-launcher/source/LAUNCHER-CONTRACT.md',
+  'ops/chatgpt-launcher/source/MANIFEST.json',
+  'ops/chatgpt-launcher/source/SHA256SUMS',
+  'ops/chatgpt-launcher/product/launch-chatgpt.sh',
+  'ops/chatgpt-launcher/product/session-supervisor.py',
+  'ops/chatgpt-launcher/product/desktop-session.py',
+  'ops/chatgpt-launcher/product/session-bus.conf',
+  'ops/chatgpt-launcher/product/test-session-lifecycle.py',
+  'ops/chatgpt-launcher/product/SOURCE-ADAPTATION.json',
+];
+const APP_PUBLIC_FILES_SET = new Set(APP_PUBLIC_FILES);
+const APP_PUBLIC_DIRECTORIES = new Set([
+  'ops/chatgpt-launcher', 'ops/chatgpt-launcher/source', 'ops/chatgpt-launcher/product',
+]);
+const NATIVE_VNC_BINARY = 'dist/computer/native/vnc-launcher';
+const NATIVE_VNC_MANIFEST = 'dist/computer/native/launcher-manifest.json';
+const NATIVE_VNC_FLAGS = ['-std=c11', '-O2', '-Wall', '-Wextra', '-Werror',
+  '-fstack-protector-strong', '-D_FORTIFY_SOURCE=2', '-fPIE', '-pie',
+  '-Wl,-z,relro,-z,now'];
+const NATIVE_VNC_FILTER_SHA256 = 'dc159080d3fb3013273eb8badcee46347501de0054da5bab7e72b130fab91c7e';
+const APP_PRODUCT_FILE_MODES = new Map([
+  ['ops/chatgpt-launcher/product/launch-chatgpt.sh', 0o755],
+  ['ops/chatgpt-launcher/product/session-supervisor.py', 0o644],
+  ['ops/chatgpt-launcher/product/desktop-session.py', 0o644],
+  ['ops/chatgpt-launcher/product/session-bus.conf', 0o644],
+  ['ops/chatgpt-launcher/product/test-session-lifecycle.py', 0o644],
+  ['ops/chatgpt-launcher/product/SOURCE-ADAPTATION.json', 0o644],
+]);
+const CANDIDATE_RUNTIME_FILE_MODES = new Map([
+  [NATIVE_VNC_BINARY, 0o755],
+  ...APP_PRODUCT_FILE_MODES,
+]);
+
+function lstatOrNull(file) {
+  try { return fs.lstatSync(file); }
+  catch (error) { if (error?.code === 'ENOENT') return null; throw error; }
+}
+
 function publicEntries(packageDir) {
   const entries = ['package.json', 'bin', 'dist', 'web/dist'];
   const web = fs.lstatSync(path.join(packageDir, 'web'));
   if (!web.isDirectory() || web.isSymbolicLink()) throw new Error('Public web directory is unsafe');
   for (const name of fs.readdirSync(packageDir)) {
     if (/^(README|LICEN[SC]E)(?:\.(?:md|txt))?$/i.test(name)) entries.push(name);
+  }
+  const opsInfo = lstatOrNull(path.join(packageDir, 'ops'));
+  if (opsInfo && (!opsInfo.isDirectory() || opsInfo.isSymbolicLink())) {
+    throw new Error('Public updater directory is unsafe');
+  }
+  const appInfo = opsInfo && lstatOrNull(path.join(packageDir, 'ops/chatgpt-launcher'));
+  if (appInfo) {
+    if (!appInfo.isDirectory() || appInfo.isSymbolicLink()) {
+      throw new Error('Public ChatGPT launcher directory is unsafe');
+    }
+    for (const directory of APP_PUBLIC_DIRECTORIES) {
+      const info = lstatOrNull(path.join(packageDir, directory));
+      if (!info || !info.isDirectory() || info.isSymbolicLink()) {
+        throw new Error('Public ChatGPT launcher directory inventory is incomplete or unsafe');
+      }
+    }
+    const present = APP_PUBLIC_FILES.map((relative) => lstatOrNull(path.join(packageDir, relative)));
+    const presentCount = present.filter(Boolean).length;
+    if (presentCount !== APP_PUBLIC_FILES.length) {
+      throw new Error(presentCount ? 'Public ChatGPT launcher file inventory is incomplete'
+        : 'Public ChatGPT launcher directory has no recognized inventory');
+    }
+    entries.push('ops/chatgpt-launcher');
   }
   for (const name of entries) {
     const file = path.join(packageDir, name);
@@ -103,9 +171,10 @@ const WEB_EXTENSIONS = new Set([
 ]);
 
 function assertPublicName(relative) {
+  const exactPrivateRuntimeModule = relative === 'dist/computer/private-unix.js';
   for (const segment of relative.split(path.sep)) {
     if (!/^[A-Za-z0-9][A-Za-z0-9._@+-]*$/.test(segment) ||
-        /(?:^|[._-])(?:private|secret|local)(?:[._-]|$)/i.test(segment) ||
+        (!exactPrivateRuntimeModule && /(?:^|[._-])(?:private|secret|local)(?:[._-]|$)/i.test(segment)) ||
         segment === 'node_modules') {
       throw new Error('Public package inventory contains a hidden or sensitive name');
     }
@@ -116,9 +185,97 @@ function assertPublicFileClass(relative) {
   assertPublicName(relative);
   if (relative === 'package.json' || /^(?:README|LICEN[SC]E)(?:\.(?:md|txt))?$/i.test(relative)) return;
   if ((relative.startsWith('bin/') || relative.startsWith('dist/')) && SERVER_FILE.test(relative)) return;
+  if (relative === NATIVE_VNC_BINARY || relative === NATIVE_VNC_MANIFEST) return;
+  if (APP_PUBLIC_FILES_SET.has(relative)) return;
   if (relative.startsWith('web/dist/') && /^(?:robots|humans|ads)\.txt$/i.test(path.basename(relative))) return;
   if (relative.startsWith('web/dist/') && WEB_EXTENSIONS.has(path.extname(relative).toLowerCase())) return;
   throw new Error('Public package inventory contains a non-runtime file class');
+}
+
+function exactKeys(value, expected) {
+  return value && typeof value === 'object' && !Array.isArray(value) &&
+    Object.keys(value).sort().join('\0') === [...expected].sort().join('\0');
+}
+
+function validSha256(value) { return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value); }
+
+function archiveModeFor(mode) {
+  return mode === 0o755 ? '-rwxr-xr-x' : '-rw-r--r--';
+}
+
+function assertRuntimeFileMode(packageDir, relative, mode) {
+  const file = path.join(packageDir, relative);
+  const info = fs.lstatSync(file);
+  if (!info.isFile() || info.isSymbolicLink() || (info.mode & 0o7777) !== mode) {
+    throw new Error(`Staged runtime file has an unexpected mode: ${relative}`);
+  }
+}
+
+function assertAppProductModes(packageDir) {
+  for (const [relative, mode] of APP_PRODUCT_FILE_MODES) {
+    assertRuntimeFileMode(packageDir, relative, mode);
+  }
+}
+
+/** Restore only reviewed staged runtime files whose mode tar extraction masks with the caller umask. */
+function normalizeCandidateRuntimeModes(packageDir) {
+  for (const [relative, mode] of CANDIDATE_RUNTIME_FILE_MODES) {
+    const file = path.join(packageDir, relative);
+    const info = fs.lstatSync(file);
+    if (!info.isFile() || info.isSymbolicLink()) {
+      throw new Error(`Staged runtime file is not a regular file: ${relative}`);
+    }
+    fs.chmodSync(file, mode);
+  }
+  for (const [relative, mode] of CANDIDATE_RUNTIME_FILE_MODES) {
+    assertRuntimeFileMode(packageDir, relative, mode);
+  }
+}
+
+function validateNativeVncManifest(raw, binarySha256) {
+  let manifest;
+  try { manifest = JSON.parse(raw); }
+  catch { throw new Error('Native VNC launcher manifest is malformed'); }
+  if (!exactKeys(manifest, ['schemaVersion', 'platform', 'arch', 'source', 'binary',
+    'compiler', 'flags', 'filterSha256']) || manifest.schemaVersion !== 1 ||
+      manifest.platform !== 'linux' || manifest.arch !== 'x64' ||
+      !exactKeys(manifest.source, ['path', 'sha256']) ||
+      manifest.source.path !== 'src/computer/native/vnc-launcher.c' ||
+      !validSha256(manifest.source.sha256) ||
+      !exactKeys(manifest.binary, ['path', 'sha256']) ||
+      manifest.binary.path !== NATIVE_VNC_BINARY || manifest.binary.sha256 !== binarySha256 ||
+      !exactKeys(manifest.compiler, ['path', 'realpath', 'sha256', 'version']) ||
+      manifest.compiler.path !== '/usr/bin/gcc' ||
+      manifest.compiler.realpath !== '/usr/bin/x86_64-linux-gnu-gcc-15' ||
+      manifest.compiler.sha256 !== 'b5f1b773a7c733738352000c92a077dc5852a1a2fc6d836b1e411be1e9ec5f88' ||
+      manifest.compiler.version !== '15.2.0' ||
+      !Array.isArray(manifest.flags) || JSON.stringify(manifest.flags) !== JSON.stringify(NATIVE_VNC_FLAGS) ||
+      manifest.filterSha256 !== NATIVE_VNC_FILTER_SHA256) {
+    throw new Error('Native VNC launcher manifest does not match the reviewed Linux x64 build');
+  }
+  return manifest;
+}
+
+/** A legacy previous package may omit both optional files; partial or invalid pairs fail closed. */
+function assertNativeVncPair(packageDir, { allowAbsent = true } = {}) {
+  const binaryPath = path.join(packageDir, NATIVE_VNC_BINARY);
+  const manifestPath = path.join(packageDir, NATIVE_VNC_MANIFEST);
+  const lstatOrNull = (file) => {
+    try { return fs.lstatSync(file); }
+    catch (error) { if (error?.code === 'ENOENT') return null; throw error; }
+  };
+  const binaryInfo = lstatOrNull(binaryPath);
+  const manifestInfo = lstatOrNull(manifestPath);
+  if (!binaryInfo && !manifestInfo && allowAbsent) return false;
+  if (!binaryInfo || !manifestInfo) throw new Error('Native VNC launcher artifact pair is incomplete');
+  if (!binaryInfo.isFile() || binaryInfo.isSymbolicLink() ||
+      (binaryInfo.mode & 0o7777) !== 0o755 || binaryInfo.size < 1 || binaryInfo.size > 1024 * 1024 ||
+      !manifestInfo.isFile() || manifestInfo.isSymbolicLink()) {
+    throw new Error('Native VNC launcher binary or manifest has an unsafe file mode or type');
+  }
+  const binarySha256 = sha256(fs.readFileSync(binaryPath));
+  validateNativeVncManifest(fs.readFileSync(manifestPath, 'utf8'), binarySha256);
+  return true;
 }
 
 /** Validate the entire path/name inventory before reading any candidate archive member. */
@@ -131,6 +288,9 @@ function publicFileInventory(packageDir) {
     const info = fs.lstatSync(absolute);
     if (info.isSymbolicLink()) throw new Error('Public package tree contains a symlink');
     if (info.isDirectory()) {
+      if (relative.startsWith('ops/chatgpt-launcher') && !APP_PUBLIC_DIRECTORIES.has(relative)) {
+        throw new Error('Public ChatGPT launcher inventory contains an unrecognized directory');
+      }
       for (const child of fs.readdirSync(absolute).sort()) visit(path.join(relative, child));
     } else if (info.isFile()) {
       assertPublicFileClass(relative);
@@ -138,6 +298,8 @@ function publicFileInventory(packageDir) {
     } else throw new Error('Public package tree contains an unsafe entry');
   };
   for (const root of entries.sort()) visit(root);
+  assertNativeVncPair(packageDir);
+  if (entries.includes('ops/chatgpt-launcher')) assertAppProductModes(packageDir);
   return { entries, files };
 }
 
@@ -161,13 +323,50 @@ const CANDIDATE_STATIC_FILES = new Set([
   'ops/terminal-update.mjs', 'ops/terminal-update-guards.mjs',
   'ops/systemd/deckide.service.d/99-deckide-tmux.conf.tmpl',
   'ops/systemd/deckide-tmux-broker.service.tmpl',
+  ...APP_PUBLIC_FILES,
 ]);
+
+function readArchiveMember(tarball, member) {
+  const result = spawnSync('tar', ['-xOf', tarball, member], {
+    encoding: null, timeout: 30_000, maxBuffer: 2 * 1024 * 1024,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  if (result.error || result.status !== 0 || !Buffer.isBuffer(result.stdout)) {
+    throw new Error('Candidate archive member could not be read safely');
+  }
+  return result.stdout;
+}
+
+function assertNativeVncArchivePair(tarball, seen, modes) {
+  const binaryMember = `package/${NATIVE_VNC_BINARY}`;
+  const manifestMember = `package/${NATIVE_VNC_MANIFEST}`;
+  if (!seen.has(binaryMember) || !seen.has(manifestMember)) {
+    throw new Error('Candidate archive lacks the complete native VNC launcher pair');
+  }
+  const binary = readArchiveMember(tarball, binaryMember);
+  if (!binary.length || binary.length > 1024 * 1024) {
+    throw new Error('Candidate native VNC launcher binary size is invalid');
+  }
+  const binarySha256 = sha256(binary);
+  const manifest = readArchiveMember(tarball, manifestMember).toString('utf8');
+  validateNativeVncManifest(manifest, binarySha256);
+}
+
+function assertArchiveRuntimeModes(seen, modes) {
+  for (const [relative, mode] of CANDIDATE_RUNTIME_FILE_MODES) {
+    const member = `package/${relative}`;
+    if (!seen.has(member) || modes.get(member) !== archiveModeFor(mode)) {
+      throw new Error(`Candidate runtime file has an unexpected archive mode: ${relative}`);
+    }
+  }
+}
 
 function inspectCandidateArchive(tarball, commandRunner = run) {
   const names = commandRunner('tar', ['-tf', tarball], { timeout: 30_000 }).trimEnd().split('\n');
   const verbose = commandRunner('tar', ['-tvf', tarball], { timeout: 30_000 }).trimEnd().split('\n');
   if (names.length !== verbose.length || names.length < 2) throw new Error('Candidate tar inventory is invalid');
   const seen = new Set();
+  const modes = new Map();
   for (let index = 0; index < names.length; index++) {
     const name = names[index];
     if (!/^package\/[A-Za-z0-9][A-Za-z0-9._@+/-]*$/.test(name) ||
@@ -175,6 +374,7 @@ function inspectCandidateArchive(tarball, commandRunner = run) {
       throw new Error('Candidate tar contains a duplicate, unsafe path, or non-file entry');
     }
     seen.add(name);
+    modes.set(name, verbose[index].slice(0, 10));
     const relative = name.slice('package/'.length);
     assertPublicName(relative);
     if (!CANDIDATE_STATIC_FILES.has(relative)) {
@@ -186,6 +386,11 @@ function inspectCandidateArchive(tarball, commandRunner = run) {
   if (!seen.has('package/package.json') || !seen.has('package/npm-shrinkwrap.json')) {
     throw new Error('Candidate tar lacks its package manifest or published shrinkwrap');
   }
+  if (APP_PUBLIC_FILES.some((relative) => !seen.has(`package/${relative}`))) {
+    throw new Error('Combined candidate archive lacks the exact ChatGPT launcher inventory');
+  }
+  assertArchiveRuntimeModes(seen, modes);
+  assertNativeVncArchivePair(tarball, seen, modes);
   const manifest = JSON.parse(commandRunner('tar', ['-xOf', tarball, 'package/package.json']));
   const shrinkwrapRaw = commandRunner('tar', ['-xOf', tarball, 'package/npm-shrinkwrap.json']);
   const shrinkwrap = JSON.parse(shrinkwrapRaw);
@@ -504,6 +709,7 @@ export function stageCandidatePackage({ candidate, expectedSha256, release, comm
   if (hashFile(candidate).toLowerCase() !== expectedSha256.toLowerCase()) {
     throw new Error('Candidate tarball changed during extraction');
   }
+  normalizeCandidateRuntimeModes(releasePackage);
   const extractedShrinkwrap = path.join(releasePackage, 'npm-shrinkwrap.json');
   const executable = path.join(releasePackage, 'bin/deckide.js');
   const shrinkwrapInfo = fs.lstatSync(extractedShrinkwrap);
@@ -524,6 +730,9 @@ export function stageCandidatePackage({ candidate, expectedSha256, release, comm
       timeout: 180_000, cwd: releasePackage, env,
     });
   } finally { fs.unlinkSync(globalConfig); }
+  for (const [relative, mode] of CANDIDATE_RUNTIME_FILE_MODES) {
+    assertRuntimeFileMode(releasePackage, relative, mode);
+  }
   return { releasePackage };
 }
 
@@ -573,7 +782,7 @@ function stage(plan, stateDir) {
   return state;
 }
 
-function checkStaged(state) {
+export function checkStaged(state) {
   safeServiceUnit(state.httpUnit);
   safeControlGroup(state.httpControlGroup);
   safeAbsolutePath(state.releasePackage, 'Release package');

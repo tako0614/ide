@@ -1,0 +1,92 @@
+{
+  "identity_method": "SHA256 of canonical UTF-8 payload object (sorted keys, compact separators), excluding package_id and identity_method",
+  "package_id": "deckide-chatgpt-launcher-source-sha256-727257708d6562495374122099cc707a94d48322658039c0af6fe30abaf87855",
+  "payload": {
+    "contents_policy": "Only exact product allowlist; no live config/auth/descriptors/runtime/logs/evidence/screenshots/downloaded packages. Synthetic unit fixtures are source, not host process records.",
+    "files": [
+      {
+        "bytes": 10325,
+        "deployment_mode": "0644",
+        "origin": "new public template/standalone contract",
+        "path": "LAUNCHER-CONTRACT.md",
+        "sha256": "921585f3325b4b4532c47973f5764e38b560d0f09348ec2d352b19411f7147e0",
+        "source_relative_path": null
+      },
+      {
+        "bytes": 335,
+        "deployment_mode": "0644",
+        "origin": "new public template/standalone contract",
+        "path": "app-config.example.toml",
+        "sha256": "c966a5729d0587cb7de8c0b65c68233dc1638e6e599440d2a73ab5cb5efc5cb7",
+        "source_relative_path": null
+      },
+      {
+        "bytes": 969,
+        "deployment_mode": "0644",
+        "origin": "verbatim product source",
+        "path": "desktop-session.py",
+        "sha256": "388664cd9740251d0b5808e7c7aab139d29b32f16454611ce7ef03eb0709e7af",
+        "source_relative_path": "desktop-session.py"
+      },
+      {
+        "bytes": 117,
+        "deployment_mode": "0755",
+        "origin": "verbatim product source",
+        "path": "launch-chatgpt.sh",
+        "sha256": "f6af7aa3cef0c03a219c639f0a9b814855feb88d926a247e38db606e0ea3a7a6",
+        "source_relative_path": "launch-chatgpt.sh"
+      },
+      {
+        "bytes": 455,
+        "deployment_mode": "0644",
+        "origin": "verbatim product source",
+        "path": "session-bus.conf",
+        "sha256": "4a39a9fd1ada39a52ff6a3e13222a84e5edfb5f8dcee41c8752ed40d3ab6a145",
+        "source_relative_path": "session-bus.conf"
+      },
+      {
+        "bytes": 26086,
+        "deployment_mode": "0644",
+        "origin": "verbatim product source",
+        "path": "session-supervisor.py",
+        "sha256": "44b24ea74e652344210dff456bd72c12f7c41fed173b94c16ae062cb80e08241",
+        "source_relative_path": "session-supervisor.py"
+      },
+      {
+        "bytes": 11923,
+        "deployment_mode": "0644",
+        "origin": "verbatim product source",
+        "path": "test-session-lifecycle.py",
+        "sha256": "29f4eba1aca3e92204c4ff29d81b9ee33b6e3c3ff70f0b71cfa0ff6acf032540",
+        "source_relative_path": "test-session-lifecycle.py"
+      }
+    ],
+    "fixed_deployment_root": "/root/dev/deckide-chatgpt-20261004",
+    "format": "deckide-chatgpt-launcher-product-source/v1",
+    "lease_policy_seconds": {
+      "heartbeat": 2,
+      "validity": 10
+    },
+    "schemas": {
+      "bounded": "chatgpt-private-desktop/v1",
+      "foreground": "chatgpt-private-desktop/v2"
+    },
+    "source_root": "/root/dev/deckide-chatgpt-20261004",
+    "test_commands": {
+      "dbus_syntax": "stdlib xml.etree.ElementTree.fromstring(session-bus.conf)",
+      "isolated_unit": [
+        "/usr/bin/python3",
+        "-I",
+        "-B",
+        "test-session-lifecycle.py",
+        "-v"
+      ],
+      "python_syntax": "stdlib ast.parse of the three Python files",
+      "shell_syntax": [
+        "/bin/bash",
+        "-n",
+        "launch-chatgpt.sh"
+      ]
+    }
+  }
+}

@@ -12,45 +12,117 @@ import {
   parseProcStat, readProcTree, assertNoLegacyPtys, assertBrokerCgroups,
   safeAbsolutePath, safeServiceUnit,
 } from '../ops/terminal-update-guards.mjs';
-import { publicTreeDigest, isolatedNpmInstallSettings, stageCandidatePackage } from '../ops/terminal-update.mjs';
+import { checkStaged, publicTreeDigest, isolatedNpmInstallSettings, stageCandidatePackage } from '../ops/terminal-update.mjs';
+
+const appPackagePaths = [
+  'ops/chatgpt-launcher/source/launch-chatgpt.sh',
+  'ops/chatgpt-launcher/source/session-supervisor.py',
+  'ops/chatgpt-launcher/source/desktop-session.py',
+  'ops/chatgpt-launcher/source/session-bus.conf',
+  'ops/chatgpt-launcher/source/test-session-lifecycle.py',
+  'ops/chatgpt-launcher/source/app-config.example.toml',
+  'ops/chatgpt-launcher/source/LAUNCHER-CONTRACT.md',
+  'ops/chatgpt-launcher/source/MANIFEST.json',
+  'ops/chatgpt-launcher/source/SHA256SUMS',
+  'ops/chatgpt-launcher/product/launch-chatgpt.sh',
+  'ops/chatgpt-launcher/product/session-supervisor.py',
+  'ops/chatgpt-launcher/product/desktop-session.py',
+  'ops/chatgpt-launcher/product/session-bus.conf',
+  'ops/chatgpt-launcher/product/test-session-lifecycle.py',
+  'ops/chatgpt-launcher/product/SOURCE-ADAPTATION.json',
+];
+
+function writeAppPackageFixture(packageRoot) {
+  for (const relative of appPackagePaths) {
+    const file = path.join(packageRoot, relative);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `fixture:${relative}\n`, {
+      mode: relative === 'ops/chatgpt-launcher/product/launch-chatgpt.sh' ? 0o755 : 0o644,
+    });
+  }
+}
 
 test('candidate stage extracts verified tar and runs npm ci at the published shrinkwrap root', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'deckide-root-ci-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const packageRoot = path.join(root, 'package');
   fs.mkdirSync(path.join(packageRoot, 'bin'), { recursive: true });
-  const version = '3.5.49-tmux.20261004.1';
+  const version = '3.5.49-combined.20261004.1';
   fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({
     name: 'deckide', version, bin: { deckide: 'bin/deckide.js' }, dependencies: {},
   }));
+  writeAppPackageFixture(packageRoot);
   const lock = { name: 'deckide', version, lockfileVersion: 3, requires: true,
     packages: { '': { name: 'deckide', version, dependencies: {} } } };
   fs.writeFileSync(path.join(packageRoot, 'npm-shrinkwrap.json'), JSON.stringify(lock));
   fs.writeFileSync(path.join(packageRoot, 'bin/deckide.js'), '#!/usr/bin/env node\n', { mode: 0o755 });
+  const privateRuntimeModule = path.join(packageRoot, 'dist/computer/private-unix.js');
+  fs.mkdirSync(path.dirname(privateRuntimeModule), { recursive: true });
+  fs.writeFileSync(privateRuntimeModule, 'private unix runtime module');
+  const nativeDirectory = path.join(packageRoot, 'dist/computer/native');
+  fs.mkdirSync(nativeDirectory, { recursive: true });
+  const nativeBinary = path.join(nativeDirectory, 'vnc-launcher');
+  const nativeManifest = path.join(nativeDirectory, 'launcher-manifest.json');
+  const nativeBytes = Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x00, 0x01, 0x02]);
+  const writeNativeManifest = (overrides = {}) => fs.writeFileSync(nativeManifest, JSON.stringify({
+    schemaVersion: 1, platform: 'linux', arch: 'x64',
+    source: { path: 'src/computer/native/vnc-launcher.c', sha256: '1'.repeat(64) },
+    binary: { path: 'dist/computer/native/vnc-launcher',
+      sha256: crypto.createHash('sha256').update(nativeBytes).digest('hex') },
+    compiler: { path: '/usr/bin/gcc', realpath: '/usr/bin/x86_64-linux-gnu-gcc-15',
+      sha256: 'b5f1b773a7c733738352000c92a077dc5852a1a2fc6d836b1e411be1e9ec5f88',
+      version: '15.2.0' },
+    flags: ['-std=c11', '-O2', '-Wall', '-Wextra', '-Werror', '-fstack-protector-strong',
+      '-D_FORTIFY_SOURCE=2', '-fPIE', '-pie', '-Wl,-z,relro,-z,now'],
+    filterSha256: 'dc159080d3fb3013273eb8badcee46347501de0054da5bab7e72b130fab91c7e',
+    ...overrides,
+  }));
+  fs.writeFileSync(nativeBinary, nativeBytes, { mode: 0o755 });
+  writeNativeManifest();
   const makeTar = (filename, entries) => {
     const tarball = path.join(root, filename);
     const result = spawnSync('tar', ['-czf', tarball, '--no-recursion', '-C', root, ...entries],
       { encoding: 'utf8' });
-    assert.equal(result.status, 0);
+    assert.equal(result.status, 0, result.stderr);
     return { candidate: tarball, expectedSha256: crypto.createHash('sha256')
       .update(fs.readFileSync(tarball)).digest('hex') };
   };
-  const entries = ['package/package.json', 'package/npm-shrinkwrap.json', 'package/bin/deckide.js'];
+  const entries = ['package/package.json', 'package/npm-shrinkwrap.json', 'package/bin/deckide.js',
+    'package/dist/computer/private-unix.js',
+    'package/dist/computer/native/vnc-launcher', 'package/dist/computer/native/launcher-manifest.json',
+    ...appPackagePaths.map((relative) => `package/${relative}`)];
   const archive = makeTar('candidate.tgz', entries);
   const calls = [];
   const runner = (file, args, options = {}) => {
     calls.push({ file, args, options });
+    if (file === 'npm') return '';
     const result = spawnSync(file, args, { encoding: 'utf8', timeout: options.timeout ?? 15_000,
       maxBuffer: 2 * 1024 * 1024, cwd: options.cwd, env: options.env, stdio: ['ignore', 'pipe', 'pipe'] });
     if (result.error || result.status !== 0) throw new Error(`${file} fixture invocation failed`);
     return result.stdout;
   };
   const release = path.join(root, 'release');
-  const staged = stageCandidatePackage({ ...archive, release, commandRunner: runner });
+  const originalUmask = process.umask(0o077);
+  let staged;
+  try { staged = stageCandidatePackage({ ...archive, release, commandRunner: runner }); }
+  finally { process.umask(originalUmask); }
   assert.equal(staged.releasePackage, path.join(release, 'node_modules/deckide'));
   assert.equal(fs.readFileSync(path.join(staged.releasePackage, 'npm-shrinkwrap.json'), 'utf8'),
     JSON.stringify(lock), 'the published lock is npm ci root, not a nested dependency hint');
   assert.ok(fs.statSync(path.join(staged.releasePackage, 'bin/deckide.js')).mode & 0o111);
+  assert.equal(fs.statSync(release).mode & 0o7777, 0o700);
+  assert.equal(fs.statSync(staged.releasePackage).mode & 0o7777, 0o700);
+  assert.equal(fs.statSync(path.join(staged.releasePackage, 'dist/computer/native/vnc-launcher')).mode & 0o7777,
+    0o755, 'the native executable is restored to its exact reviewed runtime mode');
+  for (const relative of appPackagePaths.filter((item) => item.startsWith('ops/chatgpt-launcher/product/'))) {
+    const expectedMode = relative.endsWith('/launch-chatgpt.sh') ? 0o755 : 0o644;
+    assert.equal(fs.statSync(path.join(staged.releasePackage, relative)).mode & 0o7777, expectedMode, relative);
+  }
+  assert.equal(fs.statSync(path.join(staged.releasePackage,
+    'ops/chatgpt-launcher/source/launch-chatgpt.sh')).mode & 0o7777, 0o600,
+  'mode repair is limited to reviewed product runtime files, not source provenance');
+  assert.equal(fs.statSync(path.join(staged.releasePackage, 'dist/computer/private-unix.js')).mode & 0o7777,
+    0o600, 'mode repair does not widen unrelated runtime files');
   const npmCalls = calls.filter(({ file }) => file === 'npm');
   assert.equal(npmCalls.length, 1);
   assert.equal(npmCalls[0].args[0], 'ci');
@@ -58,11 +130,68 @@ test('candidate stage extracts verified tar and runs npm ci at the published shr
   assert.ok(npmCalls[0].args.includes('--omit=dev'));
   assert.ok(!npmCalls[0].args.includes('install'));
 
+  fs.chmodSync(nativeBinary, 0o750);
+  const wrongMode = makeTar('wrong-native-mode.tgz', entries);
+  assert.throws(() => stageCandidatePackage({ ...wrongMode, release: path.join(root, 'wrong-native-mode-release'),
+    commandRunner: runner }), /unexpected archive mode/);
+  assert.ok(!fs.existsSync(path.join(root, 'wrong-native-mode-release')));
+  fs.chmodSync(nativeBinary, 0o755);
+
+  const productSupervisor = path.join(packageRoot, 'ops/chatgpt-launcher/product/session-supervisor.py');
+  fs.chmodSync(productSupervisor, 0o600);
+  const wrongProductMode = makeTar('wrong-product-mode.tgz', entries);
+  assert.throws(() => stageCandidatePackage({ ...wrongProductMode,
+    release: path.join(root, 'wrong-product-mode-release'), commandRunner: runner }), /unexpected archive mode/);
+  assert.ok(!fs.existsSync(path.join(root, 'wrong-product-mode-release')));
+  fs.chmodSync(productSupervisor, 0o644);
+
   fs.rmSync(path.join(packageRoot, 'npm-shrinkwrap.json'));
   const missing = makeTar('missing-lock.tgz', entries.filter((entry) => !entry.endsWith('npm-shrinkwrap.json')));
   assert.throws(() => stageCandidatePackage({ ...missing, release: path.join(root, 'missing-release'),
     commandRunner: runner }), /lacks its package manifest or published shrinkwrap/);
   assert.ok(!fs.existsSync(path.join(root, 'missing-release')));
+  assert.equal(calls.filter(({ file }) => file === 'npm').length, 1);
+
+  fs.writeFileSync(path.join(packageRoot, 'npm-shrinkwrap.json'), JSON.stringify(lock));
+  fs.writeFileSync(nativeManifest, JSON.stringify({ schemaVersion: 1, platform: 'linux', arch: 'x64' }));
+  const tamperedManifest = makeTar('tampered-native-manifest.tgz', entries);
+  assert.throws(() => stageCandidatePackage({ ...tamperedManifest, release: path.join(root, 'tampered-native-release'),
+    commandRunner: runner }), /manifest/);
+  assert.ok(!fs.existsSync(path.join(root, 'tampered-native-release')));
+
+  fs.writeFileSync(nativeManifest, JSON.stringify({
+    schemaVersion: 1, platform: 'linux', arch: 'x64',
+    source: { path: 'src/computer/native/vnc-launcher.c', sha256: '1'.repeat(64) },
+    binary: { path: 'dist/computer/native/vnc-launcher', sha256: '0'.repeat(64) },
+    compiler: { path: '/usr/bin/gcc', realpath: '/usr/bin/x86_64-linux-gnu-gcc-15',
+      sha256: 'b5f1b773a7c733738352000c92a077dc5852a1a2fc6d836b1e411be1e9ec5f88', version: '15.2.0' },
+    flags: ['-std=c11', '-O2', '-Wall', '-Wextra', '-Werror', '-fstack-protector-strong',
+      '-D_FORTIFY_SOURCE=2', '-fPIE', '-pie', '-Wl,-z,relro,-z,now'],
+    filterSha256: 'dc159080d3fb3013273eb8badcee46347501de0054da5bab7e72b130fab91c7e',
+  }));
+  const mismatchedBinaryHash = makeTar('mismatched-native-hash.tgz', entries);
+  assert.throws(() => stageCandidatePackage({ ...mismatchedBinaryHash,
+    release: path.join(root, 'mismatched-native-release'), commandRunner: runner }), /manifest/);
+  assert.ok(!fs.existsSync(path.join(root, 'mismatched-native-release')));
+
+  writeNativeManifest();
+  const partialPair = makeTar('partial-native-pair.tgz', entries.filter((entry) => !entry.endsWith('/launcher-manifest.json')));
+  assert.throws(() => stageCandidatePackage({ ...partialPair, release: path.join(root, 'partial-native-release'),
+    commandRunner: runner }), /complete native VNC/);
+  assert.ok(!fs.existsSync(path.join(root, 'partial-native-release')));
+
+  const appFile = 'package/ops/chatgpt-launcher/product/session-supervisor.py';
+  const incompleteApp = makeTar('incomplete-app.tgz', entries.filter((entry) => entry !== appFile));
+  assert.throws(() => stageCandidatePackage({ ...incompleteApp, release: path.join(root, 'incomplete-app-release'),
+    commandRunner: runner }), /exact ChatGPT launcher inventory/);
+  const extraAppFile = path.join(packageRoot, 'ops/chatgpt-launcher/product/unlisted.py');
+  fs.writeFileSync(extraAppFile, 'unlisted fixture');
+  const extraApp = makeTar('extra-app.tgz', [...entries, 'package/ops/chatgpt-launcher/product/unlisted.py']);
+  assert.throws(() => stageCandidatePackage({ ...extraApp, release: path.join(root, 'extra-app-release'),
+    commandRunner: runner }), /unknown payload path/);
+  assert.ok(!fs.existsSync(path.join(root, 'incomplete-app-release')));
+  assert.ok(!fs.existsSync(path.join(root, 'extra-app-release')));
+  fs.unlinkSync(extraAppFile);
   assert.equal(calls.filter(({ file }) => file === 'npm').length, 1);
 
   lock.packages[''].version = 'wrong-version';
@@ -340,6 +469,114 @@ test('public archive inventory rejects hidden, sensitive, and non-runtime files 
       assert.throws(() => publicTreeDigest(root), reason);
       assert.deepEqual(opened, [], 'inventory refuses before reading or hashing any member');
       fs.unlinkSync(path.join(root, file));
+    }
+  } finally { fs.openSync = originalOpen; }
+});
+
+test('native VNC public runtime exceptions stay literal, paired, hashed, and executable', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'deckide-native-public-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  for (const directory of ['bin', 'dist/computer/native', 'web/dist']) {
+    fs.mkdirSync(path.join(root, directory), { recursive: true });
+  }
+  fs.writeFileSync(path.join(root, 'package.json'), '{"name":"deckide","version":"3.5.49"}');
+  fs.writeFileSync(path.join(root, 'dist/computer/private-unix.js'), 'public runtime module');
+  const binary = path.join(root, 'dist/computer/native/vnc-launcher');
+  const manifest = path.join(root, 'dist/computer/native/launcher-manifest.json');
+  const bytes = Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x00, 0xfe]);
+  const body = () => ({
+    schemaVersion: 1, platform: 'linux', arch: 'x64',
+    source: { path: 'src/computer/native/vnc-launcher.c', sha256: 'a'.repeat(64) },
+    binary: { path: 'dist/computer/native/vnc-launcher',
+      sha256: crypto.createHash('sha256').update(bytes).digest('hex') },
+    compiler: { path: '/usr/bin/gcc', realpath: '/usr/bin/x86_64-linux-gnu-gcc-15',
+      sha256: 'b5f1b773a7c733738352000c92a077dc5852a1a2fc6d836b1e411be1e9ec5f88', version: '15.2.0' },
+    flags: ['-std=c11', '-O2', '-Wall', '-Wextra', '-Werror', '-fstack-protector-strong',
+      '-D_FORTIFY_SOURCE=2', '-fPIE', '-pie', '-Wl,-z,relro,-z,now'],
+    filterSha256: 'dc159080d3fb3013273eb8badcee46347501de0054da5bab7e72b130fab91c7e',
+  });
+  assert.doesNotThrow(() => publicTreeDigest(root), 'older packages may omit both optional native artifacts');
+  fs.writeFileSync(binary, bytes, { mode: 0o755 });
+  assert.throws(() => publicTreeDigest(root), /incomplete/);
+  fs.writeFileSync(manifest, JSON.stringify(body()));
+  assert.doesNotThrow(() => publicTreeDigest(root), 'the exact private module and native pair are public runtime files');
+
+  fs.writeFileSync(path.join(root, 'dist/computer/private-helper.js'), 'private fixture');
+  assert.throws(() => publicTreeDigest(root), /hidden or sensitive/);
+  fs.unlinkSync(path.join(root, 'dist/computer/private-helper.js'));
+  fs.writeFileSync(path.join(root, 'dist/computer/native/unlisted-helper'), bytes, { mode: 0o755 });
+  assert.throws(() => publicTreeDigest(root), /non-runtime/);
+  fs.unlinkSync(path.join(root, 'dist/computer/native/unlisted-helper'));
+
+  fs.writeFileSync(binary, Buffer.concat([bytes, Buffer.from([0xff])]));
+  assert.throws(() => publicTreeDigest(root), /manifest/);
+  fs.writeFileSync(binary, bytes);
+  fs.chmodSync(binary, 0o750);
+  assert.throws(() => publicTreeDigest(root), /mode or type/);
+  fs.chmodSync(binary, 0o755);
+  fs.writeFileSync(manifest, JSON.stringify({ ...body(), arch: 'arm64' }));
+  assert.throws(() => publicTreeDigest(root), /manifest/);
+});
+
+test('ChatGPT launcher inventory is exact and part of staged package identity', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'deckide-app-public-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const makePackage = (directory, version) => {
+    for (const subdir of ['bin', 'dist', 'web/dist']) fs.mkdirSync(path.join(directory, subdir), { recursive: true });
+    fs.writeFileSync(path.join(directory, 'package.json'), JSON.stringify({ name: 'deckide', version }));
+  };
+  const release = path.join(root, 'release');
+  const previous = path.join(root, 'previous');
+  makePackage(release, '3.5.49-combined.20261004.1');
+  makePackage(previous, '3.5.48');
+  assert.doesNotThrow(() => publicTreeDigest(previous), 'legacy package without the app inventory remains accepted');
+  fs.mkdirSync(path.join(release, 'ops/chatgpt-launcher/product'), { recursive: true });
+  fs.writeFileSync(path.join(release, 'ops/chatgpt-launcher/product/session-supervisor.py'), 'partial fixture');
+  assert.throws(() => publicTreeDigest(release), /legacy|incomplete|unsafe/);
+  writeAppPackageFixture(release);
+  const originalReleaseDigest = publicTreeDigest(release).digest;
+  const previousDigest = publicTreeDigest(previous).digest;
+  const candidate = path.join(root, 'candidate.tgz');
+  const previousArchive = path.join(root, 'previous.tar');
+  fs.writeFileSync(candidate, 'candidate fixture');
+  fs.writeFileSync(previousArchive, 'rollback archive fixture');
+  const hash = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+  const state = {
+    httpUnit: 'deckide.service', httpControlGroup: '/system.slice/deckide.service',
+    releasePackage: release, previousPackage: previous, candidate,
+    candidateSha256: hash(candidate), candidatePublicSha256: originalReleaseDigest,
+    previousVersion: '3.5.48', previousPublicSha256: previousDigest,
+    previousArchive, previousArchiveSha256: hash(previousArchive),
+  };
+  assert.doesNotThrow(() => checkStaged(state));
+  for (const relative of ['ops/chatgpt-launcher/product/session-supervisor.py',
+    'ops/chatgpt-launcher/product/launch-chatgpt.sh',
+    'ops/chatgpt-launcher/product/SOURCE-ADAPTATION.json']) {
+    const file = path.join(release, relative);
+    const original = fs.readFileSync(file);
+    fs.writeFileSync(file, Buffer.concat([original, Buffer.from('tampered') ]));
+    assert.notEqual(publicTreeDigest(release).digest, originalReleaseDigest, `${relative} must enter public identity`);
+    assert.throws(() => checkStaged(state), /Staged release package changed/);
+    fs.writeFileSync(file, original);
+    assert.doesNotThrow(() => checkStaged(state));
+  }
+  const supervisor = path.join(release, 'ops/chatgpt-launcher/product/session-supervisor.py');
+  fs.chmodSync(supervisor, 0o600);
+  assert.throws(() => checkStaged(state), /unexpected mode/);
+  fs.chmodSync(supervisor, 0o644);
+  assert.doesNotThrow(() => checkStaged(state));
+
+  const originalOpen = fs.openSync;
+  const opened = [];
+  fs.openSync = (...args) => { opened.push(args[0]); return originalOpen(...args); };
+  try {
+    for (const relative of ['ops/chatgpt-launcher/product/.private.js',
+      'ops/chatgpt-launcher/product/local-secret.py', 'ops/chatgpt-launcher/product/unlisted.py']) {
+      const file = path.join(release, relative);
+      fs.writeFileSync(file, 'sensitive or unknown fixture');
+      assert.throws(() => publicTreeDigest(release), /hidden or sensitive|non-runtime/);
+      assert.deepEqual(opened, [], 'unrecognized app files are refused before content hashing');
+      fs.unlinkSync(file);
     }
   } finally { fs.openSync = originalOpen; }
 });

@@ -1,6 +1,6 @@
 {
   "name": "deckide",
-  "version": "3.5.49-tmux.20261004.1",
+  "version": "3.5.49-combined.20261004.1",
   "description": "Deck IDE - Browser-based shell workspace with decks and terminals",
   "type": "module",
   "bin": {
@@ -25,7 +25,10 @@
     "test": "node --import tsx --experimental-vm-modules --test --test-concurrency=1 tests/*.test.ts tests/*.test.mjs",
     "test:terminal:unit": "node --import tsx --test --test-concurrency=1 tests/terminal-tmux-adapter.test.ts tests/terminal-snapshot.test.mjs tests/terminal-frame.test.ts tests/terminal-websocket-lifecycle.test.mjs tests/terminal-reconnect.test.ts tests/terminal-queries.test.ts",
     "test:terminal:live": "node --test --test-concurrency=1 tests/terminal-tmux-live.test.mjs",
-    "test:terminal:all": "node --import tsx --experimental-vm-modules --test --test-concurrency=1 tests/terminal-frame.test.ts tests/terminal-queries.test.ts tests/terminal-reconnect.test.ts tests/terminal-snapshot.test.mjs tests/terminal-tmux-adapter.test.ts tests/terminal-websocket-lifecycle.test.mjs tests/terminal-tmux-broker.test.mjs tests/terminal-tmux-live.test.mjs tests/session-auth.test.mjs tests/cli-auth.test.mjs tests/terminal-update-guards.test.mjs"
+    "test:terminal:all": "node --import tsx --experimental-vm-modules --test --test-concurrency=1 tests/terminal-frame.test.ts tests/terminal-queries.test.ts tests/terminal-reconnect.test.ts tests/terminal-snapshot.test.mjs tests/terminal-tmux-adapter.test.ts tests/terminal-websocket-lifecycle.test.mjs tests/terminal-tmux-broker.test.mjs tests/terminal-tmux-live.test.mjs tests/session-auth.test.mjs tests/cli-auth.test.mjs tests/terminal-update-guards.test.mjs",
+    "build:vnc-launcher": "node scripts/build-vnc-launcher.mjs",
+    "build:vnc-candidate": "npm run build:server && npm run build:vnc-launcher",
+    "prepack": "node scripts/build-vnc-launcher.mjs --check"
   },
   "dependencies": {
     "@hono/node-server": "^1.12.2",
@@ -39,7 +42,8 @@
     "node-pty": "^1.0.0",
     "simple-git": "^3.27.0",
     "ws": "^8.17.0",
-    "zod": "^4.0.0"
+    "zod": "^4.0.0",
+    "@novnc/novnc": "1.7.0"
   },
   "devDependencies": {
     "@monaco-editor/react": "^4.6.0",
