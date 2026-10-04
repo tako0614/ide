@@ -1,22 +1,10 @@
-# Guarded combined DeckIDE service update (unqualified preparation)
+# Guarded DeckIDE combined .6 service update
 
-The frozen GUI v4 geometry delta is now present, including explicit startup
-authority and strict `ServerInit` validation. GUI runtime remains UNQUALIFIED
-pending the owner’s fresh-session frame/input/reconnect smoke and final source
-synchronization. Any packaged checkpoint is UNQUALIFIED; consult the workspace
-report for its exact identity and gates.
-The commands below describe the future operator path, not an instruction to
-activate this preparation checkpoint.
+The .6 runtime passed 166 source tests and 73 installed-module tests. The isolated installed-module GUI run verified a nonempty ChatGPT sign-in frame, native pointer and Right-key receipt in a disposable target, authenticated reconnect, and guarded cleanup. Full production createServer and systemd cutover have not been exercised.
 
-This operator-run tool is prepared for a future production cutover. The frozen
-GUI v4 geometry delta is included, but its authenticated nonempty frame, input
-and reconnect smoke remains unqualified until the owner runs it from a fresh
-session and completes final source synchronization. This is separate from
-tmux's fixed canonical cell grid. Merely
-building, packaging, running `plan`, or running `stage` does not stop or restart
-DeckIDE. Do not run `apply` while an older direct-PTY terminal is in use.
+Run the operator scripts from this source checkout. They are separately pinned to the reviewed .6 tarball. Planning or staging does not restart DeckIDE. Before applying, finish every old direct-PTY terminal and block new terminal creation; run the update from an independent server console or SSH session.
 
-The candidate package must be exactly `deckide@3.5.49-combined.20261004.2` and
+The candidate package must be exactly `deckide@3.5.49-combined.20261004.6` and
 match the separately reviewed SHA-256. The existing installed package is
 `/usr/local/lib/node_modules/deckide` on the inspected host. `plan` checks the
 loaded `deckide.service` ExecStart metadata in memory against this path and
@@ -36,7 +24,7 @@ on the designated SSD, and the release path must not exist:
 ```sh
 CANDIDATE=REPLACE_WITH_REVIEWED_COMBINED_TARBALL_PATH
 SHA256=REPLACE_WITH_REVIEWED_64_HEX_SHA256
-RELEASE=/root/dev/deckide-releases/3.5.49-combined.20261004.2
+RELEASE=/root/dev/deckide-releases/3.5.49-combined.20261004.6
 HEALTH=http://127.0.0.1:8787/health
 mkdir --parents --mode=0700 /root/dev/deckide-releases
 node ops/terminal-update.mjs plan \
