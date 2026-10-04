@@ -1,0 +1,296 @@
+.computer-shell-layout {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.computer-shell-main {
+  display: flex;
+  flex: 1 1 50%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.computer-toolbar-button-active {
+  color: var(--color-ink);
+  border-color: var(--color-accent);
+  background: var(--color-list-active);
+}
+
+.computer-pane {
+  display: flex;
+  flex: 1 1 50%;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border-left: 1px solid var(--color-border);
+  background: var(--color-bg);
+  color: var(--color-ink);
+  overflow: hidden;
+}
+
+.computer-pane-header {
+  display: flex;
+  flex: 0 0 38px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 10px 0 12px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-sidebar);
+}
+
+.computer-pane-header h2 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.computer-pane-heading,
+.computer-pane-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.computer-icon-button {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--color-ink-muted);
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.computer-icon-button:hover {
+  border-color: var(--color-border);
+  background: var(--color-list-hover);
+  color: var(--color-ink);
+}
+
+.computer-icon-button:focus-visible,
+.computer-small-button:focus-visible,
+.computer-primary-button:focus-visible,
+.computer-stop-button:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.computer-pane-content {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  padding: 10px;
+  overflow: auto;
+}
+
+.computer-pane-footer {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 10px;
+  border-top: 1px solid var(--color-border);
+  background: var(--color-sidebar);
+}
+
+.computer-pane-footer > label,
+.computer-type-form > label {
+  color: var(--color-ink-muted);
+  font-size: 11px;
+}
+
+.computer-launch-row,
+.computer-type-form,
+.computer-control-row,
+.computer-screen-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.computer-launch-row input,
+.computer-type-form input {
+  min-width: 0;
+  min-height: 30px;
+  flex: 1;
+  padding: 5px 7px;
+  border: 1px solid var(--color-border);
+  border-radius: 2px;
+  background: var(--color-panel);
+  color: var(--color-ink);
+  font-size: 11px;
+}
+
+.computer-screen-toolbar { justify-content: space-between; }
+
+.computer-auto-refresh {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--color-ink-muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.computer-screen {
+  position: relative;
+  display: grid;
+  flex: 1 1 auto;
+  min-height: 180px;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  background: #090a0d;
+  touch-action: none;
+  cursor: crosshair;
+}
+
+.computer-screen:focus-visible,
+.computer-screen.keyboard-enabled {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
+.computer-screen img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: contain;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.computer-screen-placeholder {
+  padding: 16px;
+  color: #aeb4bf;
+  font-size: 12px;
+}
+
+.computer-capture-indicator {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  padding: 3px 6px;
+  border: 1px solid rgb(255 255 255 / 15%);
+  border-radius: 2px;
+  background: rgb(0 0 0 / 65%);
+  color: #fff;
+  font-size: 10px;
+}
+
+.computer-small-button,
+.computer-primary-button {
+  min-height: 30px;
+  padding: 4px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 2px;
+  background: var(--color-panel);
+  color: var(--color-ink);
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.computer-small-button:hover:not(:disabled) { border-color: var(--color-accent); }
+.computer-small-button.active { border-color: var(--color-accent); color: var(--color-accent); }
+.computer-small-button:disabled,
+.computer-primary-button:disabled,
+.computer-stop-button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.computer-control-row { justify-content: space-between; }
+.computer-hint,
+.computer-observation-hint { color: var(--color-muted); font-size: 10px; }
+.computer-observation-hint { margin: 0; }
+
+.computer-type-form { flex-wrap: wrap; }
+.computer-type-form > label { flex: 0 0 100%; }
+
+.computer-stop-button {
+  align-self: flex-start;
+  min-height: 28px;
+  padding: 3px 8px;
+  border: 1px solid #7a3434;
+  border-radius: 2px;
+  background: transparent;
+  color: #e99696;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.computer-stop-button:hover:not(:disabled) { background: rgb(229 83 75 / 12%); }
+
+.computer-empty-state {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px 18px;
+  text-align: center;
+}
+
+.computer-empty-state h3 { margin: 2px 0 0; font-size: 13px; font-weight: 600; }
+.computer-empty-state p { max-width: 300px; margin: 0; color: var(--color-ink-muted); font-size: 11px; }
+
+.computer-primary-button {
+  min-height: 34px;
+  margin-top: 8px;
+  padding-inline: 12px;
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+.computer-primary-button:hover:not(:disabled) { filter: brightness(1.08); }
+
+.computer-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #777;
+}
+
+.computer-status-dot.running { background: #73c991; box-shadow: 0 0 0 3px rgb(115 201 145 / 12%); }
+.computer-status-dot.stopped { background: #8b8b8b; }
+.computer-status-dot.unsupported { background: #d2a84d; }
+
+.computer-feedback,
+.computer-loading {
+  margin: 0;
+  color: var(--color-ink-muted);
+  font-size: 11px;
+}
+
+.computer-feedback.error { color: #e99696; }
+
+@media (max-width: 720px) {
+  .computer-pane {
+    position: absolute;
+    z-index: 20;
+    inset: 0 0 0 auto;
+    width: min(100%, 440px);
+    border-left: 1px solid var(--color-border);
+    box-shadow: -12px 0 32px rgb(0 0 0 / 28%);
+  }
+
+  .computer-pane-content { padding: 8px; }
+  .computer-screen { flex: 0 0 min(45%, 320px); min-height: 0; }
+}

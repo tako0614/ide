@@ -1,0 +1,1079 @@
+@import "tailwindcss";
+
+/* Dark mode: data-theme="dark" attribute based */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/* ── Design Tokens ── */
+@theme {
+  /* Light theme defaults */
+  --color-bg:               #f3f3f3;
+  --color-bg-soft:          #e8e8e8;
+  --color-panel:            #ffffff;
+  --color-sidebar:          #f3f3f3;
+  --color-activitybar:      #2c2c2c;
+  --color-activitybar-fg:   #ffffff;
+  --color-activitybar-inactive: rgba(255,255,255,0.6);
+  --color-border:           #e5e5e5;
+  --color-border-active:    #007acc;
+  --color-ink:              #333333;
+  --color-ink-muted:        #6e6e6e;
+  --color-muted:            #717171;
+  --color-accent:           #007acc;
+  --color-statusbar:        #007acc;
+  --color-statusbar-fg:     #ffffff;
+  --color-list-hover:       rgba(0,0,0,0.04);
+  --color-list-active:      rgba(0,120,212,0.1);
+  --color-focus:            #0090f1;
+  --color-title-bar:        #dddddd;
+
+  /* Git status colors */
+  --color-git-modified:     #cca700;
+  --color-git-untracked:    #4ec9b0;
+  --color-git-deleted:      #f14c4c;
+  --color-git-staged:       #73c991;
+  --color-git-renamed:      #4fc1ff;
+  --color-git-conflicted:   #ff6b6b;
+
+  /* Fonts */
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", "Noto Sans Mono CJK JP", "Source Han Mono", "MS Gothic", monospace;
+  --font-ui:   "Noto Sans JP", sans-serif;
+}
+
+/* ── Dark theme overrides ── */
+:root[data-theme="dark"] {
+  --color-bg:               #1e1e1e;
+  --color-bg-soft:          #252526;
+  --color-panel:            #1e1e1e;
+  --color-sidebar:          #252526;
+  --color-activitybar:      #333333;
+  --color-activitybar-inactive: rgba(255,255,255,0.4);
+  --color-border:           #3c3c3c;
+  --color-ink:              #cccccc;
+  --color-ink-muted:        #9e9e9e;
+  --color-muted:            #8b8b8b;
+  --color-accent:           #0078d4;
+  --color-list-hover:       rgba(255,255,255,0.04);
+  --color-list-active:      rgba(0,120,212,0.2);
+  --color-focus:            #007fd4;
+  --color-title-bar:        #3c3c3c;
+}
+
+/* ── Keyframes ── */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+@keyframes slideIn {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(0); }
+}
+
+/* ── Global base ── */
+@layer base {
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body, #root { height: 100%; min-height: 100%; margin: 0; }
+  body {
+    font-family: var(--font-ui);
+    font-size: 13px;
+    background: var(--color-bg);
+    color: var(--color-ink);
+    line-height: 1.4;
+    overflow: hidden;
+  }
+  button, input, select, textarea { font-family: inherit; color: inherit; }
+  button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+  }
+  @supports (height: 100dvh) {
+    html, body, #root { height: 100dvh; min-height: 100dvh; }
+  }
+  html, body, #root {
+    height: var(--viewport-height, 100dvh);
+    min-height: var(--viewport-height, 100dvh);
+  }
+
+  /* Subtle scrollbars */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(128,128,128,0.3) transparent;
+  }
+  :root[data-theme="dark"] * {
+    scrollbar-color: rgba(255,255,255,0.15) transparent;
+  }
+  *::-webkit-scrollbar { width: 6px; height: 6px; }
+  *::-webkit-scrollbar-track { background: transparent; }
+  *::-webkit-scrollbar-thumb {
+    background: rgba(128,128,128,0.3);
+    border-radius: 3px;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: rgba(128,128,128,0.5);
+  }
+  :root[data-theme="dark"] *::-webkit-scrollbar-thumb {
+    background: rgba(255,255,255,0.15);
+  }
+  :root[data-theme="dark"] *::-webkit-scrollbar-thumb:hover {
+    background: rgba(255,255,255,0.3);
+  }
+  *::-webkit-scrollbar-corner { background: transparent; }
+}
+
+/* ── Custom utilities ── */
+@layer utilities {
+  .scrollbar-none { scrollbar-width: none; }
+  .scrollbar-none::-webkit-scrollbar { display: none; }
+  .spin { animation: spin 1s linear infinite; }
+  .slide-in { animation: slideIn 0.2s ease; }
+}
+
+/* ── Component classes (complex selectors / pseudo-elements) ── */
+@layer components {
+  /* Activity bar active indicator (::before pseudo-element) */
+  .activity-bar-item.active::before {
+    content: '';
+    position: absolute;
+    left: 0; top: 0; bottom: 0;
+    width: 2px;
+    background: var(--color-activitybar-fg);
+  }
+  /* In workspace-editor-grid, use accent color for active indicator */
+  .workspace-editor-grid .activity-bar-item.active::before {
+    background: var(--color-accent);
+  }
+  /* Mobile: active indicator is horizontal */
+  .app > nav.activity-bar .activity-bar-item.active::before {
+    left: 0; right: 0; top: 0; bottom: auto;
+    width: auto; height: 2px;
+  }
+
+  /* Git tab active bottom border (::after) */
+  .git-tab.active::after {
+    content: '';
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    height: 2px;
+    background: var(--color-accent);
+  }
+
+  /* Editor tab close button: reveal on hover/active */
+  .editor-tab:hover .editor-tab-close,
+  .editor-tab.active .editor-tab-close { opacity: 1; }
+  .editor-tab.dirty .editor-tab-close { opacity: 0; }
+  .editor-tab.dirty:hover .editor-tab-close { opacity: 1; }
+  .editor-tab.dirty:hover .editor-tab-dirty { display: none; }
+
+  /* Deck tab close: reveal on hover/active */
+  .deck-tab:hover .deck-tab-close,
+  .deck-tab.active .deck-tab-close { opacity: 0.5; }
+  .deck-tab-close:hover { background: rgba(255,255,255,0.12); opacity: 1 !important; color: var(--color-ink); }
+
+  /* Git file actions: reveal on row hover */
+  .git-file-row:hover .git-file-actions { opacity: 1; }
+
+  /* Tree chevron rotation when directory is open */
+  .tree-row.is-open .tree-chevron-icon { transform: rotate(90deg); }
+
+  /* Drop target overlay for deck split */
+  .terminal-split-container.is-drop-target::after {
+    content: 'デッキをここにドロップして分割';
+    position: absolute;
+    inset: 10px;
+    border: 2px dashed var(--color-accent);
+    border-radius: 6px;
+    background: rgba(0,120,212,0.08);
+    color: var(--color-ink-muted);
+    font-size: 12px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+    z-index: 2;
+  }
+
+  /* Git tree status colors (nested .tree-label selector) */
+  .git-tree-modified   .tree-label { color: var(--color-git-modified); }
+  .git-tree-untracked  .tree-label { color: var(--color-git-untracked); }
+  .git-tree-deleted    .tree-label { color: var(--color-git-deleted); }
+  .git-tree-staged     .tree-label { color: var(--color-git-staged); }
+  .git-tree-renamed    .tree-label { color: var(--color-git-renamed); }
+  .git-tree-conflicted .tree-label { color: var(--color-git-conflicted); }
+
+  /* Sidebar panel overrides for panel children */
+  .sidebar-content .panel { border: none; border-radius: 0; box-shadow: none; background: transparent; }
+  .sidebar-content .panel-header {
+    position: sticky; top: 0;
+    background: var(--color-sidebar);
+    z-index: 1;
+    padding: 8px 12px;
+    margin-bottom: 0;
+  }
+  .sidebar-content .panel-body { padding: 0; }
+}
+
+/* ── App Layout ── */
+.app {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) 22px;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* ── Activity Bar ── */
+.activity-bar {
+  grid-row: 1 / 3;
+  background: var(--color-activitybar);
+  display: flex;
+  flex-direction: column;
+  width: 48px;
+}
+
+.activity-bar-top { display: flex; flex-direction: column; }
+.activity-bar-bottom { margin-top: auto; display: flex; flex-direction: column; }
+
+.activity-bar-item {
+  width: 48px; height: 48px;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent; border: none;
+  color: var(--color-activitybar-inactive);
+  cursor: pointer; position: relative;
+  transition: color 0.15s;
+}
+.activity-bar-item:hover { color: var(--color-activitybar-fg); }
+.activity-bar-item.active { color: var(--color-activitybar-fg); }
+.activity-bar-item svg { width: 24px; height: 24px; }
+
+.activity-bar-badge {
+  position: absolute; top: 8px; right: 6px;
+  min-width: 16px; height: 16px; padding: 0 4px;
+  font-size: 10px; font-weight: 600; line-height: 16px; text-align: center;
+  background: var(--color-accent); color: white; border-radius: 8px;
+}
+
+/* ── Main Content ── */
+.main {
+  display: flex; flex-direction: column;
+  min-height: 0; background: var(--color-bg);
+}
+
+/* ── Workspace Editor Overlay ── */
+.workspace-editor-overlay {
+  position: fixed; inset: 0;
+  background: var(--color-bg);
+  display: grid;
+  grid-template-rows: 35px minmax(0, 1fr);
+  z-index: 30;
+}
+.workspace-editor-header {
+  display: flex; align-items: center; gap: 12px; padding: 0 12px;
+  background: var(--color-title-bar);
+  border-bottom: 1px solid var(--color-border);
+}
+.workspace-meta {
+  flex: 1; font-size: 12px; color: var(--color-muted);
+  font-family: var(--font-mono);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center;
+}
+.workspace-editor-grid {
+  display: grid;
+  grid-template-columns: 48px 220px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  min-height: 0; height: 100%;
+}
+
+/* ── Sidebar Panel ── */
+.sidebar-panel {
+  display: flex; flex-direction: column;
+  min-height: 0; height: 100%;
+  background: var(--color-sidebar);
+  border-right: 1px solid var(--color-border);
+}
+.sidebar-content { flex: 1; min-height: 0; overflow: auto; }
+
+/* Workspace editor inner activity bar */
+.workspace-editor-grid > .activity-bar {
+  display: flex; flex-direction: column;
+  background: var(--color-activitybar);
+  border-right: 1px solid var(--color-border);
+  width: 48px; grid-row: unset;
+}
+.workspace-editor-grid .activity-bar-item {
+  color: var(--color-activitybar-fg); opacity: 0.6; transition: opacity 0.15s;
+}
+.workspace-editor-grid .activity-bar-item:hover { opacity: 1; }
+.workspace-editor-grid .activity-bar-item.active { opacity: 1; }
+
+/* ── Panel ── */
+.panel {
+  background: var(--color-panel); border: 1px solid var(--color-border);
+  border-radius: 0; padding: 0;
+  display: flex; flex-direction: column; min-height: 0;
+}
+.panel-header {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; padding: 8px 12px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-sidebar);
+}
+.panel-title {
+  font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.5px;
+  color: var(--color-ink-muted);
+}
+.panel-subtitle {
+  font-size: 12px; color: var(--color-muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.panel-body { flex: 1; min-height: 0; overflow: auto; }
+
+/* ── Modal (DeckModal / WorkspaceModal) ── */
+.modal {
+  background: var(--color-panel); border: 1px solid var(--color-border);
+  border-radius: 4px; padding: 16px;
+  width: 480px; max-width: 96vw; max-height: 90dvh;
+  overflow-y: auto; box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+}
+.modal-close-btn {
+  background: transparent; border: none; color: var(--color-muted);
+  font-size: 24px; width: 32px; height: 32px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; line-height: 1; padding: 0;
+}
+.modal-close-btn:hover { color: var(--color-ink); background: var(--color-list-hover); }
+
+/* ── File Tree ── */
+.tree-body { padding: 4px 0; }
+.tree-row {
+  display: flex; align-items: center; gap: 4px;
+  padding: 2px 8px 2px 4px; font-size: 13px; color: var(--color-ink);
+  width: 100%; background: transparent; border: none; text-align: left;
+  cursor: pointer; transition: background 0.1s; min-height: 22px;
+}
+.tree-row:hover { background: var(--color-list-hover); }
+.tree-row:focus-visible { outline: 2px solid var(--color-focus); outline-offset: -2px; }
+.tree-chevron {
+  width: 16px; height: 16px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--color-ink-muted);
+}
+.tree-chevron-icon { width: 12px; height: 12px; transition: transform 0.1s; }
+.tree-icon { width: 16px; height: 16px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; }
+.tree-svg { width: 16px; height: 16px; }
+.tree-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tree-meta { margin-left: auto; font-size: 11px; color: var(--color-muted); font-family: var(--font-mono); }
+.tree-state { font-size: 12px; color: var(--color-muted); padding: 8px 12px; }
+.tree-actions { display: flex; align-items: center; gap: 4px; }
+.tree-input-row { display: flex; align-items: center; gap: 4px; padding: 2px 8px 2px 4px; min-height: 22px; }
+.tree-input {
+  flex: 1; min-width: 0; padding: 2px 6px; font-size: 13px;
+  border: 1px solid var(--color-accent); border-radius: 2px;
+  background: var(--color-panel); color: var(--color-ink); outline: none;
+}
+.tree-input::placeholder { color: var(--color-muted); }
+
+/* ── Editor Container ── */
+.editor-container { display: flex; flex-direction: column; height: 100%; background: var(--color-panel); overflow: hidden; }
+.editor-container.editor-empty { display: flex; align-items: center; justify-content: center; }
+.editor-welcome { display: flex; flex-direction: column; align-items: center; gap: 16px; color: var(--color-ink-muted); text-align: center; padding: 60px 40px; }
+.editor-welcome-icon { width: 80px; height: 80px; opacity: 0.2; }
+.editor-welcome-icon svg { width: 100%; height: 100%; stroke: var(--color-ink); }
+.editor-welcome-text { font-size: 18px; font-weight: 400; color: var(--color-ink-muted); }
+.editor-welcome-hint { font-size: 13px; opacity: 0.6; }
+.editor-tabs {
+  display: flex; align-items: stretch;
+  background: var(--color-bg-soft); min-height: 35px; flex-shrink: 0;
+  border-bottom: 1px solid var(--color-border);
+}
+.editor-tabs-list { display: flex; overflow-x: auto; scrollbar-width: none; }
+.editor-tabs-list::-webkit-scrollbar { display: none; }
+.editor-tab {
+  display: flex; align-items: center; gap: 6px; padding: 0 10px;
+  min-width: 100px; max-width: 180px; height: 35px;
+  background: var(--color-bg-soft); border: none;
+  border-right: 1px solid var(--color-border);
+  color: var(--color-ink-muted); font-size: 13px;
+  cursor: pointer; transition: background 0.1s, color 0.1s; position: relative;
+}
+.editor-tab:hover { background: var(--color-panel); color: var(--color-ink); }
+.editor-tab.active {
+  background: var(--color-panel); color: var(--color-ink);
+  border-bottom: 1px solid var(--color-panel); margin-bottom: -1px;
+}
+.editor-tab-icon { font-size: 10px; font-weight: 600; font-family: var(--font-mono); flex-shrink: 0; }
+.editor-tab-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.editor-tab-dirty { color: var(--color-ink); font-size: 18px; line-height: 1; flex-shrink: 0; }
+.editor-tab-saving { width: 14px; height: 14px; flex-shrink: 0; }
+.editor-tab-saving svg { width: 100%; height: 100%; stroke: var(--color-ink-muted); }
+.editor-tab-close {
+  width: 20px; height: 20px; padding: 0; border: none; background: transparent;
+  border-radius: 3px; color: var(--color-ink-muted); cursor: pointer;
+  opacity: 0; transition: opacity 0.1s, background 0.1s; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+.editor-tab-close svg { width: 16px; height: 16px; }
+.editor-tab-close:hover { background: var(--color-list-hover); color: var(--color-ink); }
+.editor-breadcrumb {
+  display: flex; align-items: center; padding: 0 12px;
+  background: var(--color-panel); border-bottom: 1px solid var(--color-border);
+  font-size: 12px; color: var(--color-ink-muted); height: 22px; flex-shrink: 0;
+}
+.editor-breadcrumb-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); }
+.editor-content { flex: 1; min-height: 0; position: relative; }
+.editor-no-file { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--color-ink-muted); }
+.editor-statusbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 12px; height: 22px;
+  background: var(--color-statusbar); color: var(--color-statusbar-fg);
+  font-size: 12px; flex-shrink: 0;
+}
+.editor-statusbar-left, .editor-statusbar-right { display: flex; align-items: center; gap: 14px; }
+.editor-status-item { display: flex; align-items: center; gap: 4px; cursor: default; }
+.editor-status-item svg { width: 14px; height: 14px; }
+
+/* ── Terminal Layout ── */
+.terminal-layout {
+  flex: 1; min-height: 0; min-width: 0;
+  display: flex; flex-direction: column; overflow: hidden;
+  overflow-anchor: none;
+}
+.terminal-topbar {
+  display: flex; align-items: stretch;
+  background: var(--color-sidebar); border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0; min-width: 0; overflow: hidden;
+}
+.shell-toolbar-actions {
+  display: flex; align-items: center; gap: 6px; padding: 0 8px; flex-shrink: 0;
+}
+.topbar-left { display: flex; align-items: stretch; min-width: 0; flex: 1; overflow: hidden; }
+.deck-tabs {
+  display: flex; align-items: stretch; overflow-x: auto; flex: 1; min-width: 0; scrollbar-width: none;
+}
+.deck-tabs::-webkit-scrollbar { display: none; }
+
+.deck-tab {
+  display: flex; align-items: center; gap: 4px;
+  padding: 0 8px 0 12px; min-width: 80px; max-width: 200px;
+  background: transparent; border: none;
+  border-top: 2px solid transparent; border-right: 1px solid var(--color-border);
+  color: var(--color-muted); font-size: 12px; font-weight: 500;
+  cursor: pointer; white-space: nowrap; transition: background 0.12s, color 0.12s; flex-shrink: 0;
+}
+.deck-tab[draggable='true'] { cursor: grab; }
+.deck-tab.is-dragging { opacity: 0.5; }
+.deck-tab.is-drag-over { background: var(--color-list-active); color: var(--color-ink); }
+.deck-tab:hover { background: var(--color-list-hover); color: var(--color-ink); }
+.deck-tab.active { background: var(--color-panel); color: var(--color-ink); border-top-color: var(--color-accent); }
+.deck-tab-name { overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
+.deck-tab-close {
+  display: flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; border-radius: 3px;
+  opacity: 0; color: var(--color-muted); font-size: 13px; line-height: 1;
+  flex-shrink: 0; transition: opacity 0.12s, background 0.12s;
+}
+.deck-tab-add {
+  min-width: 35px; max-width: 35px; padding: 0; justify-content: center;
+  font-size: 16px; font-weight: 300; border-top: none;
+}
+.deck-tab-add:hover { background: var(--color-list-hover); color: var(--color-ink); }
+
+/* ── Deck Split Container ── */
+.terminal-split-container {
+  flex: 1; min-height: 0; min-width: 0; width: 100%; max-width: 100%;
+  display: grid; grid-auto-rows: minmax(0, 1fr); gap: 4px; padding: 4px; position: relative;
+}
+.deck-split-pane {
+  display: flex; flex-direction: column; min-height: 0; min-width: 0;
+  border: 1px solid var(--color-border); border-radius: 4px; overflow: hidden;
+}
+
+/* ── Topbar buttons ── */
+.topbar-btn-sm {
+  padding: 2px 6px; background: transparent; border: 1px solid var(--color-border);
+  border-radius: 3px; color: var(--color-muted);
+  font-size: 11px; font-weight: 600; cursor: pointer; transition: all 0.15s;
+}
+.topbar-btn-sm:hover { background: var(--color-list-hover); color: var(--color-ink); border-color: var(--color-accent); }
+.topbar-btn-sm.topbar-btn-danger:hover { background: rgba(229,83,75,0.15); border-color: #e5534b; }
+
+/* ── Terminal Pane ── */
+.terminal-pane { flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; padding: 4px; overflow-anchor: none; }
+.terminal-grid { display: grid; gap: 4px; min-height: 0; min-width: 0; width: 100%; flex: 1; overflow: hidden; }
+.terminal-tile-slot { display: contents; }
+/* 端末切替ドロップダウンはモバイル専用。デスクトップはグリッドで全表示するため隠す。 */
+.terminal-switcher { display: none; }
+
+/* Single-terminal view — used on mobile and by the desktop "maximize" toggle.
+   Not media-gated so it works at any viewport. */
+.terminal-grid-single {
+  display: flex !important; flex-direction: column !important;
+  flex: 1 !important; min-height: 0 !important;
+  overflow: hidden !important; gap: 0 !important; padding: 0 !important;
+}
+.terminal-tile-slot-single-active {
+  display: flex !important; flex-direction: column; flex: 1; min-height: 0; overflow: hidden;
+}
+.terminal-tile-slot-single-active .terminal-tile {
+  flex: 1; height: auto !important; min-height: 0 !important; border-radius: 0; border: none;
+}
+.terminal-tile-slot-single-hidden { display: none !important; }
+/* When a deck is maximized, surface the switcher so the user can choose which
+   terminal fills the pane (the switcher is hidden by default on desktop). */
+.deck-terminals-single .terminal-switcher {
+  display: block; flex: 0 1 auto; min-width: 120px; max-width: 50%;
+  background: var(--color-bg-soft); color: var(--color-ink);
+  border: 1px solid var(--color-border); border-radius: 3px;
+  font-size: 11px; padding: 2px 6px;
+}
+.terminal-empty {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  background: var(--color-bg-soft); border: 1px dashed var(--color-border);
+  border-radius: 4px; color: var(--color-muted); font-size: 12px;
+}
+.terminal-empty-btn {
+  padding: 10px 18px; border-radius: 6px; border: 1px solid var(--color-accent);
+  background: var(--color-accent); color: #fff; font-size: 13px; font-weight: 600;
+  cursor: pointer; transition: opacity 0.12s;
+}
+.terminal-empty-btn:hover { opacity: 0.9; }
+
+@media (pointer: coarse) {
+  /* Touch-size the terminal tile header buttons (maximize/close). */
+  .terminal-tile-icon-btn { width: 32px; height: 32px; }
+}
+.terminal-tile {
+  border: 1px solid var(--color-border); border-radius: 4px;
+  background: #181818; color: #e5e5e5;
+  min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden;
+  transition: background 0.15s ease-out, box-shadow 0.15s ease-out;
+}
+/* グリッドのどのターミナルが「アクティブ（最後にクリック/フォーカスした）」かを
+   明示する。最大化やモバイル単一表示が指す端末でもある。 */
+.terminal-tile.active {
+  box-shadow: inset 0 0 0 2px var(--color-accent);
+  border-color: var(--color-accent);
+}
+/* Visual bell: ベル受信時に一瞬だけ点滅させる（onBell で付与/解除）。 */
+.terminal-tile.bell-flash {
+  background: #2a2a3a;
+  box-shadow: inset 0 0 0 2px rgba(120, 170, 255, 0.7);
+  transition: none;
+}
+.terminal-tile-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 10px; font-size: 12px;
+  background: #2d2d2d; border-bottom: 1px solid #404040; gap: 8px;
+}
+.terminal-tile-header span {
+  flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: var(--font-mono);
+}
+.terminal-close-btn,
+.terminal-tile-icon-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; border: none; border-radius: 3px;
+  background: transparent; color: #858585; cursor: pointer;
+  transition: background 0.1s, color 0.1s; flex-shrink: 0;
+  font-size: 12px; line-height: 1;
+}
+.terminal-close-btn:hover,
+.terminal-tile-icon-btn:hover { background: #404040; color: #fff; }
+.terminal-close-btn:disabled,
+.terminal-tile-icon-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.terminal-close-btn:focus-visible,
+.terminal-tile-icon-btn:focus-visible {
+  outline: 2px solid #8ab4f8; outline-offset: 1px;
+}
+.terminal-font-controls {
+  display: flex; align-items: center; gap: 4px; flex-shrink: 0;
+}
+.terminal-font-controls output {
+  min-width: 2ch; color: #d6d6d6; text-align: center;
+  font: 11px/1 var(--font-mono); font-variant-numeric: tabular-nums;
+}
+.terminal-tile-body { flex: 1; min-height: 0; overflow: hidden; overflow-anchor: none; overscroll-behavior: contain; touch-action: pan-y; }
+.terminal-tile-body > .xterm {
+  box-sizing: border-box; height: 100%; padding: 10px; background: #181818;
+}
+.terminal-tile-body .xterm,
+.terminal-tile-body .xterm-viewport,
+.terminal-tile-body .xterm-screen {
+  overflow-anchor: none;
+}
+.terminal-tile-body .xterm-helper-textarea {
+  z-index: 0 !important;
+}
+.terminal-tile-body .xterm-viewport {
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
+}
+
+/* ── Browser Pane ── */
+.browser-layout {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-panel);
+  overflow: hidden;
+}
+
+.browser-toolbar {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 4px 8px;
+  background: var(--color-sidebar);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.browser-address-group {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.browser-toolbar-button,
+.browser-go-button {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-bg-soft);
+  color: var(--color-ink);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.browser-toolbar-button:hover,
+.browser-go-button:hover {
+  background: var(--color-list-hover);
+}
+
+.browser-toolbar-button-active {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+
+.browser-toolbar-button svg {
+  width: 16px;
+  height: 16px;
+}
+
+.browser-toolbar-button:disabled,
+.browser-go-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.browser-address-form {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.browser-address-input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-panel);
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.browser-status-line {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-ink-muted);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-muted);
+}
+
+.browser-dot-running {
+  background: var(--color-git-staged);
+}
+
+.browser-error {
+  flex-shrink: 0;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--color-border);
+  background: rgba(241,76,76,0.12);
+  color: var(--color-git-deleted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-tabs {
+  flex-shrink: 0;
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  padding: 4px 6px;
+  background: var(--color-sidebar);
+  border-bottom: 1px solid var(--color-border);
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.browser-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 180px;
+  min-width: 92px;
+  padding: 4px 6px 4px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-bg-soft);
+  color: var(--color-ink-muted);
+  cursor: pointer;
+  font-size: 12px;
+  user-select: none;
+}
+
+.browser-tab:hover {
+  background: var(--color-list-hover);
+}
+
+.browser-tab-active {
+  background: var(--color-panel);
+  color: var(--color-ink);
+  border-color: var(--color-accent);
+}
+
+.browser-tab-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.browser-tab-close {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  opacity: 0.6;
+}
+
+.browser-tab-close:hover {
+  background: var(--color-list-hover);
+  opacity: 1;
+}
+
+.browser-tab-new {
+  flex-shrink: 0;
+  width: 28px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-bg-soft);
+  color: var(--color-ink);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.browser-tab-new:hover {
+  background: var(--color-list-hover);
+}
+
+.browser-audio {
+  display: none;
+}
+
+.browser-viewport {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  background: #111;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  outline: none;
+}
+
+.browser-viewport:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--color-focus);
+}
+
+.browser-frame {
+  /* Fill the viewport and letterbox the frame inside it. The canvas pixel
+     dimensions track the incoming frame size, which changes during resize/
+     reconnect; sizing the element off those intrinsic dims (max-width/auto)
+     made it overflow as a flex item (min-width: auto won't shrink below the
+     intrinsic size) and jump around. A fixed 100% box + object-fit keeps the
+     displayed scale stable regardless of frame size. */
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  user-select: none;
+  cursor: default;
+}
+
+.browser-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 24px;
+  text-align: center;
+  color: #c8c8c8;
+  font-family: var(--font-mono);
+}
+
+.browser-state-title {
+  font-size: 13px;
+  color: #e6e6e6;
+}
+
+.browser-state-hint {
+  font-size: 12px;
+  color: #9a9a9a;
+  max-width: 280px;
+  line-height: 1.5;
+}
+
+.browser-state-action {
+  padding: 6px 16px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-bg-soft);
+  color: var(--color-ink);
+  cursor: pointer;
+  font-size: 12px;
+  font-family: var(--font-mono);
+}
+
+.browser-state-action:hover:not(:disabled) {
+  background: var(--color-list-hover);
+}
+
+.browser-state-action:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.browser-spinner {
+  width: 22px;
+  height: 22px;
+  border: 2px solid rgba(255, 255, 255, 0.18);
+  border-top-color: var(--color-accent);
+  border-radius: 50%;
+  animation: browser-spin 0.8s linear infinite;
+}
+
+@keyframes browser-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── Git Status Colors ── */
+.git-modified   { color: var(--color-git-modified); }
+.git-untracked  { color: var(--color-git-untracked); }
+.git-deleted    { color: var(--color-git-deleted); }
+.git-staged     { color: var(--color-git-staged); }
+.git-renamed    { color: var(--color-git-renamed); }
+.git-conflicted { color: var(--color-git-conflicted); }
+
+/* ── Source Control ── */
+.git-tabs { display: flex; border-bottom: 1px solid var(--color-border); background: var(--color-sidebar); flex-shrink: 0; }
+.git-tab {
+  display: flex; align-items: center; gap: 6px; padding: 6px 12px;
+  background: transparent; border: none; color: var(--color-ink-muted); font-size: 12px;
+  cursor: pointer; transition: color 0.1s, background 0.1s; position: relative;
+}
+.git-tab:hover { color: var(--color-ink); background: var(--color-list-hover); }
+.git-tab.active { color: var(--color-ink); }
+
+/* ── Git File Row ── */
+.git-file-row { display: flex; align-items: center; gap: 4px; transition: background 0.1s; }
+.git-file-row:hover { background: var(--color-list-hover); }
+.git-file-main {
+  flex: 1; display: flex; align-items: center; gap: 6px; padding: 4px 12px;
+  border: none; background: transparent; color: var(--color-ink); cursor: pointer;
+  text-align: left; min-width: 0; min-height: 22px;
+}
+.git-status-badge {
+  width: 16px; height: 16px; display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 600; font-family: var(--font-mono); flex-shrink: 0;
+}
+.git-file-path { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-file-actions { display: flex; gap: 2px; padding-right: 8px; opacity: 0; transition: opacity 0.1s; }
+.git-action-btn {
+  width: 22px; height: 22px; padding: 0; border: none; border-radius: 3px;
+  background: transparent; color: var(--color-ink-muted); cursor: pointer;
+  display: flex; align-items: center; justify-content: center; transition: background 0.1s, color 0.1s;
+}
+.git-action-btn:hover { background: var(--color-list-hover); color: var(--color-ink); }
+.git-action-btn svg { width: 14px; height: 14px; fill: currentColor; }
+
+/* ── Status Float ── */
+.status-float {
+  position: fixed; right: 20px;
+  bottom: calc(40px + env(safe-area-inset-bottom, 0px));
+  padding: 8px 14px; border-radius: 4px; font-size: 12px;
+  background: var(--color-panel); border: 1px solid var(--color-border);
+  color: var(--color-ink); max-width: min(400px, calc(100vw - 40px));
+  box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+}
+
+/* ── Mobile: sidebar toggle ── */
+.sidebar-toggle-btn { display: none; }
+.sidebar-overlay { display: none; }
+
+/* ── Responsive ── */
+@media (max-width: 1024px) {
+  .workspace-editor-grid {
+    grid-template-columns: 48px 1fr;
+    grid-template-rows: 200px minmax(0, 1fr);
+  }
+  .workspace-editor-grid > .activity-bar { grid-row: 1 / -1; }
+  .sidebar-panel { border-right: none; border-bottom: 1px solid var(--color-border); }
+}
+
+@media (max-width: 720px) {
+  .app {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(0, 1fr) 22px;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .main { grid-row: 1; min-width: 0; overflow: hidden; }
+  .deck-tab { min-height: 40px; padding: 0 8px 0 14px; font-size: 13px; }
+  .topbar-btn-sm { min-height: 40px; min-width: 44px; padding: 0 10px; }
+  .tree-row { min-height: 36px; }
+  .editor-tab { min-height: 36px; }
+  .modal-close-btn { min-width: 44px; min-height: 44px; }
+  .modal { max-width: calc(100vw - 16px); max-height: 90dvh; margin: 8px; border-radius: 8px; }
+  .deck-tabs { overflow-x: auto; flex-wrap: nowrap; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+  .deck-tabs::-webkit-scrollbar { display: none; }
+  /* Mobile: horizontal swipe between decks */
+  .terminal-split-container {
+    display: flex !important; flex-direction: row !important;
+    overflow-x: scroll; overflow-y: hidden;
+    scroll-snap-type: none; -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain; touch-action: auto;
+    scrollbar-width: none; padding: 0 !important; gap: 0 !important;
+    width: 100%; max-width: 100%;
+  }
+  .terminal-split-container::-webkit-scrollbar { display: none; }
+  .deck-split-pane {
+    flex: 0 0 100%; width: 100%; max-width: 100%;
+    scroll-snap-align: start; overflow: hidden;
+    border-radius: 0; border-left: none; border-right: none;
+  }
+  /* Mobile: terminal pane base */
+  .terminal-pane {
+    flex: 1 1 auto; min-height: 0; overflow: hidden;
+    padding: 0 !important; width: 100%; max-width: 100%;
+  }
+  /* Mobile: 単一端末をフルサイズ表示（プレビューのグリッドは廃止）。
+     実際のスタイルは media 非依存の .terminal-grid-single / -single-active /
+     -single-hidden（上部参照）が担う。TerminalPane はモバイルでも -single
+     クラスを使うため、ここに専用ルールは不要。 */
+  /* 端末切替ドロップダウン（デッキヘッダ行に同居）。モバイルのみ表示。 */
+  .terminal-switcher {
+    display: block; flex: 1 1 auto; min-width: 0; max-width: 60%;
+    height: 28px; padding: 0 8px;
+    background: var(--color-bg-soft); color: var(--color-ink);
+    border: 1px solid var(--color-border); border-radius: 4px;
+    font-size: 12px; font-family: var(--font-mono);
+  }
+  .status-float {
+    right: 12px;
+    bottom: calc(22px + env(safe-area-inset-bottom, 0px) + 8px);
+    max-width: calc(100vw - 24px);
+  }
+  /* キーボード表示中はターミナル(など)を最大化するため下部ナビバーを畳む。
+     可視領域がキーボード上に縮むので、48px のバー＋ステータス行を残すと
+     入力中のターミナルが極端に小さくなってしまう。バーはキーボードを
+     閉じれば再表示される。 */
+  html.keyboard-open .app {
+    grid-template-rows: minmax(0, 1fr);
+    padding-bottom: 0;
+  }
+  html.keyboard-open .status-float {
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 8px);
+  }
+  /* Workspace editor: drawer layout */
+  .workspace-editor-grid {
+    grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr); position: relative;
+  }
+  .workspace-editor-grid > .activity-bar {
+    position: absolute; left: 0; top: 0; bottom: 0; width: 48px; z-index: 101;
+    transform: translateX(-100%); transition: transform 0.2s ease;
+    flex-direction: column; height: auto; border-right: 1px solid var(--color-border); border-top: none;
+  }
+  .sidebar-panel {
+    position: absolute; left: 48px; top: 0; bottom: 0; width: 260px; z-index: 100;
+    transform: translateX(calc(-100% - 48px)); transition: transform 0.2s ease;
+    border-bottom: none; border-right: 1px solid var(--color-border); overflow-y: auto;
+  }
+  .drawer-open .workspace-editor-grid > .activity-bar,
+  .drawer-open .sidebar-panel { transform: translateX(0); }
+  .sidebar-overlay { display: none; position: absolute; inset: 0; background: rgba(0,0,0,0.4); z-index: 99; }
+  .drawer-open .sidebar-overlay { display: block; }
+  .workspace-editor-header { gap: 8px; padding: 0 8px; }
+  .workspace-editor-header .sidebar-toggle-btn { margin-left: auto; order: 3; }
+  .workspace-editor-header .workspace-meta { min-width: 0; text-align: left; }
+}
+
+/* Touch device: prevent hover state persistence after tap */
+@media (pointer: coarse) {
+  .modal-close-btn:hover,
+  .tree-row:hover,
+  .editor-tab:hover,
+  .deck-tab:hover,
+  .deck-tab-add:hover,
+  .topbar-btn-sm:hover,
+  .terminal-close-btn:hover,
+  .git-file-row:hover,
+  .git-action-btn:hover,
+  .git-tab:hover {
+    background: transparent; border-color: inherit; color: inherit; opacity: 1;
+  }
+  .editor-tab:hover { background: transparent; color: var(--color-ink-muted); }
+  .git-file-actions { opacity: 1; }
+}

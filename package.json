@@ -1,0 +1,72 @@
+{
+  "name": "deckide",
+  "version": "3.5.49",
+  "description": "Deck IDE - Browser-based shell workspace with decks and terminals",
+  "type": "module",
+  "bin": {
+    "deckide": "bin/deckide.js"
+  },
+  "files": [
+    "bin/",
+    "dist/",
+    "web/dist/"
+  ],
+  "scripts": {
+    "dev:web": "cd web && npx vite",
+    "dev:server": "npx tsx src/index.ts",
+    "build:web": "cd web && npx vite build",
+    "build:server": "tsc",
+    "build": "npm run build:web && npm run build:server",
+    "serve": "node dist/index.js",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.12.2",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-unicode11": "^0.9.0",
+    "@xterm/addon-web-links": "^0.12.0",
+    "@xterm/xterm": "6.0.0",
+    "hono": "^4.5.10",
+    "node-pty": "^1.0.0",
+    "simple-git": "^3.27.0",
+    "ws": "^8.17.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@monaco-editor/react": "^4.6.0",
+    "@tailwindcss/vite": "^4.2.1",
+    "@types/node": "^24.10.9",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.2.1",
+    "clsx": "^2.1.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tailwindcss": "^4.2.1",
+    "tsx": "^4.22.4",
+    "typescript": "^5.6.3",
+    "vite": "^6.4.3"
+  },
+  "overrides": {
+    "dompurify": "3.4.11"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tako0614/ide.git"
+  },
+  "keywords": [
+    "ide",
+    "editor",
+    "terminal",
+    "web-ide",
+    "developer-tools"
+  ],
+  "author": "tako0614",
+  "license": "MIT",
+  "optionalDependencies": {
+    "werift": "^0.23.0"
+  }
+}
