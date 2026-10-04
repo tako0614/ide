@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { observeDescriptorValidationFailures } from '../src/computer/descriptor-validation.ts';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -6,6 +7,14 @@ import { ChatgptController } from '../src/computer/chatgpt-controller.ts';
 
 const SESSION_ID = 'a'.repeat(32);
 const readyStatus = { running: true, transport: 'private-rfb' };
+
+async function captureValidation(run) {
+  const events = [];
+  const listener = (event) => events.push(event);
+  const stop = observeDescriptorValidationFailures(listener);
+  try { await run(events); }
+  finally { stop(); }
+}
 
 function deferred() {
   let resolve;
@@ -198,4 +207,55 @@ test('failed prepare caches teardown and a later close does not retry owner stop
   assert.equal(f.desktop.detaches, 1);
   assert.equal(f.owner.closes, 1);
   assert.equal(f.owner.starts, 1);
+});
+
+test('controller reports exact lease predicate without publishing session identity', async (t) => {
+  await captureValidation(async (events) => {
+    const f = await fixture(t);
+    f.lease.check = () => ({ lifecycleMode: 'deckide-owned', sessionId: 'wrong' });
+    await assert.rejects(f.controller.prepare(), (error) => {
+      assert.equal(error.diagnostic.predicate, 'controller.prepare.session_id');
+      assert.equal(error.diagnostic.field, 'session_id');
+      assert.equal(error.diagnostic.expected, true);
+      assert.equal(error.diagnostic.observed, false);
+      assert.deepEqual(error.diagnostic.boundaries, ['controller.prepare_owned']);
+      return true;
+    });
+    assert.equal(f.desktop.attaches, 0);
+    assert.ok(events.some((event) => event.kind === 'rejection' &&
+      event.predicate === 'controller.prepare.session_id'));
+    assert.doesNotMatch(JSON.stringify(events), new RegExp(SESSION_ID));
+  });
+});
+
+test('controller retains first prepare failure when teardown fails and sanitizes errors', async (t) => {
+  await captureValidation(async (events) => {
+    const f = await fixture(t, { attachError: true, ownerCloseError: true });
+    await assert.rejects(f.controller.prepare(), (error) => {
+      assert.equal(error.diagnostic.predicate, 'controller.prepare.attach');
+      assert.equal(error.message, 'ChatGPT desktop generation is unavailable [controller.prepare.attach]');
+      assert.doesNotMatch(error.stack, /private attach|private stop/);
+      return true;
+    });
+    assert.ok(events.some((event) => event.predicate === 'controller.teardown.owner_close'));
+    assert.ok(events.some((event) => event.predicate === 'controller.prepare_cleanup'));
+    assert.doesNotMatch(JSON.stringify(events), /private attach|private stop/);
+    assert.equal(f.owner.closes, 1);
+  });
+});
+
+test('controller close failure reports the named detach boundary and never retries', async (t) => {
+  await captureValidation(async (events) => {
+    const f = await fixture(t, { detachError: true });
+    await f.controller.prepare();
+    await assert.rejects(f.controller.close(), (error) => {
+      assert.equal(error.diagnostic.predicate, 'controller.teardown.detach');
+      assert.equal(error.diagnostic.boundaries.at(-1), 'controller.close_owned');
+      return true;
+    });
+    assert.ok(events.some((event) => event.predicate === 'controller.teardown.detach'));
+    assert.equal(f.owner.closes, 0);
+    await assert.rejects(f.controller.close());
+    assert.equal(f.desktop.detaches, 1);
+  });
 });

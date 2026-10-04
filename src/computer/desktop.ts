@@ -16,6 +16,7 @@ import { attestedPrivateVncLauncher, openPrivateVncDiagnostic, privateAcceptedUn
   privateVncStdioContract, privateVncCredentialSucceeded, writePrivateVncFilter } from './vnc.js';
 import { cleanupUnlessXDisplayCollision, launchAfterXDisplayCollisionGuard } from './x-display-collision.js';
 import { BorrowedDesktopLease, type BorrowedDesktopSnapshot } from './borrowed-desktop.js';
+import { descriptorValidationBoundary } from './descriptor-validation.js';
 
 const NATIVE_WIDTH = 1280;
 const NATIVE_HEIGHT = 720;
@@ -39,13 +40,17 @@ export type DevelopmentScopeSource = readonly DevelopmentScope[] |
   ((actor: string) => readonly DevelopmentScope[] | Promise<readonly DevelopmentScope[]>);
 export type VncSandboxPolicy = { expectedFilterSha256: string; expectedLauncherSha256: string };
 export type DesktopFramebuffer = Readonly<{ width: number; height: number }>;
+function descriptorHttpError(predicate: string, message: string): Error & { status: number } {
+  const error = descriptorValidationBoundary(predicate, new Error());
+  return Object.assign(error, { message: `${message} [${predicate}]`, status: 503 });
+}
 /** Startup authority only. Never populated from a request or guessed from RFB. */
 export function trustedDesktopFramebuffer(value: DesktopFramebuffer): DesktopFramebuffer {
   if (!value || Object.keys(value).sort().join(',') !== 'height,width' ||
     !Number.isSafeInteger(value.width) || !Number.isSafeInteger(value.height) ||
     value.width < 1 || value.height < 1 || value.width > 8192 || value.height > 8192 ||
     value.width * value.height > 16 * 1024 * 1024)
-    throw createHttpError('Trusted framebuffer geometry is invalid', 503);
+    throw descriptorHttpError('desktop.framebuffer.bounds', 'Trusted framebuffer geometry is invalid');
   return Object.freeze({ width: value.width, height: value.height });
 }
 type ResolvedDevelopmentScope = DevelopmentScope & { dev: number; ino: number };
@@ -364,7 +369,8 @@ export class DesktopComputer {
     configuredFramebuffer: DesktopFramebuffer): Promise<DesktopStatus> {
     return this.withOperation(async () => {
       if (this.runtime || this.preparingDir || this.owned.size) throw createHttpError('Desktop is busy', 409);
-      if (!(lease instanceof BorrowedDesktopLease)) throw createHttpError('Invalid desktop lease', 503);
+      if (!(lease instanceof BorrowedDesktopLease))
+        throw descriptorHttpError('desktop.attach.lease_type', 'Invalid desktop lease');
       const framebuffer = trustedDesktopFramebuffer(configuredFramebuffer);
       const snapshot = lease.check();
       const base = await fs.realpath(producerStateDir);
@@ -372,7 +378,7 @@ export class DesktopComputer {
       if (base !== producerStateDir || !baseStat.isDirectory() ||
         base === snapshot.runtimeDir || base.startsWith(`${snapshot.runtimeDir}${path.sep}`) ||
         (baseStat.mode & 0o022) || baseStat.uid !== process.getuid())
-        throw createHttpError('Producer state root is unsafe', 503);
+        throw descriptorHttpError('desktop.attach.producer_root', 'Producer state root is unsafe');
       const dir = await fs.mkdtemp(path.join(base, 'deckide-borrowed-'));
       await fs.chmod(dir, 0o700);
       try {
@@ -385,11 +391,15 @@ export class DesktopComputer {
         this.borrowedWatcher = lease.watch(() => { void this.revokeBorrowedDesktop(); });
         this.borrowedTimer = setInterval(() => {
           if (this.runtime?.borrowed !== lease || this.epoch !== generation) return;
-          try { lease.check(); } catch { void this.revokeBorrowedDesktop(); }
+          try { lease.check(); } catch (error) {
+            descriptorValidationBoundary('desktop.timer.check.catch', error);
+            void this.revokeBorrowedDesktop();
+          }
         }, 1_000);
         this.borrowedTimer.unref();
         return this.status();
       } catch (error) {
+        descriptorValidationBoundary('desktop.attach.catch', error);
         if (this.borrowedTimer) clearInterval(this.borrowedTimer);
         this.borrowedTimer = null;
         this.borrowedWatcher?.close();
@@ -406,7 +416,12 @@ export class DesktopComputer {
   private borrowedSnapshot(runtime: Runtime): BorrowedDesktopSnapshot | null {
     if (!runtime.borrowed) return null;
     try { return runtime.borrowed.check(); }
-    catch { void this.revokeBorrowedDesktop(); throw createHttpError('Borrowed desktop expired or changed', 503); }
+    catch (error) {
+      const rejected = descriptorValidationBoundary('desktop.snapshot.catch', error);
+      void this.revokeBorrowedDesktop();
+      throw Object.assign(rejected, { status: 503,
+        message: `Borrowed desktop expired or changed [${rejected.diagnostic.predicate}]` });
+    }
   }
 
   private async revokeBorrowedDesktop(): Promise<void> {
@@ -1000,7 +1015,7 @@ export class DesktopComputer {
     let borrowed = Boolean(this.runtime?.borrowed);
     if (borrowed) {
       try { this.borrowedSnapshot(this.runtime!); }
-      catch { borrowed = false; }
+      catch (error) { descriptorValidationBoundary('desktop.status.snapshot.catch', error); borrowed = false; }
     }
     const scopes = this.borrowedMode || actor === undefined ? [] : await this.developmentScopes(actor);
     const { missing } = process.platform === 'linux'

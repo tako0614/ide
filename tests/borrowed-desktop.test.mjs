@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { test } from 'node:test';
+import { observeDescriptorValidationFailures } from '../src/computer/descriptor-validation.ts';
 import { BorrowedDesktopLease } from '../src/computer/borrowed-desktop.ts';
 import { DesktopComputer } from '../src/computer/desktop.ts';
 
@@ -276,9 +277,47 @@ test('v2 live owner and security anchors retain exact parent, group, name and na
         const readlink = f.probe.readlink.bind(f.probe);
         f.probe.readlink = file => file === `/fake-proc/${saved.pid}/ns/net` ? 'net:[84]' : readlink(file);
       }
-      assert.throws(() => lease.check(), /unverified/, `${role} ${field}`);
+      assert.throws(() => lease.check(), error => {
+        assert.match(error.message, /unverified \[process\./);
+        assert.equal(error.diagnostic.role, role);
+        assert.equal(error.diagnostic.pid, saved.pid);
+        assert.equal(error.diagnostic.field, field === 'namespace' ? 'net'
+          : field === 'zombie' || field === 'dead' ? 'state' : field);
+        if (field === 'ppid' || field === 'pgid') {
+          assert.equal(error.diagnostic.expected, saved[field]);
+          assert.equal(error.diagnostic.observed, saved[field] + 1);
+        }
+        return true;
+      }, `${role} ${field}`);
     }
   }
+});
+
+test('live failed PID and status slot are reported before load catch with no descriptor/auth text', async (t) => {
+  const f = await rollingFixture(t), pid = f.data.anchors.chatgpt.pid;
+  const read = f.probe.readFile.bind(f.probe);
+  f.probe.readFile = file => {
+    const raw = read(file);
+    return file === `/fake-proc/${pid}/status`
+      ? raw.replace(/^Uid:.*$/m, 'Uid:\t993\t65534\t993\t993') : raw;
+  };
+  const rows = [];
+  const listener = row => rows.push(row); const stop = observeDescriptorValidationFailures(listener);
+  try {
+    assert.throws(f.load, error => {
+      assert.equal(error.diagnostic.predicate, 'process.read1.uid.effective');
+      assert.equal(error.diagnostic.pid, pid);
+      assert.equal(error.diagnostic.expected, 993);
+      assert.equal(error.diagnostic.observed, 65534);
+      assert.ok(error.diagnostic.boundaries.includes('lease.load.catch'));
+      return true;
+    });
+    assert.equal(rows[0].kind, 'rejection');
+    assert.equal(rows[0].field, 'uid.effective');
+    assert.equal(rows.at(-1).predicate, 'lease.load.catch');
+    assert.ok(!JSON.stringify(rows).includes(f.data.XAUTHORITY));
+    assert.ok(!JSON.stringify(rows).includes(f.data.session_id));
+  } finally { stop(); }
 });
 
 test('trusted descriptor accepts mixed owner anchors and transient auxiliary exit', async (t) => {

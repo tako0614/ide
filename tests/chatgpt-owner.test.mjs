@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { observeDescriptorValidationFailures } from '../src/computer/descriptor-validation.ts';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { test } from 'node:test';
@@ -6,6 +7,14 @@ import { ChatgptOwner } from '../src/computer/chatgpt-owner.ts';
 
 const DEFAULT_DESCRIPTOR = '/root/dev/deckide-chatgpt-20261004/app-session.json';
 const SESSION_ID = 'a'.repeat(32);
+
+async function captureValidation(run) {
+  const events = [];
+  const listener = (event) => events.push(event);
+  const stop = observeDescriptorValidationFailures(listener);
+  try { await run(events); }
+  finally { stop(); }
+}
 
 class FakeChild extends EventEmitter {
   constructor(pid) {
@@ -102,7 +111,10 @@ test('wrong or excessive stdout and private loader errors fail with no secret te
     else if (variant === 'large') f.child.stdout.write('x'.repeat(2048));
     else f.ready();
     await assert.rejects(started, (error) => {
-      assert.equal(error.message, 'ChatGPT desktop ownership could not be verified');
+      assert.equal(error.message, `ChatGPT desktop ownership could not be verified [${{
+        wrong: 'owner.ready.prefix', large: 'owner.ready.byte_limit',
+        loader: 'owner.start.load_lease',
+      }[variant]}]`);
       assert.doesNotMatch(error.stack, /private-secret|foreign/);
       return true;
     });
@@ -244,4 +256,60 @@ test('unexpected foreground exit is latched and never restarts automatically', a
   f.child.finish(1);
   await assert.rejects(f.owner.start(), /ownership could not be verified/);
   assert.equal(f.calls.length, 1);
+});
+
+test('owner reports exact rejected predicate with numeric identity fields and no private values', async () => {
+  await captureValidation(async (events) => {
+    const f = fixture();
+    f.setBinding({ sessionId: SESSION_ID, ownerPid: process.pid,
+      supervisor: { ...f.identity, start: f.identity.start + 1 } });
+    const started = f.owner.start();
+    f.ready();
+    await assert.rejects(started, (error) => {
+      assert.equal(error.diagnostic.predicate, 'owner.binding_supervisor.start');
+      assert.equal(error.diagnostic.field, 'start');
+      assert.equal(error.diagnostic.role, 'supervisor');
+      assert.equal(error.diagnostic.expected, f.identity.start);
+      assert.equal(error.diagnostic.observed, f.identity.start + 1);
+      return true;
+    });
+    assert.deepEqual(f.child.signals, ['SIGTERM']);
+    assert.ok(events.some((event) => event.kind === 'rejection' &&
+      event.predicate === 'owner.binding_supervisor.start' && event.pid === f.child.pid));
+    assert.doesNotMatch(JSON.stringify(events), new RegExp(SESSION_ID));
+  });
+});
+
+test('owner preserves readiness rejection when guarded cleanup also fails', async () => {
+  await captureValidation(async (events) => {
+    const f = fixture();
+    const started = f.owner.start();
+    f.setIdentity({ ...f.identity, start: f.identity.start + 1 });
+    f.ready('/tmp/private-secret-foreign/app-session.json');
+    await assert.rejects(started, (error) => {
+      assert.equal(error.diagnostic.predicate, 'owner.ready.prefix');
+      assert.deepEqual(error.diagnostic.boundaries, ['owner.start_new']);
+      return true;
+    });
+    assert.deepEqual(f.child.signals, []);
+    assert.ok(events.some((event) => event.predicate === 'owner.cleanup_identity.start'));
+    assert.doesNotMatch(JSON.stringify(events), /private-secret|app-session|foreign/);
+  });
+});
+
+test('owner catch reports sanitized loader exception without changing the public cause', async () => {
+  await captureValidation(async (events) => {
+    const f = fixture({ loadError: `hidden-${SESSION_ID}` });
+    const started = f.owner.start();
+    f.ready();
+    await assert.rejects(started, (error) => {
+      assert.equal(error.diagnostic.predicate, 'owner.start.load_lease');
+      assert.equal(error.message, 'ChatGPT desktop ownership could not be verified [owner.start.load_lease]');
+      assert.doesNotMatch(error.stack, /private-secret|hidden/);
+      return true;
+    });
+    const serialized = JSON.stringify(events);
+    assert.match(serialized, /owner.start.load_lease/);
+    assert.doesNotMatch(serialized, /private-secret|hidden|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/);
+  });
 });
