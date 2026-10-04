@@ -21,6 +21,9 @@
 
 ## クイックスタート
 
+この tmux 候補は未公開です。候補 tarball の導入は [guarded updater](docs/terminal-tmux.md)
+を使ってください。以下の npm 手順は公開版の一般的な導入手順です。
+
 ### npm からインストール（推奨）
 
 ```bash

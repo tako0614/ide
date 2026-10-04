@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,7 +12,81 @@ import {
   parseProcStat, readProcTree, assertNoLegacyPtys, assertBrokerCgroups,
   safeAbsolutePath, safeServiceUnit,
 } from '../ops/terminal-update-guards.mjs';
-import { publicTreeDigest, isolatedNpmInstallSettings } from '../ops/terminal-update.mjs';
+import { publicTreeDigest, isolatedNpmInstallSettings, stageCandidatePackage } from '../ops/terminal-update.mjs';
+
+test('candidate stage extracts verified tar and runs npm ci at the published shrinkwrap root', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'deckide-root-ci-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const packageRoot = path.join(root, 'package');
+  fs.mkdirSync(path.join(packageRoot, 'bin'), { recursive: true });
+  const version = '3.5.49-tmux.20261004.1';
+  fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({
+    name: 'deckide', version, bin: { deckide: 'bin/deckide.js' }, dependencies: {},
+  }));
+  const lock = { name: 'deckide', version, lockfileVersion: 3, requires: true,
+    packages: { '': { name: 'deckide', version, dependencies: {} } } };
+  fs.writeFileSync(path.join(packageRoot, 'npm-shrinkwrap.json'), JSON.stringify(lock));
+  fs.writeFileSync(path.join(packageRoot, 'bin/deckide.js'), '#!/usr/bin/env node\n', { mode: 0o755 });
+  const makeTar = (filename, entries) => {
+    const tarball = path.join(root, filename);
+    const result = spawnSync('tar', ['-czf', tarball, '--no-recursion', '-C', root, ...entries],
+      { encoding: 'utf8' });
+    assert.equal(result.status, 0);
+    return { candidate: tarball, expectedSha256: crypto.createHash('sha256')
+      .update(fs.readFileSync(tarball)).digest('hex') };
+  };
+  const entries = ['package/package.json', 'package/npm-shrinkwrap.json', 'package/bin/deckide.js'];
+  const archive = makeTar('candidate.tgz', entries);
+  const calls = [];
+  const runner = (file, args, options = {}) => {
+    calls.push({ file, args, options });
+    const result = spawnSync(file, args, { encoding: 'utf8', timeout: options.timeout ?? 15_000,
+      maxBuffer: 2 * 1024 * 1024, cwd: options.cwd, env: options.env, stdio: ['ignore', 'pipe', 'pipe'] });
+    if (result.error || result.status !== 0) throw new Error(`${file} fixture invocation failed`);
+    return result.stdout;
+  };
+  const release = path.join(root, 'release');
+  const staged = stageCandidatePackage({ ...archive, release, commandRunner: runner });
+  assert.equal(staged.releasePackage, path.join(release, 'node_modules/deckide'));
+  assert.equal(fs.readFileSync(path.join(staged.releasePackage, 'npm-shrinkwrap.json'), 'utf8'),
+    JSON.stringify(lock), 'the published lock is npm ci root, not a nested dependency hint');
+  assert.ok(fs.statSync(path.join(staged.releasePackage, 'bin/deckide.js')).mode & 0o111);
+  const npmCalls = calls.filter(({ file }) => file === 'npm');
+  assert.equal(npmCalls.length, 1);
+  assert.equal(npmCalls[0].args[0], 'ci');
+  assert.equal(npmCalls[0].options.cwd, staged.releasePackage);
+  assert.ok(npmCalls[0].args.includes('--omit=dev'));
+  assert.ok(!npmCalls[0].args.includes('install'));
+
+  fs.rmSync(path.join(packageRoot, 'npm-shrinkwrap.json'));
+  const missing = makeTar('missing-lock.tgz', entries.filter((entry) => !entry.endsWith('npm-shrinkwrap.json')));
+  assert.throws(() => stageCandidatePackage({ ...missing, release: path.join(root, 'missing-release'),
+    commandRunner: runner }), /lacks its package manifest or published shrinkwrap/);
+  assert.ok(!fs.existsSync(path.join(root, 'missing-release')));
+  assert.equal(calls.filter(({ file }) => file === 'npm').length, 1);
+
+  lock.packages[''].version = 'wrong-version';
+  fs.writeFileSync(path.join(packageRoot, 'npm-shrinkwrap.json'), JSON.stringify(lock));
+  const mismatch = makeTar('mismatch-lock.tgz', entries);
+  assert.throws(() => stageCandidatePackage({ ...mismatch, release: path.join(root, 'mismatch-release'),
+    commandRunner: runner }), /shrinkwrap root identity differ/);
+  assert.ok(!fs.existsSync(path.join(root, 'mismatch-release')));
+  assert.equal(calls.filter(({ file }) => file === 'npm').length, 1);
+
+  fs.symlinkSync('deckide.js', path.join(packageRoot, 'bin/link.js'));
+  const link = makeTar('symlink.tgz', [...entries, 'package/bin/link.js']);
+  assert.throws(() => stageCandidatePackage({ ...link, release: path.join(root, 'link-release'),
+    commandRunner: runner }), /non-file entry/);
+  assert.ok(!fs.existsSync(path.join(root, 'link-release')));
+  fs.unlinkSync(path.join(packageRoot, 'bin/link.js'));
+
+  fs.writeFileSync(path.join(packageRoot, '.env'), 'fixture-private-value');
+  const hidden = makeTar('hidden.tgz', [...entries, 'package/.env']);
+  assert.throws(() => stageCandidatePackage({ ...hidden, release: path.join(root, 'hidden-release'),
+    commandRunner: runner }), /unsafe path/);
+  assert.ok(!fs.existsSync(path.join(root, 'hidden-release')));
+  assert.equal(calls.filter(({ file }) => file === 'npm').length, 1);
+});
 
 test('initial install leaves existing broker-owned paths untouched', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'deckide-broker-resource-'));

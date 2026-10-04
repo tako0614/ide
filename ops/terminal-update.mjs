@@ -155,12 +155,47 @@ export function publicTreeDigest(packageDir) {
   return { digest: digest.digest('hex'), entries: inventory.entries, files: inventory.files };
 }
 
-function candidateManifest(tarball) {
-  const raw = run('tar', ['-xOf', tarball, 'package/package.json']);
-  const manifest = JSON.parse(raw);
-  if (manifest.name !== 'deckide' || manifest.version !== CANDIDATE_VERSION) {
-    throw new Error('Candidate tarball has the wrong package identity/version');
+const CANDIDATE_STATIC_FILES = new Set([
+  'package.json', 'npm-shrinkwrap.json', 'README.md', 'LICENSE',
+  'docs/terminal-tmux.md', 'ops/README-terminal-update.md',
+  'ops/terminal-update.mjs', 'ops/terminal-update-guards.mjs',
+  'ops/systemd/deckide.service.d/99-deckide-tmux.conf.tmpl',
+  'ops/systemd/deckide-tmux-broker.service.tmpl',
+]);
+
+function inspectCandidateArchive(tarball, commandRunner = run) {
+  const names = commandRunner('tar', ['-tf', tarball], { timeout: 30_000 }).trimEnd().split('\n');
+  const verbose = commandRunner('tar', ['-tvf', tarball], { timeout: 30_000 }).trimEnd().split('\n');
+  if (names.length !== verbose.length || names.length < 2) throw new Error('Candidate tar inventory is invalid');
+  const seen = new Set();
+  for (let index = 0; index < names.length; index++) {
+    const name = names[index];
+    if (!/^package\/[A-Za-z0-9][A-Za-z0-9._@+/-]*$/.test(name) ||
+        verbose[index][0] !== '-' || seen.has(name)) {
+      throw new Error('Candidate tar contains a duplicate, unsafe path, or non-file entry');
+    }
+    seen.add(name);
+    const relative = name.slice('package/'.length);
+    assertPublicName(relative);
+    if (!CANDIDATE_STATIC_FILES.has(relative)) {
+      if (relative.startsWith('bin/') || relative.startsWith('dist/') || relative.startsWith('web/dist/')) {
+        assertPublicFileClass(relative);
+      } else throw new Error('Candidate tar contains an unknown payload path');
+    }
   }
+  if (!seen.has('package/package.json') || !seen.has('package/npm-shrinkwrap.json')) {
+    throw new Error('Candidate tar lacks its package manifest or published shrinkwrap');
+  }
+  const manifest = JSON.parse(commandRunner('tar', ['-xOf', tarball, 'package/package.json']));
+  const shrinkwrapRaw = commandRunner('tar', ['-xOf', tarball, 'package/npm-shrinkwrap.json']);
+  const shrinkwrap = JSON.parse(shrinkwrapRaw);
+  if (manifest.name !== 'deckide' || manifest.version !== CANDIDATE_VERSION ||
+      shrinkwrap.name !== manifest.name || shrinkwrap.version !== manifest.version ||
+      shrinkwrap.lockfileVersion !== 3 || shrinkwrap.packages?.['']?.name !== manifest.name ||
+      shrinkwrap.packages?.['']?.version !== manifest.version) {
+    throw new Error('Candidate package and published shrinkwrap root identity differ');
+  }
+  return { manifest, shrinkwrapSha256: sha256(shrinkwrapRaw) };
 }
 
 function renderTemplate(file, bindings) {
@@ -363,7 +398,8 @@ function stageInput(options) {
     throw new Error(`Release must be under the separate SSD prefix ${DEFAULT_RELEASE_ROOT}`);
   }
   checkHealthUrlOnly(options.healthUrl);
-  return { candidate, previousPackage, release, httpUnit, nodePath, healthUrl: options.healthUrl };
+  return { candidate, sha256: options.sha256.toLowerCase(), previousPackage, release,
+    httpUnit, nodePath, healthUrl: options.healthUrl };
 }
 
 function checkHealthUrlOnly(value) {
@@ -382,7 +418,7 @@ function preparePlan(options) {
   if (hashFile(input.candidate).toLowerCase() !== options.sha256.toLowerCase()) {
     throw new Error('Candidate tarball SHA-256 differs from the operator-provided value');
   }
-  candidateManifest(input.candidate);
+  inspectCandidateArchive(input.candidate);
   const previous = readPublicPackage(input.previousPackage);
   if (previous.version === CANDIDATE_VERSION) throw new Error('Previous package already has candidate version');
   const previousPublic = publicTreeDigest(input.previousPackage);
@@ -447,26 +483,56 @@ export function isolatedNpmInstallSettings(release, nodeExecutable = process.exe
   };
 }
 
-function stage(plan, stateDir) {
-  assertAbsent(stateDir, 'Updater state directory');
-  assertAbsent(plan.input.release, 'Candidate release prefix');
-  const releaseParent = path.dirname(plan.input.release);
-  if (!fs.existsSync(releaseParent)) throw new Error('Separate SSD release parent does not exist');
-  fs.mkdirSync(plan.input.release, { mode: 0o700 });
+/** Qualifiable staging path: verified npm tar -> fresh package root -> published-lock npm ci. */
+export function stageCandidatePackage({ candidate, expectedSha256, release, commandRunner = run }) {
+  safeAbsolutePath(candidate, 'Candidate tarball');
+  safeAbsolutePath(release, 'Release prefix');
+  if (!/^[0-9a-f]{64}$/i.test(expectedSha256)) throw new Error('Expected SHA-256 is invalid');
+  const candidateInfo = fs.lstatSync(candidate);
+  if (!candidateInfo.isFile() || candidateInfo.isSymbolicLink() ||
+      hashFile(candidate).toLowerCase() !== expectedSha256.toLowerCase()) {
+    throw new Error('Candidate tarball is unsafe or differs from the reviewed SHA-256');
+  }
+  const archive = inspectCandidateArchive(candidate, commandRunner);
+  const releasePackage = path.join(release, 'node_modules/deckide');
+  assertAbsent(release, 'Candidate release prefix');
+  fs.mkdirSync(release, { mode: 0o700 });
+  fs.mkdirSync(releasePackage, { recursive: true, mode: 0o700 });
+  commandRunner('tar', ['-xzf', candidate, '--strip-components=1', '--no-same-owner',
+    '--no-same-permissions', '--keep-old-files', '-C', releasePackage],
+    { timeout: 180_000 });
+  if (hashFile(candidate).toLowerCase() !== expectedSha256.toLowerCase()) {
+    throw new Error('Candidate tarball changed during extraction');
+  }
+  const extractedShrinkwrap = path.join(releasePackage, 'npm-shrinkwrap.json');
+  const executable = path.join(releasePackage, 'bin/deckide.js');
+  const shrinkwrapInfo = fs.lstatSync(extractedShrinkwrap);
+  const binInfo = fs.lstatSync(executable);
+  if (!shrinkwrapInfo.isFile() || shrinkwrapInfo.isSymbolicLink() ||
+      hashFile(extractedShrinkwrap) !== archive.shrinkwrapSha256 ||
+      !binInfo.isFile() || binInfo.isSymbolicLink() || !(binInfo.mode & 0o111) ||
+      readPublicPackage(releasePackage).version !== CANDIDATE_VERSION) {
+    throw new Error('Extracted candidate or published shrinkwrap changed');
+  }
   const { userConfig, globalConfig, home, temporary, cache, env } =
-    isolatedNpmInstallSettings(plan.input.release);
+    isolatedNpmInstallSettings(release);
   for (const directory of [home, temporary, cache]) fs.mkdirSync(directory, { mode: 0o700 });
   fs.writeFileSync(globalConfig, '', { mode: 0o600, flag: 'wx' });
-  // Suppress user/global npmrc reads and inherited HTTP/session secrets.
-  // The candidate SHA and package identity were checked before install.
   try {
-    run('npm', ['install', '--prefix', plan.input.release, '--omit=dev', '--no-audit', '--no-fund',
-      `--userconfig=${userConfig}`, `--globalconfig=${globalConfig}`, plan.input.candidate], {
-      timeout: 180_000,
-      cwd: plan.input.release,
-      env,
+    commandRunner('npm', ['ci', '--omit=dev', '--no-audit', '--no-fund',
+      `--userconfig=${userConfig}`, `--globalconfig=${globalConfig}`], {
+      timeout: 180_000, cwd: releasePackage, env,
     });
   } finally { fs.unlinkSync(globalConfig); }
+  return { releasePackage };
+}
+
+function stage(plan, stateDir) {
+  assertAbsent(stateDir, 'Updater state directory');
+  const releaseParent = path.dirname(plan.input.release);
+  if (!fs.existsSync(releaseParent)) throw new Error('Separate SSD release parent does not exist');
+  stageCandidatePackage({ candidate: plan.input.candidate,
+    expectedSha256: plan.input.sha256, release: plan.input.release });
   const installed = readPublicPackage(plan.releasePackage);
   if (installed.version !== CANDIDATE_VERSION ||
       !fs.existsSync(path.join(plan.releasePackage, 'dist/terminal/tmuxBroker.js')) ||

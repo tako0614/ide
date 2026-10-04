@@ -141,8 +141,11 @@ production gate. Broker-unit restart is not a persistence claim.
 ## Candidate installation and rollback (operator actions only)
 
 The artifact report records candidate version, source commit, tarball SHA-256
-and exact test results. The tarball includes npm-shrinkwrap.json to retain the
-tested dependency tree. No global installation or production service was
+and exact test results. The tarball includes npm-shrinkwrap.json. The updater extracts the reviewed
+package into its fresh prefix and runs `npm ci --omit=dev` with that package as
+the install root, retaining the tested dependency tree. npm 11 local-tarball
+installation as a dependency was observed to ignore the nested shrinkwrap, so
+ordinary `npm install <tarball>` is not this candidate's qualified update path. No global installation or production service was
 updated. The guarded updater stages a new SSD prefix and retains the previous
 installed package; the dirty original and GUI worker's tree remain untouched.
 
@@ -160,7 +163,8 @@ node "$UPDATER" stage --candidate "$CANDIDATE" --sha256 "$SHA256" --previous-pac
 ```
 
 `plan` reads public package/lifecycle metadata and writes nothing. `stage`
-installs dependencies using a private empty npm HOME/cache, minimal installer
+extracts the SHA-verified candidate and installs its exact lock with root
+`npm ci`, using a private empty npm HOME/cache, minimal installer
 environment and distinct empty user/global configs, creates private updater state and a public-file rollback
 archive, and starts no service. The updater checks exact tarball/version, public
 tree hashes, actual prior entry path, recognized launch flags and prior package

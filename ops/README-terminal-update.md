@@ -35,8 +35,11 @@ node ops/terminal-update.mjs stage \
   --release "$RELEASE" --http-unit deckide.service --health-url "$HEALTH"
 ```
 
-`plan` is read-only. `stage` installs production dependencies into the new
-release prefix, creates a root-private updater state directory, and archives
+`plan` is read-only. `stage` extracts the SHA-verified candidate into the new
+release prefix and runs `npm ci --omit=dev` from the package root using its
+published shrinkwrap. This avoids npm 11's observed local-tarball dependency
+install behavior, which did not honor the nested lock. It creates a root-private
+updater state directory, and archives
 only the old package's public `package.json`, `bin`, `dist`, `web/dist`, README,
 and LICENSE files. A metadata-only inventory rejects hidden/private and unknown file classes before
 content hashing; tar receives exact validated files with `--no-recursion`.
