@@ -142,20 +142,12 @@ function rollingAnchors(data: Descriptor): Identity[] {
 type Namespace = 'pid' | 'user' | 'mnt' | 'net';
 function verifyProcess(identity: Identity, probe: Probe, procRoot: string,
   baseline: Record<Namespace, string>, hostAnchor: boolean,
-  auxiliary = false, requireAlive = false, role = 'auxiliary'): void {
+  auxiliary = false, requireAlive = false, role = 'auxiliary', retryAuxiliaryExit = true): void {
   const detail = (field: string, expected: unknown, observed: unknown) =>
     ({ role, pid: identity.pid, field, expected, observed });
   try {
     const dir = `${procRoot}/${identity.pid}`;
     const names: Namespace[] = ['pid', 'user', 'mnt', 'net'];
-    const namespace = Object.fromEntries(names.map((name) =>
-      [name, probe.readlink(`${dir}/ns/${name}`)])) as Record<Namespace, string>;
-    for (const name of names) {
-      if (!new RegExp(`^${name}:\\[\\d+\\]$`).test(namespace[name]))
-        fail('process.namespace.format', detail(name, true, false));
-      if (hostAnchor && name !== 'user' && namespace[name] !== baseline[name])
-        fail('process.namespace.host', detail(name, baseline[name], namespace[name]));
-    }
     const statMatches = (stat: string, read: string) => {
       const close = stat.lastIndexOf(') ');
       const open = stat.indexOf(' (');
@@ -175,6 +167,7 @@ function verifyProcess(identity: Identity, probe: Probe, procRoot: string,
       }
       if (requireAlive && ['Z', 'X', 'x'].includes(fields[0]))
         fail(`process.${read}.alive`, detail('state', true, fields[0]));
+      return fields[0];
     };
     const ownerMatches = (status: string, read: string) => {
       for (const [name, expected] of [['Uid', identity.owner_uid], ['Gid', identity.owner_gid]] as const) {
@@ -190,6 +183,28 @@ function verifyProcess(identity: Identity, probe: Probe, procRoot: string,
         }
       }
     };
+    // Exited-but-not-reaped auxiliaries have no execution authority. Linux
+    // may already remove mnt/net namespace links while stat/status remain.
+    // Prove terminal state twice with the same PID/start and every UID/GID slot.
+    if (auxiliary && !hostAnchor && !requireAlive) {
+      const state = statMatches(probe.readFile(`${dir}/stat`), 'read1');
+      ownerMatches(probe.readFile(`${dir}/status`), 'read1');
+      if (['Z', 'X', 'x'].includes(state)) {
+        const second = statMatches(probe.readFile(`${dir}/stat`), 'read2');
+        ownerMatches(probe.readFile(`${dir}/status`), 'read2');
+        if (!['Z', 'X', 'x'].includes(second))
+          fail('auxiliary.terminal_state.changed', detail('state', state, second));
+        return;
+      }
+    }
+    const namespace = Object.fromEntries(names.map((name) =>
+      [name, probe.readlink(`${dir}/ns/${name}`)])) as Record<Namespace, string>;
+    for (const name of names) {
+      if (!new RegExp(`^${name}:\\[\\d+\\]$`).test(namespace[name]))
+        fail('process.namespace.format', detail(name, true, false));
+      if (hostAnchor && name !== 'user' && namespace[name] !== baseline[name])
+        fail('process.namespace.host', detail(name, baseline[name], namespace[name]));
+    }
     statMatches(probe.readFile(`${dir}/stat`), 'read1');
     ownerMatches(probe.readFile(`${dir}/status`), 'read1');
     // Keep both observations and original stable identity/namespace checks.
@@ -201,6 +216,14 @@ function verifyProcess(identity: Identity, probe: Probe, procRoot: string,
         fail('process.namespace.changed', detail(name, namespace[name], observed));
     }
   } catch (error) {
+    const errno = error && typeof error === 'object'
+      ? Object.getOwnPropertyDescriptor(error, 'code')?.value : undefined;
+    // A live auxiliary can exit between the stat and namespace reads. Retry its
+    // full identity proof once before the lease's permanent invalidation path.
+    if (auxiliary && !hostAnchor && !requireAlive && retryAuxiliaryExit &&
+        (errno === 'ENOENT' || errno === 'ESRCH'))
+      return verifyProcess(identity, probe, procRoot, baseline, hostAnchor,
+        auxiliary, requireAlive, role, false);
     throw descriptorValidationBoundary('process.readback.catch', error, undefined,
       { role, pid: identity.pid, field: 'procfs' });
   }

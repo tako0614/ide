@@ -464,3 +464,92 @@ test('revocation detaches the borrowed transport and never prepares a replacemen
   assert.equal(await fs.readFile(path.join(f.runtime, 'sentinel'), 'utf8'), 'external state');
   await computer.shutdown();
 });
+
+
+test('v2 auxiliary terminal snapshots survive released namespaces without revocation', async (t) => {
+  for (const state of ['Z', 'X', 'x']) {
+    const f = await rollingFixture(t), lease = f.load(), saved = f.data.processes.at(-1);
+    f.probe.replacements.set(saved.pid, { ...saved, state });
+    const readlink = f.probe.readlink.bind(f.probe);
+    f.probe.readlink = file => {
+      if (file.startsWith('/fake-proc/' + saved.pid + '/ns/'))
+        throw Object.assign(new Error('terminal namespace released'), { code: 'ENOENT' });
+      return readlink(file);
+    };
+    assert.equal(lease.check().sessionId, f.data.session_id, state);
+    assert.equal(lease.check().sessionId, f.data.session_id, 'successful terminal check never revokes');
+  }
+});
+
+test('v2 auxiliary live-to-terminal namespace race retries once before revocation', async (t) => {
+  const f = await rollingFixture(t), lease = f.load(), saved = f.data.processes.at(-1);
+  const readlink = f.probe.readlink.bind(f.probe); let misses = 0;
+  f.probe.readlink = file => {
+    if (file === '/fake-proc/' + saved.pid + '/ns/mnt') {
+      misses++; f.probe.replacements.set(saved.pid, { ...saved, state: 'Z' });
+      throw Object.assign(new Error('terminal namespace released'), { code: 'ENOENT' });
+    }
+    return readlink(file);
+  };
+  assert.equal(lease.check().sessionId, f.data.session_id);
+  assert.equal(lease.check().sessionId, f.data.session_id);
+  assert.equal(misses, 1, 'terminal retry does not repeat unavailable namespaces');
+});
+
+test('v2 auxiliary terminal snapshots retain every stable identity and owner guard', async (t) => {
+  const cases = ['pid-reuse', 'second-pid-reuse', 'second-live', 'malformed', 'EACCES', 'EPERM',
+    ...['Uid', 'Gid'].flatMap(label => [0,1,2,3].flatMap(slot => [1,2].map(read => label + '-' + slot + '-' + read)))];
+  for (const variant of cases) {
+    const f = await rollingFixture(t), lease = f.load(), saved = f.data.processes.at(-1);
+    f.probe.replacements.set(saved.pid, { ...saved, state: 'Z',
+      starttime_ticks: saved.starttime_ticks + (variant === 'pid-reuse' ? 1 : 0) });
+    const readFile = f.probe.readFile.bind(f.probe); let stats = 0, statuses = 0;
+    f.probe.readFile = file => {
+      if (file === '/fake-proc/' + saved.pid + '/stat') {
+        stats++;
+        if (variant === 'malformed') return 'malformed';
+        if (stats === 2 && variant === 'second-pid-reuse')
+          f.probe.replacements.set(saved.pid, { ...saved, state: 'Z', starttime_ticks: saved.starttime_ticks + 1 });
+        if (stats === 2 && variant === 'second-live') f.probe.replacements.set(saved.pid, { ...saved, state: 'S' });
+      }
+      let value = readFile(file);
+      if (file === '/fake-proc/' + saved.pid + '/status') {
+        statuses++;
+        if (['EACCES','EPERM'].includes(variant)) throw Object.assign(new Error('denied'), {code: variant});
+        const [label, slot, read] = variant.split('-');
+        if (['Uid','Gid'].includes(label) && statuses === Number(read)) {
+          const values = Array(4).fill(label === 'Uid' ? 993 : 982); values[Number(slot)] = 65534;
+          value = value.split(String.fromCharCode(10)).map(line => line.startsWith(label + ':')
+            ? label + ':' + String.fromCharCode(9) + values.join(String.fromCharCode(9)) : line).join(String.fromCharCode(10));
+        }
+      }
+      return value;
+    };
+    assert.throws(() => lease.check(), /unverified/, variant);
+    f.probe.readFile = readFile; f.probe.replacements.delete(saved.pid);
+    assert.throws(() => lease.check(), /unverified/, 'failed identity remains revoked: ' + variant);
+  }
+});
+
+test('v2 auxiliary terminal-to-absent is tolerated but live missing namespaces reject', async (t) => {
+  for (const variant of ['terminal-absent', 'live-namespace-absent']) {
+    const f = await rollingFixture(t), lease = f.load(), saved = f.data.processes.at(-1);
+    const readFile = f.probe.readFile.bind(f.probe), readlink = f.probe.readlink.bind(f.probe);
+    if (variant === 'terminal-absent') {
+      f.probe.replacements.set(saved.pid, { ...saved, state: 'Z' });
+      f.probe.readFile = file => {
+        if (file === '/fake-proc/' + saved.pid + '/status') f.probe.missing.add(saved.pid);
+        return readFile(file);
+      };
+      assert.equal(lease.check().sessionId, f.data.session_id);
+      assert.equal(lease.check().sessionId, f.data.session_id);
+    } else {
+      f.probe.readlink = file => {
+        if (file === '/fake-proc/' + saved.pid + '/ns/mnt')
+          throw Object.assign(new Error('missing namespace for live process'), {code:'ENOENT'});
+        return readlink(file);
+      };
+      assert.throws(() => lease.check(), /unverified/);
+    }
+  }
+});
