@@ -96,11 +96,13 @@ node ops/terminal-update.mjs verify
 `plan` and initial `apply` refuse existing reserved broker directories, socket,
 and `/var/lib/deckide-chatgpt`
 before any unit mutation, avoiding systemd changes to existing permissions.
-`apply` also exclusively creates the empty root:root `0700` ChatGPT state
-directory below canonical root-owned, non-writable `/var/lib` parents. It
-rejects an existing path, inherited wrong group, or special mode bits; it never
-adopts or changes an existing app state directory. Private descriptor/control
-state is created there only by a later explicit authenticated app start.
+`apply` also exclusively creates the root:root `0700` ChatGPT state directory
+and its empty root:root `0700` `.app-session-control` subdirectory before HTTP
+startup, below canonical root-owned, non-writable `/var/lib` parents. Foreground
+launcher preflight requires this control directory to exist. The updater rejects
+an existing path, inherited wrong group, or special mode bits; it never adopts or
+changes an existing app state directory. Descriptors, control locks and logs are
+created only by a later explicit authenticated app start.
 Rollback preserves this directory and never imports live app configuration.
 `apply` creates the new broker unit and HTTP drop-in. It starts the broker
 before loading the HTTP drop-in. The broker has an independent cgroup and no

@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
+  CANDIDATE_VERSION,
   assertInitialBrokerResourcesAbsent, assertChatGPTStateParentsTrusted, createChatGPTStateRoot,
   CHATGPT_STATE_ROOT, classifyTerminalRuntimeEntries,
   parseShowProperties, assertHttpService, assertInactiveHttpService,
@@ -51,7 +52,7 @@ test('candidate stage extracts verified tar and runs npm ci at the published shr
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const packageRoot = path.join(root, 'package');
   fs.mkdirSync(path.join(packageRoot, 'bin'), { recursive: true });
-  const version = '3.5.49-combined.20261004.2';
+  const version = '3.5.49-combined.20261004.3';
   fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({
     name: 'deckide', version, bin: { deckide: 'bin/deckide.js' }, dependencies: {},
   }));
@@ -265,12 +266,29 @@ test('ChatGPT owner state root is created exclusively below trusted canonical pa
   const expectedUid = parentInfo.uid;
   const expectedGid = parentInfo.gid;
   const stateRoot = path.join(libRoot, 'deckide-chatgpt');
+  const controlRoot = path.join(stateRoot, '.app-session-control');
   assert.equal(assertChatGPTStateParentsTrusted({ varRoot, libRoot, expectedUid }), libRoot);
-  assert.equal(createChatGPTStateRoot({ stateRoot, varRoot, libRoot, expectedUid, expectedGid }), stateRoot);
+  fs.mkdirSync(stateRoot, { mode: 0o700 });
+  assert.throws(() => createChatGPTStateRoot({ stateRoot, varRoot, libRoot,
+    expectedUid, expectedGid }), /already exists/);
+  assert.deepEqual(fs.readdirSync(stateRoot), [], 'an existing root missing its control directory is not adopted or repaired');
+  fs.rmdirSync(stateRoot);
+  const originalUmask = process.umask(0o777);
+  try {
+    assert.equal(createChatGPTStateRoot({ stateRoot, varRoot, libRoot, expectedUid, expectedGid }), stateRoot);
+  } finally { process.umask(originalUmask); }
   assert.equal(fs.lstatSync(stateRoot).mode & 0o777, 0o700);
-  assert.deepEqual(fs.readdirSync(stateRoot), [], 'updater creates no descriptors, credentials, or descendants');
+  assert.equal(fs.lstatSync(stateRoot).uid, expectedUid);
+  assert.equal(fs.lstatSync(stateRoot).gid, expectedGid);
+  assert.equal(fs.lstatSync(controlRoot).mode & 0o7777, 0o700);
+  assert.equal(fs.lstatSync(controlRoot).uid, expectedUid);
+  assert.equal(fs.lstatSync(controlRoot).gid, expectedGid);
+  assert.deepEqual(fs.readdirSync(stateRoot), ['.app-session-control'],
+    'updater creates only the required control directory, without descriptors, credentials, or runtime files');
+  assert.deepEqual(fs.readdirSync(controlRoot), [], 'the new private control directory is empty');
   assert.throws(() => createChatGPTStateRoot({ stateRoot, varRoot, libRoot, expectedUid, expectedGid }), /already exists/);
   assert.equal(CHATGPT_STATE_ROOT, '/var/lib/deckide-chatgpt');
+  assert.equal(CANDIDATE_VERSION, '3.5.49-combined.20261004.3');
 
   const symlinkVar = path.join(root, 'var-link');
   fs.symlinkSync(varRoot, symlinkVar);
@@ -625,14 +643,14 @@ test('ChatGPT launcher inventory is exact and part of staged package identity', 
   const makePackage = (directory, version) => {
     for (const subdir of ['bin', 'dist', 'web/dist']) fs.mkdirSync(path.join(directory, subdir), { recursive: true });
     fs.writeFileSync(path.join(directory, 'package.json'), JSON.stringify({ name: 'deckide', version }));
-    if (version === '3.5.49-combined.20261004.2') {
+    if (version === '3.5.49-combined.20261004.3') {
       fs.mkdirSync(path.join(directory, 'ops'), { recursive: true });
       fs.writeFileSync(path.join(directory, startupCheckPackagePath), 'startup checker fixture\n');
     }
   };
   const release = path.join(root, 'release');
   const previous = path.join(root, 'previous');
-  makePackage(release, '3.5.49-combined.20261004.2');
+  makePackage(release, '3.5.49-combined.20261004.3');
   makePackage(previous, '3.5.48');
   assert.doesNotThrow(() => publicTreeDigest(previous), 'legacy package without the app inventory remains accepted');
   fs.mkdirSync(path.join(release, 'ops/chatgpt-launcher/product'), { recursive: true });

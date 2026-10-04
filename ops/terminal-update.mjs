@@ -894,7 +894,7 @@ async function apply(stateDir, options) {
   state.phase = 'broker-unit-written'; writeState(stateDir, state);
   systemctl('daemon-reload');
   assertInitialBrokerResourcesAbsent(); // Do not let systemd retake a path created after initial preflight.
-  createChatGPTStateRoot(); // Create only the empty trusted owner root before candidate HTTP startup.
+  createChatGPTStateRoot(); // Create the trusted owner root and private launcher control directory before HTTP startup.
   systemctl('enable', '--now', BROKER_UNIT);
   const broker = systemdShow(BROKER_UNIT, BROKER_PROPERTIES);
   if (broker.ActiveState !== 'active' || broker.KillMode !== 'control-group' ||

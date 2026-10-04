@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-export const CANDIDATE_VERSION = '3.5.49-combined.20261004.2';
+export const CANDIDATE_VERSION = '3.5.49-combined.20261004.3';
 export const BROKER_UNIT = 'deckide-tmux-broker.service';
 export const BROKER_SOCKET = '/run/deckide-tmux-broker/broker.sock';
 export const TERMINAL_RUNTIME = '/var/lib/deckide-tmux/terminal-tmux';
@@ -55,7 +55,24 @@ export function assertInitialBrokerResourcesAbsent(resources) {
   }
 }
 
-/** Create only the empty owner state root, exclusively, after initial-install preflight. */
+function validateFreshPrivateDirectory(directory, label, expectedUid, expectedGid) {
+  let info;
+  try { info = fs.lstatSync(directory); }
+  catch { throw new Error(`Cannot verify new ${label}`); }
+  if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== expectedUid ||
+      info.gid !== expectedGid || (info.mode & 0o7000)) {
+    throw new Error(`New ${label} must match the trusted owner and group without special mode bits`);
+  }
+  if ((info.mode & 0o777) !== 0o700) fs.chmodSync(directory, 0o700);
+  info = fs.lstatSync(directory);
+  if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== expectedUid ||
+      info.gid !== expectedGid || (info.mode & 0o7777) !== 0o700 ||
+      fs.realpathSync(directory) !== directory) {
+    throw new Error(`New ${label} is not private and canonical`);
+  }
+}
+
+/** Create the owner state root and its empty private control directory exclusively. */
 export function createChatGPTStateRoot({ stateRoot = CHATGPT_STATE_ROOT,
   varRoot = '/var', libRoot = '/var/lib', expectedUid = 0, expectedGid = 0 } = {}) {
   assertChatGPTStateParentsTrusted({ varRoot, libRoot, expectedUid });
@@ -69,21 +86,18 @@ export function createChatGPTStateRoot({ stateRoot = CHATGPT_STATE_ROOT,
   try { fs.mkdirSync(stateRoot, { mode: 0o700 }); }
   catch { throw new Error('Cannot create the exclusive ChatGPT state root'); }
   try {
-    let info = fs.lstatSync(stateRoot);
-    if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== expectedUid ||
-        info.gid !== expectedGid || (info.mode & 0o7000)) {
-      throw new Error('New ChatGPT state root must be root-owned, root-group, and free of special mode bits');
-    }
-    if ((info.mode & 0o777) !== 0o700) fs.chmodSync(stateRoot, 0o700);
-    info = fs.lstatSync(stateRoot);
-    if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== expectedUid ||
-        info.gid !== expectedGid || (info.mode & 0o7777) !== 0o700 ||
-        fs.realpathSync(stateRoot) !== stateRoot) {
-      throw new Error('New ChatGPT state root is not private and canonical');
-    }
+    validateFreshPrivateDirectory(stateRoot, 'ChatGPT state root', expectedUid, expectedGid);
   } catch (error) {
     if (/ChatGPT state root/.test(error?.message)) throw error;
     throw new Error('Cannot verify the new ChatGPT state root');
+  }
+  const controlRoot = path.join(stateRoot, '.app-session-control');
+  try { fs.mkdirSync(controlRoot, { mode: 0o700 }); }
+  catch { throw new Error('Cannot create the exclusive ChatGPT control directory'); }
+  try { validateFreshPrivateDirectory(controlRoot, 'ChatGPT control directory', expectedUid, expectedGid); }
+  catch (error) {
+    if (/ChatGPT control directory/.test(error?.message)) throw error;
+    throw new Error('Cannot verify the new ChatGPT control directory');
   }
   return stateRoot;
 }
