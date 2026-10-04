@@ -11,7 +11,8 @@
     "dist/",
     "web/dist/",
     "docs/terminal-tmux.md",
-    "ops/"
+    "ops/",
+    "npm-shrinkwrap.json"
   ],
   "scripts": {
     "dev:web": "cd web && npx vite",
