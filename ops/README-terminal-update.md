@@ -1,10 +1,15 @@
-# Guarded DeckIDE tmux service update
+# Guarded combined DeckIDE service update (unqualified preparation)
+
+The combined source is still awaiting final sealed GUI synchronization and an
+authenticated frame/input smoke. No reviewed combined tarball exists yet.
+The commands below describe the future operator path, not an instruction to
+activate this preparation checkpoint.
 
 This operator-run tool is prepared for a future production cutover. Merely
 building, packaging, running `plan`, or running `stage` does not stop or restart
 DeckIDE. Do not run `apply` while an older direct-PTY terminal is in use.
 
-The candidate package must be exactly `deckide@3.5.49-tmux.20261004.1` and
+The candidate package must be exactly `deckide@3.5.49-combined.20261004.1` and
 match the separately reviewed SHA-256. The existing installed package is
 `/usr/local/lib/node_modules/deckide` on the inspected host. `plan` checks the
 loaded `deckide.service` ExecStart metadata in memory against this path and
@@ -20,9 +25,9 @@ by the old service; no auth token is sent. The release parent must already be
 on the designated SSD, and the release path must not exist:
 
 ```sh
-CANDIDATE=/root/dev/deckide-tmux-20261004/artifacts/candidate/deckide-3.5.49-tmux.20261004.1.tgz
+CANDIDATE=REPLACE_WITH_REVIEWED_COMBINED_TARBALL_PATH
 SHA256=REPLACE_WITH_REVIEWED_64_HEX_SHA256
-RELEASE=/root/dev/deckide-releases/3.5.49-tmux.20261004.1
+RELEASE=/root/dev/deckide-releases/3.5.49-combined.20261004.1
 HEALTH=http://127.0.0.1:8787/health
 mkdir --parents --mode=0700 /root/dev/deckide-releases
 node ops/terminal-update.mjs plan \
@@ -49,6 +54,20 @@ It does not archive `.deckide`, credentials, settings,
 environment, sessions, or the old package's dependencies. The old installed
 package remains the rollback target. If dependency installation fails, the new
 release directory is retained for review; no service unit is changed.
+
+Required startup configuration is checked without printing values. Production
+requires a nonblank `CORS_ORIGIN`; the checker supplies no origin, defaults, or
+access changes. Planning and restart preflight check only the updater's current
+invocation environment. They cannot prove the effective service environment:
+the updater does not inspect systemd Environment, EnvironmentFile contents, or
+process environment dumps. An explicit plan diagnostic records this limitation.
+The appended candidate `ExecStartPre` runs the checker in the actual inherited
+HTTP unit environment before candidate HTTP startup, preserving existing
+pre-start commands. This last check occurs after broker/drop-in mutation; a
+failure leaves HTTP unstarted and requires the guarded rollback path below.
+Use only the already authorized settings for both contexts. The QA origin
+`http://127.0.0.1:18798` belongs to disposable GUI qualification and is not a
+production-origin recommendation.
 
 `apply` requires a maintenance window in which new terminal requests are
 blocked by the operator. The script cannot make the old HTTP server's process
@@ -78,6 +97,15 @@ candidate ExecStart. Both units retain `KillMode=control-group`; the HTTP base
 unit's User, Group, working directory, access rules, and other environment are
 inherited unchanged. A broker with live sessions is never stopped or restarted
 by this updater.
+
+The private release prefix/package remain `0700`. Only the two fixed, hashed
+public app helpers are copied at an eventual app launch to a nonce directory
+under protected `/run`: root:app-group directory `0750`, files `0640`. Every
+ancestor must allow app traversal and forbid app writes. Private descriptor,
+control, authority, live config, runtime, logs and evidence stay separate.
+No broad release or `/root` permission change is needed. The app remains a
+foreground direct child with schema-v2 owner/lease checks; GUI borrowers do not
+adopt or terminate unrelated app sessions.
 
 Before restarting HTTP, the tool verifies every owned tmux registry record's
 native IDs, generation, server PID, and cgroup. A live tmux server must be in

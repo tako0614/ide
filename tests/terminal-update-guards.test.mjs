@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import {
   assertInitialBrokerResourcesAbsent, classifyTerminalRuntimeEntries,
   parseShowProperties, assertHttpService, assertInactiveHttpService,
@@ -12,7 +13,8 @@ import {
   parseProcStat, readProcTree, assertNoLegacyPtys, assertBrokerCgroups,
   safeAbsolutePath, safeServiceUnit,
 } from '../ops/terminal-update-guards.mjs';
-import { checkStaged, publicTreeDigest, isolatedNpmInstallSettings, stageCandidatePackage } from '../ops/terminal-update.mjs';
+import { checkStaged, planReport, publicTreeDigest, isolatedNpmInstallSettings,
+  renderedUnits, stageCandidatePackage } from '../ops/terminal-update.mjs';
 
 const appPackagePaths = [
   'ops/chatgpt-launcher/source/launch-chatgpt.sh',
@@ -31,6 +33,7 @@ const appPackagePaths = [
   'ops/chatgpt-launcher/product/test-session-lifecycle.py',
   'ops/chatgpt-launcher/product/SOURCE-ADAPTATION.json',
 ];
+const startupCheckPackagePath = 'ops/startup-check.mjs';
 
 function writeAppPackageFixture(packageRoot) {
   for (const relative of appPackagePaths) {
@@ -52,6 +55,8 @@ test('candidate stage extracts verified tar and runs npm ci at the published shr
     name: 'deckide', version, bin: { deckide: 'bin/deckide.js' }, dependencies: {},
   }));
   writeAppPackageFixture(packageRoot);
+  fs.mkdirSync(path.join(packageRoot, 'ops'), { recursive: true });
+  fs.writeFileSync(path.join(packageRoot, startupCheckPackagePath), '// synthetic startup checker fixture\n');
   const lock = { name: 'deckide', version, lockfileVersion: 3, requires: true,
     packages: { '': { name: 'deckide', version, dependencies: {} } } };
   fs.writeFileSync(path.join(packageRoot, 'npm-shrinkwrap.json'), JSON.stringify(lock));
@@ -90,6 +95,7 @@ test('candidate stage extracts verified tar and runs npm ci at the published shr
   const entries = ['package/package.json', 'package/npm-shrinkwrap.json', 'package/bin/deckide.js',
     'package/dist/computer/private-unix.js',
     'package/dist/computer/native/vnc-launcher', 'package/dist/computer/native/launcher-manifest.json',
+    `package/${startupCheckPackagePath}`,
     ...appPackagePaths.map((relative) => `package/${relative}`)];
   const archive = makeTar('candidate.tgz', entries);
   const calls = [];
@@ -121,6 +127,8 @@ test('candidate stage extracts verified tar and runs npm ci at the published shr
   assert.equal(fs.statSync(path.join(staged.releasePackage,
     'ops/chatgpt-launcher/source/launch-chatgpt.sh')).mode & 0o7777, 0o600,
   'mode repair is limited to reviewed product runtime files, not source provenance');
+  assert.equal(fs.statSync(path.join(staged.releasePackage, startupCheckPackagePath)).mode & 0o7777, 0o600,
+    'the checker is hashed as code but does not receive unrelated mode repair');
   assert.equal(fs.statSync(path.join(staged.releasePackage, 'dist/computer/private-unix.js')).mode & 0o7777,
     0o600, 'mode repair does not widen unrelated runtime files');
   const npmCalls = calls.filter(({ file }) => file === 'npm');
@@ -192,6 +200,11 @@ test('candidate stage extracts verified tar and runs npm ci at the published shr
   assert.ok(!fs.existsSync(path.join(root, 'incomplete-app-release')));
   assert.ok(!fs.existsSync(path.join(root, 'extra-app-release')));
   fs.unlinkSync(extraAppFile);
+  const noStartupChecker = makeTar('missing-startup-checker.tgz',
+    entries.filter((entry) => entry !== `package/${startupCheckPackagePath}`));
+  assert.throws(() => stageCandidatePackage({ ...noStartupChecker,
+    release: path.join(root, 'missing-startup-checker-release'), commandRunner: runner }), /startup configuration checker/);
+  assert.ok(!fs.existsSync(path.join(root, 'missing-startup-checker-release')));
   assert.equal(calls.filter(({ file }) => file === 'npm').length, 1);
 
   lock.packages[''].version = 'wrong-version';
@@ -524,6 +537,10 @@ test('ChatGPT launcher inventory is exact and part of staged package identity', 
   const makePackage = (directory, version) => {
     for (const subdir of ['bin', 'dist', 'web/dist']) fs.mkdirSync(path.join(directory, subdir), { recursive: true });
     fs.writeFileSync(path.join(directory, 'package.json'), JSON.stringify({ name: 'deckide', version }));
+    if (version === '3.5.49-combined.20261004.1') {
+      fs.mkdirSync(path.join(directory, 'ops'), { recursive: true });
+      fs.writeFileSync(path.join(directory, startupCheckPackagePath), 'startup checker fixture\n');
+    }
   };
   const release = path.join(root, 'release');
   const previous = path.join(root, 'previous');
@@ -551,7 +568,7 @@ test('ChatGPT launcher inventory is exact and part of staged package identity', 
   assert.doesNotThrow(() => checkStaged(state));
   for (const relative of ['ops/chatgpt-launcher/product/session-supervisor.py',
     'ops/chatgpt-launcher/product/launch-chatgpt.sh',
-    'ops/chatgpt-launcher/product/SOURCE-ADAPTATION.json']) {
+    'ops/chatgpt-launcher/product/SOURCE-ADAPTATION.json', startupCheckPackagePath]) {
     const file = path.join(release, relative);
     const original = fs.readFileSync(file);
     fs.writeFileSync(file, Buffer.concat([original, Buffer.from('tampered') ]));
@@ -579,4 +596,69 @@ test('ChatGPT launcher inventory is exact and part of staged package identity', 
       fs.unlinkSync(file);
     }
   } finally { fs.openSync = originalOpen; }
+});
+
+test('rendered candidate unit appends redacted startup validation with preserved Node and no environment changes', (t) => {
+  const packageRoot = '/opt/deckide/releases/combined/node_modules/deckide';
+  const originalNode = '/usr/local/bin/node';
+  const launch = { entry: 'bin/deckide.js', nodePath: '/opt/old-runtime/bin/node',
+    publicArgs: ['start', '--fg'], direct: false };
+  const rendered = renderedUnits(packageRoot, 'deckide.service', launch, originalNode);
+  assert.match(rendered.dropin,
+    /^ExecStartPre=\/opt\/old-runtime\/bin\/node \/opt\/deckide\/releases\/combined\/node_modules\/deckide\/ops\/startup-check\.mjs$/m);
+  assert.match(rendered.execStart, /^\/opt\/old-runtime\/bin\/node \/opt\/deckide\/releases\/combined\/node_modules\/deckide\/bin\/deckide\.js start --fg$/);
+  assert.doesNotMatch(rendered.dropin, /^ExecStartPre=$/m, 'existing base ExecStartPre directives are not reset');
+  assert.deepEqual(rendered.dropin.match(/^Environment=.*$/gm), [
+    'Environment=DECKIDE_TMUX_RUNTIME_DIR=/var/lib/deckide-tmux/terminal-tmux',
+    'Environment=DECKIDE_TMUX_BROKER_SOCKET=/run/deckide-tmux-broker/broker.sock',
+    'Environment=DECKIDE_TMUX_BROKER_REQUIRED=1',
+  ]);
+  assert.doesNotMatch(rendered.dropin, /^UnsetEnvironment=/m);
+  assert.doesNotMatch(rendered.dropin, /(?:CORS_ORIGIN|NODE_ENV)=/);
+
+  const direct = renderedUnits(packageRoot, 'deckide.service', {
+    entry: 'bin/deckide.js', nodePath: null, publicArgs: ['start', '--fg'], direct: true,
+  }, originalNode);
+  assert.match(direct.dropin,
+    /^ExecStartPre=\/usr\/local\/bin\/node \/opt\/deckide\/releases\/combined\/node_modules\/deckide\/ops\/startup-check\.mjs$/m,
+  'direct CLI services use the separately reviewed Node binary for the checker');
+
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'deckide-plan-startup-'));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const candidate = path.join(temp, 'candidate.tgz');
+  fs.writeFileSync(candidate, 'fixture');
+  const report = planReport({
+    input: { candidate, previousPackage: '/opt/old/deckide', release: '/opt/new',
+      httpUnit: 'deckide.service', healthUrl: 'http://127.0.0.1/health' },
+    previous: { version: '3.5.48' }, previousPublic: { digest: 'a'.repeat(64) },
+    mainPid: 123, launch: { sourceEntry: '/opt/old/deckide/bin/deckide.js', entry: 'bin/deckide.js' },
+    releasePackage: packageRoot, paths: { broker: '/etc/systemd/system/deckide-tmux-broker.service',
+      dropin: '/etc/systemd/system/deckide.service.d/99-deckide-tmux.conf' },
+    units: { broker: 'broker fixture', dropin: rendered.dropin },
+    startupConfiguration: { production: true, corsConfigured: true, missing: [] },
+  });
+  const serialized = JSON.stringify(report);
+  assert.deepEqual(report.startupConfiguration, {
+    production: true, corsConfigured: true, missing: [],
+    scope: 'updater-invocation-process', serviceEnvironmentVerified: false,
+  });
+  assert.doesNotMatch(serialized, /127\.0\.0\.1:18798|secret-cors-origin/);
+});
+
+test('updater plan refuses missing production CORS before option or service preflight and hides env values', () => {
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const secretSentinel = 'SYNTHETIC-UPDATER-SECRET-SHOULD-NEVER-APPEAR';
+  const result = spawnSync(process.execPath, ['ops/terminal-update.mjs', 'plan'], {
+    cwd: repoRoot,
+    env: { PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C.UTF-8',
+      NODE_ENV: 'production', DECKIDE_SYNTHETIC_SECRET: secretSentinel },
+    encoding: 'utf8', timeout: 5000, maxBuffer: 64 * 1024,
+  });
+  assert.equal(result.error, undefined);
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /CORS_ORIGIN must be set in production/);
+  assert.doesNotMatch(result.stderr, /Missing --candidate/,
+    'configuration validation runs before option and filesystem preflight');
+  assert.doesNotMatch(result.stdout + result.stderr, /CORS_ORIGIN=|SYNTHETIC-UPDATER-SECRET-SHOULD-NEVER-APPEAR/);
+  assert.equal(result.stdout, '');
 });

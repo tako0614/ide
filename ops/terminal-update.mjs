@@ -6,6 +6,7 @@ import crypto from 'node:crypto';
 import http from 'node:http';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { assertStartupConfiguration } from './startup-check.mjs';
 import {
   CANDIDATE_VERSION, BROKER_UNIT, BROKER_SOCKET, TERMINAL_RUNTIME, DROPIN_NAME,
   assertInitialBrokerResourcesAbsent, classifyTerminalRuntimeEntries,
@@ -96,6 +97,7 @@ const APP_PUBLIC_FILES = [
   'ops/chatgpt-launcher/product/SOURCE-ADAPTATION.json',
 ];
 const APP_PUBLIC_FILES_SET = new Set(APP_PUBLIC_FILES);
+const STARTUP_CHECK_FILE = 'ops/startup-check.mjs';
 const APP_PUBLIC_DIRECTORIES = new Set([
   'ops/chatgpt-launcher', 'ops/chatgpt-launcher/source', 'ops/chatgpt-launcher/product',
 ]);
@@ -153,6 +155,13 @@ function publicEntries(packageDir) {
     }
     entries.push('ops/chatgpt-launcher');
   }
+  const startupCheckInfo = opsInfo && lstatOrNull(path.join(packageDir, STARTUP_CHECK_FILE));
+  if (startupCheckInfo) {
+    if (!startupCheckInfo.isFile() || startupCheckInfo.isSymbolicLink()) {
+      throw new Error('Public startup configuration checker is unsafe');
+    }
+    entries.push(STARTUP_CHECK_FILE);
+  }
   for (const name of entries) {
     const file = path.join(packageDir, name);
     const info = fs.lstatSync(file);
@@ -187,6 +196,7 @@ function assertPublicFileClass(relative) {
   if ((relative.startsWith('bin/') || relative.startsWith('dist/')) && SERVER_FILE.test(relative)) return;
   if (relative === NATIVE_VNC_BINARY || relative === NATIVE_VNC_MANIFEST) return;
   if (APP_PUBLIC_FILES_SET.has(relative)) return;
+  if (relative === STARTUP_CHECK_FILE) return;
   if (relative.startsWith('web/dist/') && /^(?:robots|humans|ads)\.txt$/i.test(path.basename(relative))) return;
   if (relative.startsWith('web/dist/') && WEB_EXTENSIONS.has(path.extname(relative).toLowerCase())) return;
   throw new Error('Public package inventory contains a non-runtime file class');
@@ -321,6 +331,7 @@ const CANDIDATE_STATIC_FILES = new Set([
   'package.json', 'npm-shrinkwrap.json', 'README.md', 'LICENSE',
   'docs/terminal-tmux.md', 'ops/README-terminal-update.md',
   'ops/terminal-update.mjs', 'ops/terminal-update-guards.mjs',
+  STARTUP_CHECK_FILE,
   'ops/systemd/deckide.service.d/99-deckide-tmux.conf.tmpl',
   'ops/systemd/deckide-tmux-broker.service.tmpl',
   ...APP_PUBLIC_FILES,
@@ -389,6 +400,9 @@ function inspectCandidateArchive(tarball, commandRunner = run) {
   if (APP_PUBLIC_FILES.some((relative) => !seen.has(`package/${relative}`))) {
     throw new Error('Combined candidate archive lacks the exact ChatGPT launcher inventory');
   }
+  if (!seen.has(`package/${STARTUP_CHECK_FILE}`)) {
+    throw new Error('Combined candidate archive lacks the startup configuration checker');
+  }
   assertArchiveRuntimeModes(seen, modes);
   assertNativeVncArchivePair(tarball, seen, modes);
   const manifest = JSON.parse(commandRunner('tar', ['-xOf', tarball, 'package/package.json']));
@@ -410,7 +424,7 @@ function renderTemplate(file, bindings) {
   return source;
 }
 
-function renderedUnits(releasePackage, httpUnit, launch, nodePath) {
+export function renderedUnits(releasePackage, httpUnit, launch, nodePath) {
   safeAbsolutePath(releasePackage, 'Release package');
   safeServiceUnit(httpUnit);
   const broker = renderTemplate('deckide-tmux-broker.service.tmpl', {
@@ -421,8 +435,10 @@ function renderedUnits(releasePackage, httpUnit, launch, nodePath) {
   const execStart = launch.direct
     ? `${candidateEntry}${args ? ` ${args}` : ''}`
     : `${safeAbsolutePath(launch.nodePath, 'Original Node binary')} ${candidateEntry}${args ? ` ${args}` : ''}`;
+  const checkerNode = safeAbsolutePath(launch.nodePath ?? nodePath, 'Startup checker Node binary');
+  const startupCheck = `${checkerNode} ${path.join(releasePackage, STARTUP_CHECK_FILE)}`;
   const dropin = renderTemplate(path.join('deckide.service.d', `${DROPIN_NAME}.tmpl`), {
-    HTTP_EXEC_START: execStart,
+    HTTP_EXEC_START: execStart, STARTUP_CHECK: startupCheck,
   });
   return { broker, dropin, execStart };
 }
@@ -616,6 +632,7 @@ function checkHealthUrlOnly(value) {
 }
 
 function preparePlan(options) {
+  const startupConfiguration = assertStartupConfiguration(process.env);
   const input = stageInput(options);
   assertInitialBrokerResourcesAbsent();
   const candidateInfo = fs.lstatSync(input.candidate);
@@ -644,11 +661,11 @@ function preparePlan(options) {
   if (brokerMeta.LoadState !== 'not-found' || brokerMeta.ActiveState === 'active') {
     throw new Error('Broker unit already exists; initial-install updater refuses to replace it');
   }
-  return { input, previous, previousPublic, httpMeta, mainPid, launch, releasePackage,
+  return { input, startupConfiguration, previous, previousPublic, httpMeta, mainPid, launch, releasePackage,
     units, paths, brokerMeta };
 }
 
-function planReport(plan) {
+export function planReport(plan) {
   return {
     candidateVersion: CANDIDATE_VERSION, candidate: plan.input.candidate,
     candidateSha256: hashFile(plan.input.candidate), previousPackage: plan.input.previousPackage,
@@ -658,6 +675,12 @@ function planReport(plan) {
     brokerUnit: plan.paths.broker, httpDropin: plan.paths.dropin,
     brokerUnitSha256: sha256(plan.units.broker), httpDropinSha256: sha256(plan.units.dropin),
     healthUrl: plan.input.healthUrl, mainPid: plan.mainPid,
+    startupConfiguration: {
+      production: plan.startupConfiguration.production,
+      corsConfigured: plan.startupConfiguration.corsConfigured,
+      missing: plan.startupConfiguration.missing,
+      scope: 'updater-invocation-process', serviceEnvironmentVerified: false,
+    },
     guard: 'Apply requires a no-new-terminal maintenance window, two operator acknowledgements, and a fresh empty PTY inventory immediately before restart. This is procedural quiescence, not an atomic server lock.',
   };
 }
@@ -806,6 +829,7 @@ export function checkStaged(state) {
 }
 
 async function preflightRestart(state, { rollback = false } = {}) {
+  if (!rollback) assertStartupConfiguration(process.env);
   const httpMeta = systemdShow(state.httpUnit, HTTP_PROPERTIES);
   const mainPid = assertHttpService(httpMeta);
   if (httpMeta.FragmentPath !== state.baseFragmentPath) throw new Error('HTTP base unit changed since stage');

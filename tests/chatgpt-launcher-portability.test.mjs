@@ -103,9 +103,8 @@ test('relocated launcher resolves its own helpers without creating app state', a
   assert.deepEqual(await readdir(state), []);
 });
 
-test('private release stays inaccessible while only verified session helpers cross to a disposable unprivileged reader', async (t) => {
-  const directory = await mkdtemp('/var/tmp/deckide-public-helper-');
-  t.after(() => rm(directory, { recursive: true, force: true }));
+test('UID 993 reads only sealed public helpers and cannot substitute their protected paths', async (t) => {
+  const directory = await fixture(t);
   // Only this disposable parent grants traversal; no existing directory changes.
   await chmod(directory, 0o711);
   const product = path.join(directory, 'private-release');
@@ -117,30 +116,68 @@ from unittest.mock import patch
 product=Path(sys.argv[1]); fixture=Path(sys.argv[2])
 spec=importlib.util.spec_from_file_location('private_release',product/'session-supervisor.py')
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
-runtime=fixture/'private-runtime';runtime.mkdir(mode=0o700)
-os.chown(runtime,65534,65534);m.RUNTIME=runtime
-saved=m.runtime_identity();records=[]
-bus=runtime/'.deckide-public-0123456789abcdef0123456789abcdef-session-bus.conf'
-desktop=runtime/'.deckide-public-0123456789abcdef0123456789abcdef-desktop-session.py'
-m.stage_public_helper('session-bus.conf',bus,records)
-m.stage_public_helper('desktop-session.py',desktop,records)
+public=fixture/'public-parent';public.mkdir(mode=0o711);m.PUBLIC_PARENT=public
+saved=m.validate_public_parent()
+helper,records,identity=m.stage_public_helpers(982,saved)
+bus=helper/'session-bus.conf';desktop=helper/'desktop-session.py'
+m.verify_staged_helpers(helper,records,identity,saved)
+assert (helper.stat().st_uid,helper.stat().st_gid,stat.S_IMODE(helper.stat().st_mode))==(0,982,0o750)
+assert set(os.listdir(helper))=={'session-bus.conf','desktop-session.py'}
 for record in records:
-    m.verify_staged_helper(record,saved)
     info=record['path'].lstat()
-    assert (info.st_uid,info.st_gid,stat.S_IMODE(info.st_mode))==(0,0,0o644)
+    assert (info.st_uid,info.st_gid,stat.S_IMODE(info.st_mode))==(0,982,0o640)
 assert m.desktop_command(bus,desktop)==['/usr/bin/dbus-run-session','--config-file='+str(bus),'--','/usr/bin/python3','-I',str(desktop)]
-reader="""import hashlib,sys\nfrom pathlib import Path\ntry: Path(sys.argv[1]).read_bytes()\nexcept PermissionError: pass\nelse: raise AssertionError('private package became accessible')\nassert hashlib.sha256(Path(sys.argv[2]).read_bytes()).hexdigest()==sys.argv[4]\nassert hashlib.sha256(Path(sys.argv[3]).read_bytes()).hexdigest()==sys.argv[5]"""
-subprocess.run(['/usr/bin/python3','-I','-B','-c',reader,str(product/'desktop-session.py'),str(bus),str(desktop),m.PUBLIC_HELPERS['session-bus.conf'][1],m.PUBLIC_HELPERS['desktop-session.py'][1]],check=True,user=65534,group=65534,extra_groups=[],env={'PATH':'/usr/bin:/bin','LANG':'C.UTF-8'},timeout=5)
-partial=runtime/'.deckide-public-fedcba9876543210fedcba9876543210-session-bus.conf'
-with patch.object(m.os,'fsync',side_effect=OSError('synthetic write failure')):
-    try: m.stage_public_helper('session-bus.conf',partial,records)
+reader="""import hashlib,os,sys,xml.etree.ElementTree as ET
+from pathlib import Path
+assert os.getuid()==993 and os.getgid()==982 and os.getgroups()==[]
+try: Path(sys.argv[1]).read_bytes()
+except PermissionError: pass
+else: raise AssertionError('private package became accessible')
+bus=Path(sys.argv[2]);desktop=Path(sys.argv[3]);helper=bus.parent
+assert hashlib.sha256(bus.read_bytes()).hexdigest()==sys.argv[4]
+assert hashlib.sha256(desktop.read_bytes()).hexdigest()==sys.argv[5]
+assert ET.fromstring(bus.read_bytes()).find('listen').text=='unix:dir=/run/chatgpt-app'
+compile(desktop.read_bytes(),str(desktop),'exec')
+for operation in (lambda: bus.write_bytes(b'changed'), lambda: bus.unlink(),
+                  lambda: bus.rename(helper/'replacement'),
+                  lambda: (helper/'foreign').write_bytes(b'new'),
+                  lambda: helper.rename(helper.with_name('replacement-directory')),
+                  lambda: (helper.parent/'substitute').mkdir()):
+    try: operation()
+    except PermissionError: pass
+    else: raise AssertionError('app could substitute a public helper path')
+"""
+subprocess.run(['/usr/bin/python3','-I','-B','-c',reader,str(product/'desktop-session.py'),str(bus),str(desktop),m.PUBLIC_HELPERS['session-bus.conf'][1],m.PUBLIC_HELPERS['desktop-session.py'][1]],check=True,user=993,group=982,extra_groups=[],env={'PATH':'/usr/bin:/bin','LANG':'C.UTF-8'},timeout=5)
+m.verify_staged_helpers(helper,records,identity,saved)
+before=set(os.listdir(public))
+with patch.object(m.os,'fsync',side_effect=[None,None,OSError('synthetic second helper write failure')]):
+    try: m.stage_public_helpers(982,saved)
     except OSError: pass
     else: raise AssertionError('partial failure accepted')
-assert not partial.exists() and len(records)==2
-replacement=runtime/'replacement';replacement.write_text('foreign fixture')
-os.replace(replacement,bus)
-errors=m.cleanup_public_helpers(records,saved)
-assert len(errors)==1 and bus.read_text()=='foreign fixture' and not desktop.exists()
+assert set(os.listdir(public))==before
+extra=helper/'foreign';extra.write_text('foreign fixture')
+assert m.cleanup_public_helpers(helper,records,identity,saved) and bus.exists() and desktop.exists() and extra.exists()
+extra.unlink()
+replacement=fixture/'replacement';replacement.write_text('foreign fixture')
+original=fixture/'saved-bus';bus.rename(original);os.replace(replacement,bus)
+assert m.cleanup_public_helpers(helper,records,identity,saved) and bus.read_text()=='foreign fixture' and desktop.exists()
+bus.unlink();os.replace(original,bus)
+m.verify_staged_helpers(helper,records,identity,saved)
+assert m.cleanup_public_helpers(helper,records,identity,saved)==[] and not helper.exists()
+public.chmod(0o700)
+try: m.validate_public_parent()
+except RuntimeError: pass
+else: raise AssertionError('app-inaccessible public parent accepted')
+public.chmod(0o733)
+try: m.validate_public_parent()
+except RuntimeError: pass
+else: raise AssertionError('app-writable public parent accepted')
+public.chmod(0o711)
+fixture.chmod(0o700)
+try: m.validate_public_parent()
+except RuntimeError: pass
+else: raise AssertionError('app-inaccessible ancestor accepted')
+fixture.chmod(0o711)
 with (product/'desktop-session.py').open('ab') as changed: changed.write(b'\n# modified fixture\n')
 try: m.verified_public_bytes('desktop-session.py')
 except RuntimeError: pass

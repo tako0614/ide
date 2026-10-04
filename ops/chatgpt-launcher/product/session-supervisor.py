@@ -23,6 +23,8 @@ WORKSPACE = Path(os.environ.get(STATE_ROOT_ENV, str(DEFAULT_STATE_ROOT)))
 CONTROL = WORKSPACE / ".app-session-control"
 DESCRIPTOR = WORKSPACE / "app-session.json"
 RUNTIME = Path("/run/chatgpt-app")
+PUBLIC_PARENT = Path("/run")
+PUBLIC_PREFIX = "deckide-chatgpt-public-"
 HOME = Path("/var/lib/chatgpt-app")
 APP_WORK = DEFAULT_STATE_ROOT / "app-work"
 ACCOUNT = "chatgpt-app"
@@ -35,6 +37,9 @@ PUBLIC_HELPERS = {
     "desktop-session.py": (969, "388664cd9740251d0b5808e7c7aab139d29b32f16454611ce7ef03eb0709e7af"),
     "session-bus.conf": (455, "4a39a9fd1ada39a52ff6a3e13222a84e5edfb5f8dcee41c8752ed40d3ab6a145"),
 }
+
+class PublicHelperCleanupRefused(RuntimeError):
+    pass
 
 def utc():
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -220,27 +225,54 @@ def verified_public_bytes(name):
     finally:
         os.close(fd)
 
-def runtime_identity():
-    value = RUNTIME.lstat()
+def path_identity(path):
+    value = path.lstat()
     return (value.st_dev, value.st_ino, value.st_uid, value.st_gid, stat.S_IMODE(value.st_mode))
 
-def stage_public_helper(name, destination, records):
-    if name not in PUBLIC_HELPERS or destination.parent != RUNTIME \
-            or not destination.name.startswith(".deckide-public-") or not destination.name.endswith("-" + name):
+def validate_public_parent():
+    """The app must never be able to replace a helper directory or any ancestor."""
+    if not PUBLIC_PARENT.is_absolute() or PUBLIC_PARENT.resolve(strict=True) != PUBLIC_PARENT:
+        raise RuntimeError("Public helper parent is not canonical.")
+    for path in reversed((PUBLIC_PARENT, *PUBLIC_PARENT.parents)):
+        value = path.lstat()
+        if not stat.S_ISDIR(value.st_mode) or (value.st_uid, value.st_gid) != (0, 0) \
+                or stat.S_IMODE(value.st_mode) & 0o022 or not (stat.S_IMODE(value.st_mode) & 0o001):
+            raise RuntimeError("Public helper parent is not safely traversable.")
+    return path_identity(PUBLIC_PARENT)
+
+def verify_public_directory(helper_dir, dir_saved, parent_saved):
+    if helper_dir.parent != PUBLIC_PARENT or not helper_dir.name.startswith(PUBLIC_PREFIX) \
+            or len(helper_dir.name) != len(PUBLIC_PREFIX) + 32 \
+            or not re.fullmatch(r"[0-9a-f]{32}", helper_dir.name[len(PUBLIC_PREFIX):]) \
+            or validate_public_parent() != parent_saved or path_identity(helper_dir) != dir_saved:
+        raise RuntimeError("Public helper directory changed.")
+    value = helper_dir.lstat()
+    if not stat.S_ISDIR(value.st_mode) or value.st_uid != 0 or stat.S_IMODE(value.st_mode) != 0o750:
+        raise RuntimeError("Public helper directory is untrusted.")
+
+def stage_public_helper(name, destination, records, app_gid):
+    if name not in PUBLIC_HELPERS or destination.name != name \
+            or destination.parent.parent != PUBLIC_PARENT \
+            or not destination.parent.name.startswith(PUBLIC_PREFIX):
         raise RuntimeError("Unexpected public helper staging target.")
+    validate_public_parent()
+    parent_info = destination.parent.lstat()
+    if not stat.S_ISDIR(parent_info.st_mode) or (parent_info.st_uid, parent_info.st_gid) != (0, app_gid) \
+            or stat.S_IMODE(parent_info.st_mode) != 0o750:
+        raise RuntimeError("Public helper directory is untrusted.")
     data = verified_public_bytes(name)
     fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     created = os.fstat(fd)
     try:
-        os.fchown(fd, 0, 0)
-        os.fchmod(fd, 0o644)
+        os.fchown(fd, 0, app_gid)
+        os.fchmod(fd, 0o640)
         with os.fdopen(fd, "wb", closefd=False) as stream:
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
         finished = os.fstat(fd)
-        if not stat.S_ISREG(finished.st_mode) or (finished.st_uid, finished.st_gid) != (0, 0) \
-                or stat.S_IMODE(finished.st_mode) != 0o644 or finished.st_nlink != 1 \
+        if not stat.S_ISREG(finished.st_mode) or (finished.st_uid, finished.st_gid) != (0, app_gid) \
+                or stat.S_IMODE(finished.st_mode) != 0o640 or finished.st_nlink != 1 \
                 or finished.st_size != len(data) or (finished.st_dev, finished.st_ino) != (created.st_dev, created.st_ino):
             raise RuntimeError("Public helper staging identity changed.")
         record = {"name": name, "path": destination, "dev": finished.st_dev,
@@ -262,9 +294,12 @@ def stage_public_helper(name, destination, records):
         os.close(fd)
     return record
 
-def verify_staged_helper(record, runtime_saved):
-    if runtime_identity() != runtime_saved or record["path"].parent != RUNTIME:
-        raise RuntimeError("Public helper runtime directory changed.")
+def verify_staged_helper(record, helper_dir, dir_saved, parent_saved):
+    verify_public_directory(helper_dir, dir_saved, parent_saved)
+    if record["path"] != helper_dir / record["name"] or record["name"] not in PUBLIC_HELPERS:
+        raise RuntimeError("Unexpected staged public helper path.")
+    if (record["size"], record["sha256"]) != PUBLIC_HELPERS[record["name"]]:
+        raise RuntimeError("Unexpected staged public helper identity.")
     path = record["path"]
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     try:
@@ -274,6 +309,7 @@ def verify_staged_helper(record, runtime_saved):
         actual = (opened.st_dev, opened.st_ino, opened.st_uid, opened.st_gid,
                   stat.S_IMODE(opened.st_mode), opened.st_size)
         if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1 or actual != expected \
+                or (opened.st_uid, opened.st_gid, stat.S_IMODE(opened.st_mode)) != (0, dir_saved[3], 0o640) \
                 or (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino):
             raise RuntimeError("Public helper identity changed.")
         data = os.read(fd, record["size"] + 1)
@@ -288,15 +324,73 @@ def verify_staged_helper(record, runtime_saved):
     finally:
         os.close(fd)
 
-def cleanup_public_helpers(records, runtime_saved):
-    errors = []
-    for record in reversed(records):
-        try:
-            verify_staged_helper(record, runtime_saved)
+def verify_staged_helpers(helper_dir, records, dir_saved, parent_saved):
+    verify_public_directory(helper_dir, dir_saved, parent_saved)
+    if {record["name"] for record in records} != set(PUBLIC_HELPERS) or len(records) != len(PUBLIC_HELPERS) \
+            or set(os.listdir(helper_dir)) != set(PUBLIC_HELPERS):
+        raise RuntimeError("Public helper directory has unexpected contents.")
+    for record in records:
+        verify_staged_helper(record, helper_dir, dir_saved, parent_saved)
+
+def cleanup_public_helpers(helper_dir, records, dir_saved, parent_saved, complete=True):
+    if helper_dir is None:
+        return []
+    try:
+        verify_public_directory(helper_dir, dir_saved, parent_saved)
+        names = {record["name"] for record in records}
+        if len(names) != len(records) or not names.issubset(PUBLIC_HELPERS) \
+                or complete and names != set(PUBLIC_HELPERS) or set(os.listdir(helper_dir)) != names:
+            raise RuntimeError("Public helper directory has unexpected contents.")
+        for record in records:
+            verify_staged_helper(record, helper_dir, dir_saved, parent_saved)
+        for record in reversed(records):
             record["path"].unlink()
-        except (OSError, RuntimeError):
-            errors.append("public helper changed or unavailable: " + record["name"])
-    return errors
+        verify_public_directory(helper_dir, dir_saved, parent_saved)
+        if os.listdir(helper_dir):
+            raise RuntimeError("Public helper directory gained unexpected contents.")
+        helper_dir.rmdir()
+        return []
+    except (OSError, RuntimeError):
+        return ["public helper directory changed or unavailable"]
+
+def stage_public_helpers(app_gid, parent_saved):
+    if not isinstance(app_gid, int) or app_gid <= 0 or validate_public_parent() != parent_saved:
+        raise RuntimeError("Public helper parent changed before staging.")
+    helper_dir = PUBLIC_PARENT / (PUBLIC_PREFIX + secrets.token_hex(16))
+    os.mkdir(helper_dir, 0o700)
+    created = path_identity(helper_dir)
+    records = []
+    dir_saved = None
+    try:
+        fd = os.open(helper_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fchown(fd, 0, app_gid)
+            os.fchmod(fd, 0o750)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        dir_saved = path_identity(helper_dir)
+        verify_public_directory(helper_dir, dir_saved, parent_saved)
+        if dir_saved[2:] != (0, app_gid, 0o750):
+            raise RuntimeError("Public helper directory ownership changed.")
+        for name in ("session-bus.conf", "desktop-session.py"):
+            stage_public_helper(name, helper_dir / name, records, app_gid)
+        verify_staged_helpers(helper_dir, records, dir_saved, parent_saved)
+        return helper_dir, records, dir_saved
+    except Exception:
+        if dir_saved is not None:
+            errors = cleanup_public_helpers(helper_dir, records, dir_saved, parent_saved, complete=False)
+            if errors:
+                raise PublicHelperCleanupRefused("Partial public helper cleanup was refused.")
+        else:
+            try:
+                if validate_public_parent() != parent_saved or path_identity(helper_dir) != created \
+                        or os.listdir(helper_dir):
+                    raise RuntimeError("Partial public helper directory changed.")
+                helper_dir.rmdir()
+            except (OSError, RuntimeError):
+                raise PublicHelperCleanupRefused("Partial public helper directory cleanup was refused.")
+        raise
 
 def refresh_publication_supervisor(value):
     """Refresh observed metadata without rebinding the saved process identity."""
@@ -376,7 +470,7 @@ def serve(lifetime, owner=None, ready_callback=None, child_log=None):
     directory(CONTROL, 0, 0o700)
     for path in (RUNTIME, HOME, APP_WORK, HOME / ".cache/tmp"):
         directory(path, user.pw_uid, 0o700)
-    runtime_saved = runtime_identity()
+    public_parent_saved = validate_public_parent()
     lockfd = os.open(CONTROL / "supervisor.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:
         fcntl.flock(lockfd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -387,9 +481,8 @@ def serve(lifetime, owner=None, ready_callback=None, child_log=None):
         signal.signal(sig, mark_stop)
     stamp = str(time.time_ns()) + "-" + secrets.token_hex(4)
     authority = RUNTIME / ("Xauthority-" + stamp)
-    helper_nonce = secrets.token_hex(16)
-    bus_path = RUNTIME / (".deckide-public-" + helper_nonce + "-session-bus.conf")
-    desktop_path = RUNTIME / (".deckide-public-" + helper_nonce + "-desktop-session.py")
+    helper_dir = None
+    helper_dir_saved = None
     helper_records = []
     children, saved, known = [], {}, {}
     descriptor = {"schema": DECKIDE_SCHEMA if owner is not None else SCHEMA, "state": "starting",
@@ -410,10 +503,9 @@ def serve(lifetime, owner=None, ready_callback=None, child_log=None):
             raise RuntimeError("DeckIDE owner exited before session startup.")
         renew_descriptor(descriptor)
         write_descriptor(descriptor)
-        stage_public_helper("session-bus.conf", bus_path, helper_records)
-        stage_public_helper("desktop-session.py", desktop_path, helper_records)
-        for record in helper_records:
-            verify_staged_helper(record, runtime_saved)
+        helper_dir, helper_records, helper_dir_saved = stage_public_helpers(user.pw_gid, public_parent_saved)
+        bus_path = helper_dir / "session-bus.conf"
+        desktop_path = helper_dir / "desktop-session.py"
         abstract = Path("/proc/net/unix").read_text()
         display = next((":" + str(n) for n in range(2000, 3000)
             if not os.path.lexists("/tmp/.X" + str(n) + "-lock")
@@ -461,8 +553,7 @@ def serve(lifetime, owner=None, ready_callback=None, child_log=None):
         descriptor["authenticated_x11_probe_exit"] = 0
         descriptor["unauthenticated_x11_probe_exit"] = rejected.returncode
         descriptor["nonroot_abstract_x11_verified"] = stat.S_IMODE(Path("/tmp").stat().st_mode) == 0o700
-        for record in helper_records:
-            verify_staged_helper(record, runtime_saved)
+        verify_staged_helpers(helper_dir, helper_records, helper_dir_saved, public_parent_saved)
         desktop = subprocess.Popen(desktop_command(bus_path, desktop_path),
             env=env, cwd=APP_WORK, stdout=child_log, stderr=child_log,
             start_new_session=True, **as_user(user))
@@ -512,6 +603,8 @@ def serve(lifetime, owner=None, ready_callback=None, child_log=None):
     except Exception as error:
         descriptor["state"] = "failed"
         descriptor["failure"] = type(error).__name__
+        if isinstance(error, PublicHelperCleanupRefused):
+            descriptor.setdefault("cleanup_errors", []).append("public helper directory changed or unavailable")
         print("Session preparation failed: " + type(error).__name__, file=sys.stderr, flush=True)
     finally:
         roots = [p.pid for p in children if saved.get(p.pid) and same_process(saved[p.pid])]
@@ -539,7 +632,7 @@ def serve(lifetime, owner=None, ready_callback=None, child_log=None):
         except (OSError, RuntimeError) as error:
             descriptor.setdefault("cleanup_errors", []).append("authority: " + type(error).__name__)
             descriptor["state"] = "failed"
-        helper_errors = cleanup_public_helpers(helper_records, runtime_saved)
+        helper_errors = cleanup_public_helpers(helper_dir, helper_records, helper_dir_saved, public_parent_saved)
         if helper_errors:
             descriptor.setdefault("cleanup_errors", []).extend(helper_errors)
             descriptor["state"] = "failed"

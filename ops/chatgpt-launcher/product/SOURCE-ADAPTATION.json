@@ -17,7 +17,7 @@
       "path": "session-supervisor.py"
     },
     {
-      "change": "Before nonroot desktop launch, hash-check only the two fixed public helper files, stage root-owned 0644 generation-specific copies inside the private app runtime, use those runtime paths for DBus and Python, and remove only inode/owner/hash-matching staged files on cleanup.",
+      "change": "Before nonroot desktop launch, hash-check only the two fixed public package helpers; require canonical root-owned non-writable ancestors with other-execute traversal; stage helpers in a unique root-owned 0750 directory under protected /run as root:app-group 0640 files; use only those paths for DBus and Python; clean only an unchanged exact two-file directory.",
       "path": "session-supervisor.py"
     }
   ],
@@ -32,7 +32,7 @@
     {
       "changed": true,
       "path": "session-supervisor.py",
-      "product_sha256": "0ea0f6eabb0a9b7498ef58f74271c6d22a261283100c6cae26ca3f3590ec61e5",
+      "product_sha256": "de6a4e6fe52024faae4704aeb8f84a748fefab76b485b0810b6b7812ed34ed54",
       "source_sha256": "44b24ea74e652344210dff456bd72c12f7c41fed173b94c16ae062cb80e08241"
     },
     {
@@ -65,6 +65,6 @@
     "descriptor": "app-session.json",
     "optional_root_environment": "CHATGPT_LAUNCHER_STATE_ROOT",
     "override_scope": "descriptor, control lock and logs only",
-    "public_helper_staging": "desktop-session.py and session-bus.conf only, under /run/chatgpt-app per owned generation; staged files are runtime-only and excluded from the package"
+    "public_helper_staging": "Two fixed public helpers only in a nonce-named root:app-group 0750 directory under protected /run; root:app-group 0640 files; no descriptor, authority, control, runtime, log, or config state copied"
   }
 }
