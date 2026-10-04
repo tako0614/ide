@@ -141,7 +141,7 @@ function rollingAnchors(data: Descriptor): Identity[] {
 type Namespace = 'pid' | 'user' | 'mnt' | 'net';
 function verifyProcess(identity: Identity, probe: Probe, procRoot: string,
   baseline: Record<Namespace, string>, hostAnchor: boolean,
-  stableOnly = false, requireAlive = false): void {
+  auxiliary = false, requireAlive = false): void {
   const dir = `${procRoot}/${identity.pid}`;
   const names: Namespace[] = ['pid', 'user', 'mnt', 'net'];
   const namespace = Object.fromEntries(names.map((name) =>
@@ -156,7 +156,7 @@ function verifyProcess(identity: Identity, probe: Probe, procRoot: string,
     if (open < 1 || close < open || Number(stat.slice(0, open)) !== identity.pid) fail();
     const fields = stat.slice(close + 2).trim().split(/\s+/);
     if (Number(fields[19]) !== identity.starttime_ticks ||
-      !stableOnly && (Number(fields[1]) !== identity.ppid ||
+      !auxiliary && (Number(fields[1]) !== identity.ppid ||
         Number(fields[2]) !== identity.pgid || stat.slice(open + 2, close) !== identity.comm) ||
       requireAlive && ['Z', 'X', 'x'].includes(fields[0])) fail();
   };
@@ -236,15 +236,18 @@ function descriptorSnapshot(data: Descriptor, probe: Probe, procRoot: string):
       owner.owner_gid !== 0 || owner.owner_uid !== process.getuid() ||
       owner.owner_gid !== process.getgid() || data.supervisor.ppid !== owner.pid)
       fail();
-    verifyProcess(owner, probe, procRoot, baseline, true, true, true);
+    verifyProcess(owner, probe, procRoot, baseline, true, false, true);
   }
   // procfs views that map another namespace's owners to overflow IDs fail here.
   for (const identity of anchors)
-    verifyProcess(identity, probe, procRoot, baseline, true, rolling, rolling);
+    verifyProcess(identity, probe, procRoot, baseline, true, false, rolling);
   const anchored = new Set(anchors.map((entry) => entry.pid));
   for (const identity of data.processes) {
     if (anchored.has(identity.pid)) continue;
-    try { verifyProcess(identity, probe, procRoot, baseline, false); }
+    // Auxiliary snapshot metadata can precede a natural reparent or exec.
+    // Only PID/start/all UID/GID and consistent procfs views identify it; its
+    // stale parent/group/name neither authorizes nor revokes security anchors.
+    try { verifyProcess(identity, probe, procRoot, baseline, false, true); }
     catch (error) {
       // Auxiliary processes are transient. Absence is expected; a present but
       // changed PID or owner must never be accepted as the listed process.

@@ -102,6 +102,7 @@ async function rollingFixture(t) {
     process.getuid(), process.getgid());
   f.probe.replacements.set(owner.pid, owner);
   const supervisor = { ...f.data.supervisor, ppid: owner.pid };
+  f.probe.replacements.set(supervisor.pid, supervisor);
   const byPid = new Map(f.data.processes.map((p) => [p.pid, p]));
   const data = { ...f.data, schema: 'chatgpt-private-desktop/v2',
     lifecycle_mode: 'deckide-owned', session_id: 'a'.repeat(32), owner_process: owner,
@@ -198,6 +199,85 @@ test('v2 rejects stale, future, expired and contradictory heartbeat publications
     }[variant];
     await f.publish(2, changes);
     assert.throws(() => lease.check(), /unverified/, variant);
+  }
+});
+
+test('v2 auxiliary reparenting and exec retain stable identity without revoking anchors', async (t) => {
+  const f = await rollingFixture(t);
+  const lease = f.load();
+  const saved = f.data.processes.at(-1);
+  const current = { ...saved, ppid: 1, pgid: saved.pid, comm: 'helper', state: 'R' };
+  f.probe.replacements.set(saved.pid, current);
+  for (const anchor of [f.owner, f.data.supervisor, ...Object.values(f.data.anchors)])
+    f.probe.replacements.set(anchor.pid, { ...anchor, state: 'R' });
+  assert.equal(lease.check().sessionId, f.data.session_id,
+    'an unchanged publication may contain old auxiliary parent/name metadata');
+  f.advance(2_000);
+  await f.publish(2, { processes: f.data.processes.map(p => p.pid === saved.pid ? current : p) });
+  assert.equal(lease.check().sessionId, f.data.session_id);
+  f.probe.missing.add(saved.pid);
+  assert.equal(lease.check().sessionId, f.data.session_id, 'exited auxiliary is not an anchor');
+});
+
+test('v2 reparented auxiliaries still reject PID reuse, foreign credentials and namespace races', async (t) => {
+  for (const variant of ['pid-reuse', 'foreign-uid', 'foreign-gid', 'namespace-race',
+    'real-uid', 'effective-uid', 'saved-uid', 'fs-uid',
+    'real-gid', 'effective-gid', 'saved-gid', 'fs-gid', 'access-denied', 'malformed-stat']) {
+    const f = await rollingFixture(t);
+    const lease = f.load();
+    const saved = f.data.processes.at(-1);
+    const current = { ...saved, ppid: 1, comm: 'helper' };
+    if (variant === 'pid-reuse') current.starttime_ticks++;
+    if (variant === 'foreign-uid') current.owner_uid = 65534;
+    if (variant === 'foreign-gid') current.owner_gid = 65534;
+    f.probe.replacements.set(saved.pid, current);
+    const readFile = f.probe.readFile.bind(f.probe);
+    const credential = /^(real|effective|saved|fs)-(uid|gid)$/.exec(variant);
+    if (credential) f.probe.readFile = file => {
+      const value = readFile(file);
+      if (file !== `/fake-proc/${saved.pid}/status`) return value;
+      const label = credential[2] === 'uid' ? 'Uid' : 'Gid';
+      const values = Array(4).fill(credential[2] === 'uid' ? 993 : 982);
+      values[['real', 'effective', 'saved', 'fs'].indexOf(credential[1])] = 65534;
+      return value.replace(new RegExp(`^${label}:.*$`, 'm'), `${label}:\t${values.join('\t')}`);
+    };
+    if (variant === 'access-denied') f.probe.readFile = file => {
+      if (file === `/fake-proc/${saved.pid}/stat`)
+        throw Object.assign(new Error('unproven proc view'), { code: 'EACCES' });
+      return readFile(file);
+    };
+    if (variant === 'malformed-stat') f.probe.readFile = file =>
+      file === `/fake-proc/${saved.pid}/stat` ? 'malformed' : readFile(file);
+    if (variant === 'namespace-race') {
+      const readlink = f.probe.readlink.bind(f.probe); let reads = 0;
+      f.probe.readlink = file => file === `/fake-proc/${saved.pid}/ns/net`
+        ? `net:[${++reads === 1 ? 42 : 84}]` : readlink(file);
+    }
+    assert.throws(() => lease.check(), /unverified/, variant);
+    f.probe.replacements.delete(saved.pid);
+    assert.throws(() => lease.check(), /unverified/, 'failed v2 lease stays revoked');
+  }
+});
+
+test('v2 live owner and security anchors retain exact parent, group, name and namespace checks', async (t) => {
+  for (const role of ['owner', 'supervisor', 'xvfb', 'desktop_runner', 'dbus', 'openbox', 'chatgpt']) {
+    for (const field of ['ppid', 'pgid', 'comm', 'namespace', 'zombie', 'dead']) {
+      const f = await rollingFixture(t);
+      const lease = f.load();
+      const saved = role === 'owner' ? f.owner : role === 'supervisor'
+        ? f.data.supervisor : f.data.anchors[role];
+      const current = { ...saved };
+      if (field === 'zombie') current.state = 'Z';
+      else if (field === 'dead') current.state = 'X';
+      else if (field === 'comm') current.comm = 'foreign';
+      else if (field !== 'namespace') current[field]++;
+      f.probe.replacements.set(saved.pid, current);
+      if (field === 'namespace') {
+        const readlink = f.probe.readlink.bind(f.probe);
+        f.probe.readlink = file => file === `/fake-proc/${saved.pid}/ns/net` ? 'net:[84]' : readlink(file);
+      }
+      assert.throws(() => lease.check(), /unverified/, `${role} ${field}`);
+    }
   }
 });
 

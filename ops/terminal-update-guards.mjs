@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-export const CANDIDATE_VERSION = '3.5.49-combined.20261004.3';
+export const CANDIDATE_VERSION = '3.5.49-combined.20261004.4';
 export const BROKER_UNIT = 'deckide-tmux-broker.service';
 export const BROKER_SOCKET = '/run/deckide-tmux-broker/broker.sock';
 export const TERMINAL_RUNTIME = '/var/lib/deckide-tmux/terminal-tmux';

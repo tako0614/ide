@@ -135,6 +135,16 @@ test('uncertain retained child identity prevents failure cleanup signal', async 
   assert.deepEqual(f.child.signals, []);
 });
 
+test('close never stops or signals a reused, foreign or reparented supervisor', async () => {
+  for (const field of ['start', 'uid', 'gid', 'ppid']) {
+    const f = fixture(); const started = f.owner.start(); f.ready(); await started;
+    f.setIdentity({ ...f.identity, [field]: f.identity[field] + 1 });
+    await assert.rejects(f.owner.close(), /ownership could not be verified/);
+    assert.equal(f.calls.length, 1, 'uncertain ownership cannot launch a stop command');
+    assert.deepEqual(f.child.signals, [], 'uncertain ownership cannot signal a process');
+  }
+});
+
 test('missing or unverifiable spawned PID consumes later errors without signalling an unknown child', async () => {
   for (const variant of ['missing', 'unverified']) {
     const f = fixture();
