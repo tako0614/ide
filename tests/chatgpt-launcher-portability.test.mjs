@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { chmod, copyFile, mkdir, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { chmod, copyFile, lstat, mkdir, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -19,9 +19,20 @@ const canonical = (value) => value && typeof value === 'object'
     : `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`
   : JSON.stringify(value);
 
-async function fixture(t) {
-  const temporary = path.join(sourceRoot, 'tmp');
-  await mkdir(temporary, { recursive: true, mode: 0o700 });
+async function fixture(t, rootOwnedAncestors = false) {
+  // The public-helper validator checks every ancestor. A checkout under /root
+  // and a world-writable /tmp cannot serve this UID isolation fixture.
+  const temporary = rootOwnedAncestors ? '/var/lib' : path.join(sourceRoot, 'tmp');
+  if (rootOwnedAncestors) {
+    const parent = await lstat(temporary);
+    assert.ok(parent.isDirectory());
+    assert.equal(parent.uid, 0);
+    assert.equal(parent.gid, 0);
+    assert.equal(parent.mode & 0o022, 0);
+    assert.ok(parent.mode & 0o001);
+  } else {
+    await mkdir(temporary, { recursive: true, mode: 0o700 });
+  }
   const directory = await mkdtemp(path.join(temporary, 'chatgpt-portability-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   return directory;
@@ -82,7 +93,7 @@ test('original and relocated app lifecycle regressions run only in disposable co
 });
 
 test('relocated launcher resolves its own helpers without creating app state', async (t) => {
-  const directory = await fixture(t);
+  const directory = await fixture(t, true);
   const product = path.join(directory, 'moved product');
   const state = path.join(directory, 'private-state');
   await copyProduct(product, 'product');
@@ -105,7 +116,7 @@ test('relocated launcher resolves its own helpers without creating app state', a
 });
 
 test('UID 993 reads only sealed public helpers and cannot substitute their protected paths', async (t) => {
-  const directory = await fixture(t);
+  const directory = await fixture(t, true);
   // Only this disposable parent grants traversal; no existing directory changes.
   await chmod(directory, 0o711);
   const product = path.join(directory, 'private-release');
@@ -137,7 +148,7 @@ else: raise AssertionError('private package became accessible')
 bus=Path(sys.argv[2]);desktop=Path(sys.argv[3]);helper=bus.parent
 assert hashlib.sha256(bus.read_bytes()).hexdigest()==sys.argv[4]
 assert hashlib.sha256(desktop.read_bytes()).hexdigest()==sys.argv[5]
-assert ET.fromstring(bus.read_bytes()).find('listen').text=='unix:dir=/run/chatgpt-app'
+assert ET.fromstring(bus.read_bytes()).find('listen').text=='unix:dir=/run/deckide-chatgpt-root'
 compile(desktop.read_bytes(),str(desktop),'exec')
 for operation in (lambda: bus.write_bytes(b'changed'), lambda: bus.unlink(),
                   lambda: bus.rename(helper/'replacement'),

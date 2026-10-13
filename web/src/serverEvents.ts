@@ -6,9 +6,11 @@ export type ServerEvent =
   | { type: 'workspace.created'; workspace: Workspace }
   | { type: 'workspace.deleted'; workspaceId: string }
   | { type: 'deck.created'; deck: Deck }
+  | { type: 'deck.updated'; deck: Deck }
   | { type: 'deck.deleted'; deckId: string }
   | { type: 'decks.reordered'; deckIds: string[] }
   | { type: 'terminal.created'; deckId: string; terminal: { id: string; title: string; createdAt: string } }
+  | { type: 'terminal.updated'; previousDeckId: string; deckId: string; terminal: { id: string; title: string; createdAt: string } }
   | { type: 'terminal.removed'; deckId: string; terminalId: string; reason: 'deleted' | 'exited' }
   | { type: 'ui.focus'; deckId: string; terminalId?: string }
   // Synthetic: the stream reconnected and events may have been missed.

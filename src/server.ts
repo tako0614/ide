@@ -259,9 +259,8 @@ export async function createServer(options: CreateServerOptions = {}) {
   // Mount routers
   app.route('/api/settings', createSettingsRouter());
   app.route('/api/workspaces', createWorkspaceRouter(db, workspaces, workspacePathIndex));
-  app.route('/api/decks', createDeckRouter(db, workspaces, decks, terminals));
-
-  const terminalRouter = createTerminalRouter(decks, terminals, { hostSessions, workspaces });
+  const terminalRouter = createTerminalRouter(decks, terminals, { db, hostSessions, workspaces });
+  app.route('/api/decks', createDeckRouter(db, workspaces, decks, terminals, { hasNativeTerminals: terminalRouter.hasNativeTerminals }));
   await terminalRouter.restoreSessions();
   app.route('/api/terminals', terminalRouter);
   // Live state for every open UI/CLI: terminals and decks created anywhere appear everywhere.

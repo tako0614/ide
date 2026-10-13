@@ -157,9 +157,9 @@ function realRun(args: string[], env?: Record<string, string>): string {
   }
 }
 
-function assertPrivateDirectory(directory: string): void {
+function assertPrivateDirectory(directory: string, create = true): void {
   if (!path.isAbsolute(directory)) throw new Error('Terminal runtime directory must be absolute');
-  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  if (create) fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   const info = fs.lstatSync(directory);
   if (!info.isDirectory() || info.isSymbolicLink() || (info.mode & 0o077) ||
       (process.getuid && info.uid !== process.getuid())) {
@@ -216,6 +216,7 @@ export class TmuxTerminalAdapter {
   private ptySpawn: NonNullable<TmuxAdapterDependencies['ptySpawn']>;
   private assertSocket: NonNullable<TmuxAdapterDependencies['assertSocket']>;
   private socketExists: NonNullable<TmuxAdapterDependencies['socketExists']>;
+  private runtimeIdentity: { dev: number; ino: number };
 
   constructor(options: { runtimeDir: string; dependencies?: TmuxAdapterDependencies }) {
     this.runtimeDir = options.runtimeDir;
@@ -224,6 +225,7 @@ export class TmuxTerminalAdapter {
     this.assertSocket = options.dependencies?.assertSocket ?? ((socketPath) => assertOwnedFile(socketPath, 'socket'));
     this.socketExists = options.dependencies?.socketExists ?? pathExists;
     assertPrivateDirectory(this.runtimeDir);
+    this.runtimeIdentity = fs.lstatSync(this.runtimeDir);
   }
 
   private socketPath(id: string): string {
@@ -278,8 +280,13 @@ export class TmuxTerminalAdapter {
     const temp = `${file}.${crypto.randomUUID()}.tmp`;
     const persisted = { ...meta, command: null };
     validateMeta(persisted, this.runtimeDir);
-    fs.writeFileSync(temp, JSON.stringify(persisted) + '\n', { mode: 0o600, flag: 'wx' });
-    try { fs.renameSync(temp, file); } catch (error) { fs.unlinkSync(temp); throw error; }
+    try {
+      fs.writeFileSync(temp, JSON.stringify(persisted) + '\n', { mode: 0o600, flag: 'wx' });
+      fs.renameSync(temp, file);
+    } catch (error) {
+      try { fs.unlinkSync(temp); } catch { /* creation may have failed */ }
+      throw error;
+    }
   }
 
   private recoverPending(onUnavailable?: (id: string, error: unknown) => void): void {
@@ -334,6 +341,42 @@ export class TmuxTerminalAdapter {
     const meta = validateMeta(JSON.parse(fs.readFileSync(file, 'utf8')), this.runtimeDir);
     if (meta.id !== id) throw new Error('Terminal registry ID mismatch');
     return meta;
+  }
+
+  /** Metadata updates never attach, resize, type into or close a native terminal. */
+  updateMetadata(meta: TmuxTerminalMeta, patch: { deckId?: string; title?: string }): TmuxTerminalMeta {
+    const recorded = this.load(meta.id);
+    this.verify(recorded);
+    for (const key of META_KEYS) {
+      if (key !== 'command' && recorded[key as keyof TmuxTerminalMeta] !== meta[key as keyof TmuxTerminalMeta]) {
+        throw new Error('Terminal metadata changed; refusing stale update');
+      }
+    }
+    const next = { ...recorded, ...patch, command: null };
+    this.save(next);
+    return next;
+  }
+
+  /** Include pending and unavailable records; a failed scan cannot prove a deck empty. */
+  hasDeckRecords(deckId: string): boolean {
+    assertPrivateDirectory(this.runtimeDir, false);
+    const current = fs.lstatSync(this.runtimeDir);
+    if (current.dev !== this.runtimeIdentity.dev || current.ino !== this.runtimeIdentity.ino) {
+      throw new Error('Terminal runtime directory changed; refusing deck deletion');
+    }
+    for (const name of fs.readdirSync(this.runtimeDir)) {
+      if (!name.endsWith('.json')) continue;
+      const pending = name.endsWith('.pending.json');
+      const id = name.slice(0, pending ? -'.pending.json'.length : -'.json'.length);
+      if (!ID_RE.test(id)) throw new Error('Unrecognized terminal registry; refusing deck deletion');
+      const file = path.join(this.runtimeDir, name);
+      assertOwnedFile(file, 'file');
+      const value = JSON.parse(fs.readFileSync(file, 'utf8'));
+      const meta = pending ? validatePending(value, this.runtimeDir) : validateMeta(value, this.runtimeDir);
+      if (meta.id !== id) throw new Error('Terminal registry ID mismatch');
+      if (meta.deckId === deckId) return true;
+    }
+    return false;
   }
 
   /** Enumerate owned sessions. Only a positively identified dead pane is reaped. */

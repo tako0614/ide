@@ -236,6 +236,13 @@ if (command === 'session') {
   process.exit(process.exitCode || 0);
 }
 
+if (command === 'deck') {
+  const { runDeckClient } = await import('./deckide-session.js');
+  try { await runDeckClient(args.slice(1)); }
+  catch { console.error('Deck operation failed. Check the backend, socket, deck ID and CLI installation.'); process.exitCode = 1; }
+  process.exit(process.exitCode || 0);
+}
+
 if (args.includes('--chatgpt-desktop') && (command !== 'start' || !args.includes('--fg'))) {
   console.error('--chatgpt-desktop is supported only with `deckide start --fg`.');
   process.exit(1);
@@ -261,6 +268,7 @@ Usage:
   deckide ui                     Decks and terminals in this terminal (also plain
                                  "deckide" while the server runs; Ctrl+] for menu)
   deckide session <subcommand>   Share persistent terminals with Web/MCP
+  deckide deck <subcommand>      List and manage decks
   deckide desktop mcp            Let an agent (Grok Bot, Claude…) use the shared desktop
   deckide logs                   Show server logs
   deckide computer <subcommand>  Use an inherited, temporary host session grant
