@@ -50,6 +50,20 @@ export function initializeDatabase(db: DatabaseSync): void {
     );
   `);
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS terminals (
+      id TEXT PRIMARY KEY,
+      deck_id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      command TEXT,
+      created_at TEXT NOT NULL,
+      cols INTEGER NOT NULL,
+      rows INTEGER NOT NULL,
+      tmux_socket TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_terminals_deck_id ON terminals(deck_id);
+  `);
+
   // Migration: add sort_order column to decks
   try {
     db.exec('ALTER TABLE decks ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0');

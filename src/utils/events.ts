@@ -15,6 +15,7 @@ export type DeckIdeEvent =
   | { type: 'deck.deleted'; deckId: string }
   | { type: 'decks.reordered'; deckIds: string[] }
   | { type: 'terminal.created'; deckId: string; terminal: { id: string; title: string; createdAt: string } }
+  | { type: 'terminal.updated'; deckId: string; previousDeckId: string; terminal: { id: string; title: string; createdAt: string } }
   | { type: 'terminal.removed'; deckId: string; terminalId: string; reason: 'deleted' | 'exited' }
   // Ask every open UI to bring a deck (and optionally a terminal) to the front.
   | { type: 'ui.focus'; deckId: string; terminalId?: string };

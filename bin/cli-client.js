@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
-export const CLIENT_COMMANDS = new Set(['ls', 'list', 'open', 'new', 'attach', 'a', 'send', 'kill', 'show', 'events', 'resize', 'gui']);
+export const CLIENT_COMMANDS = new Set(['ls', 'list', 'open', 'new', 'attach', 'a', 'send', 'kill', 'show', 'events', 'resize', 'gui', 'session']);
 
 export const CLIENT_HELP = `
 Terminals (talk to the running server; the web UI updates live):
@@ -25,6 +25,8 @@ Terminals (talk to the running server; the web UI updates live):
   deckide show <terminal>        Bring a terminal to the front in open browsers
   deckide kill <terminal>        Close a terminal
   deckide resize <t> <cols> <rows>  Set the size for every client
+  deckide session move <id> <deckId>  Move a terminal without interrupting its process
+  deckide session rename <id> <title>  Change a terminal's saved title
   deckide events                 Stream state changes as JSON lines
 
 Desktop (one shared GUI desktop for the agent browser and your GUI apps;
@@ -205,7 +207,9 @@ function resolveDeck(state, selector) {
     if (!found) fail(`No deck matches "${selector}".`);
     return found;
   }
-  const current = state.decks.find((d) => d.id === process.env.DECKIDE_DECK_ID);
+  // A move changes server metadata, not the already-running shell's environment.
+  const self = state.terminals.find((t) => t.id === process.env.DECKIDE_TERMINAL_ID);
+  const current = state.decks.find((d) => d.id === (self?.deckId ?? process.env.DECKIDE_DECK_ID));
   if (current) return current;
   const byCwd = deckForCwd(state.decks, process.cwd());
   if (byCwd) return byCwd;
@@ -368,6 +372,18 @@ async function commandResize(conn, args) {
   const { terminal } = await resolveTerminal(conn, args[0]);
   const result = await api(conn, 'POST', `/api/terminals/${terminal.id}/resize`, { cols: Number(args[1]), rows: Number(args[2]) });
   console.log(`${result.cols}x${result.rows}`);
+  return 0;
+}
+
+async function commandSession(conn, args) {
+  const [action, selector, value] = args;
+  if (!['move', 'rename'].includes(action) || args.length !== 3 || !selector || !value?.trim()) {
+    fail('Usage: deckide session move <id> <deckId> | deckide session rename <id> <title>');
+  }
+  const { terminal, state } = await resolveTerminal(conn, selector);
+  const body = action === 'move' ? { deckId: resolveDeck(state, value).id } : { title: value };
+  const result = await api(conn, 'PATCH', `/api/terminals/${terminal.id}`, body);
+  console.log(`${result.id}  ${result.title}  (deck: ${result.deckId})`);
   return 0;
 }
 
@@ -625,6 +641,7 @@ export async function runClientCommand(command, args, { dataDir, settings }) {
       case 'kill': return await commandKill(conn, args);
       case 'show': return await commandShow(conn, args);
       case 'resize': return await commandResize(conn, args);
+      case 'session': return await commandSession(conn, args);
       case 'events': return await commandEvents(conn);
       case 'gui': return await commandGui(conn, args);
       default: return 1;

@@ -190,9 +190,9 @@ export async function createServer() {
   }));
   app.route('/api/settings', createSettingsRouter());
   app.route('/api/workspaces', createWorkspaceRouter(db, workspaces, workspacePathIndex));
-  app.route('/api/decks', createDeckRouter(db, workspaces, decks, terminals));
-
-  const terminalRouter = createTerminalRouter(decks, terminals);
+  const terminalRouter = createTerminalRouter(decks, terminals, db);
+  terminalRouter.restoreSessions();
+  app.route('/api/decks', createDeckRouter(db, workspaces, decks, terminals, terminalRouter.deleteUnattachedDeckTerminals));
   app.route('/api/terminals', terminalRouter);
   app.route('/api/git', createGitRouter(workspaces));
   app.route('/api/browser', createBrowserRouter(browserService));
@@ -272,10 +272,10 @@ export async function createServer() {
     if (shutdownPromise) return shutdownPromise;
 
     shutdownPromise = (async () => {
-      // Kill all terminals
+      // Close our display clients; tmux-owned shells survive server restarts.
       terminals.forEach((session) => {
         closeTerminalClients(session, 'Server shutting down');
-        session.kill();
+        session.detach();
       });
       terminals.clear();
       removeCliToken();

@@ -57,8 +57,10 @@ export type TerminalSession = {
   write: (data: string | Uint8Array | Buffer) => void;
   /** Resize the PTY. Use resizeTerminal() so clients and the mirror follow. */
   resize: (cols: number, rows: number) => void;
-  /** Kill the PTY process. */
+  /** Explicit deletion: terminate the terminal process. */
   kill: () => void;
+  /** Server shutdown: detach a tmux client and preserve its shell and metadata. */
+  detach: () => void;
 };
 
 export type HttpError = Error & { status?: number };

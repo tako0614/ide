@@ -9,6 +9,7 @@ export type ServerEvent =
   | { type: 'deck.deleted'; deckId: string }
   | { type: 'decks.reordered'; deckIds: string[] }
   | { type: 'terminal.created'; deckId: string; terminal: { id: string; title: string; createdAt: string } }
+  | { type: 'terminal.updated'; deckId: string; previousDeckId: string; terminal: { id: string; title: string; createdAt: string } }
   | { type: 'terminal.removed'; deckId: string; terminalId: string; reason: 'deleted' | 'exited' }
   | { type: 'ui.focus'; deckId: string; terminalId?: string }
   // Synthetic: the stream reconnected and events may have been missed.

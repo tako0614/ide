@@ -1,7 +1,6 @@
 import crypto from 'node:crypto';
 import { Hono } from 'hono';
-import { spawn } from 'node-pty';
-import type { IPty } from 'node-pty';
+import type { DatabaseSync } from 'node:sqlite';
 import type { WebSocket } from 'ws';
 import type { Deck, TerminalSession } from '../types.js';
 import { DATA_DIR, PORT, TERMINAL_BUFFER_LIMIT, TERMINAL_MIRROR_SCROLLBACK } from '../config.js';
@@ -11,6 +10,7 @@ import { alignToUtf8Start, skipPartialEscapeSequence } from '../utils/utf8.js';
 import { createTerminalMirror } from '../utils/terminal-mirror.js';
 import { clampTerminalSize, closeTerminalClients, resizeTerminal } from '../utils/terminal-control.js';
 import { emitDeckIdeEvent } from '../utils/events.js';
+import { deleteTerminalTmuxSession, hasTerminalTmuxSession, openTerminalProcess, terminalTmuxSocket, terminalTmuxStatus } from '../utils/terminal-process.js';
 
 const DEFAULT_TERMINAL_TITLE = 'ターミナル';
 const MAX_SOCKET_BUFFERED_AMOUNT = 1024 * 1024;
@@ -100,9 +100,17 @@ const FLOW_MAX_PAUSE_MS = 10_000;     // evict a stuck consumer after this long
 
 export function createTerminalRouter(
   decks: Map<string, Deck>,
-  terminals: Map<string, TerminalSession>
+  terminals: Map<string, TerminalSession>,
+  db: DatabaseSync
 ) {
   const router = new Hono();
+  const tmuxSocket = terminalTmuxSocket(process.env.DECKIDE_TMUX_RUNTIME_DIR);
+  const unavailableDisplays = new Set<string>();
+  const insertTerminal = db.prepare(`INSERT INTO terminals
+    (id, deck_id, title, command, created_at, cols, rows, tmux_socket)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+  const updateTerminal = db.prepare('UPDATE terminals SET deck_id = ?, title = ? WHERE id = ?');
+  const deleteTerminal = db.prepare('DELETE FROM terminals WHERE id = ?');
 
   function toBuffer(data: Buffer | string): Buffer {
     return Buffer.isBuffer(data) ? data : Buffer.from(data, 'utf8');
@@ -239,6 +247,7 @@ export function createTerminalRouter(
     if (!session) return;
 
     console.log(`[TERMINAL] Terminal ${id} exited`);
+    deleteTerminal.run(id);
     terminals.delete(id);
     closeTerminalClients(session, 'Terminal exited');
     emitDeckIdeEvent({ type: 'terminal.removed', deckId: session.deckId, terminalId: id, reason: 'exited' });
@@ -249,9 +258,10 @@ export function createTerminalRouter(
     title?: string,
     command?: string,
     cols: number = DEFAULT_TERMINAL_COLS,
-    rows: number = DEFAULT_TERMINAL_ROWS
+    rows: number = DEFAULT_TERMINAL_ROWS,
+    restored?: { id: string; title: string; command: string | null; createdAt: string }
   ): TerminalSession {
-    const id = crypto.randomUUID();
+    const id = restored?.id ?? crypto.randomUUID();
 
     // Resolve shell and arguments
     let shell: string;
@@ -317,27 +327,33 @@ export function createTerminalRouter(
       }
     }
 
-    // Spawn PTY directly in this process
-    const isWindows = process.platform === 'win32';
-    const term: IPty = spawn(shell, shellArgs, {
-      cwd: deck.root,
-      cols,
-      rows,
-      env,
-      encoding: null,
-      ...(isWindows ? { useConpty: true } : {}),
-    } as any);
-
-    console.log(`[TERMINAL] Created terminal ${id}: shell=${shell}, cwd=${deck.root}, pid=${term.pid}`);
-
-    const resolvedTitle = getUniqueTerminalTitle(deck.id, title);
-    const createdAt = new Date().toISOString();
+    const resolvedTitle = restored?.title ?? getUniqueTerminalTitle(deck.id, title);
+    const createdAt = restored?.createdAt ?? new Date().toISOString();
+    const savedCommand = restored?.command ?? command ?? null;
+    if (!restored) {
+      insertTerminal.run(id, deck.id, resolvedTitle, savedCommand, createdAt, cols, rows, tmuxSocket);
+    }
+    let processHandle: ReturnType<typeof openTerminalProcess>;
+    try {
+      processHandle = openTerminalProcess({
+        id, shell, args: shellArgs, cwd: deck.root, cols, rows, env,
+        socket: tmuxSocket, restore: Boolean(restored),
+      });
+    } catch (error) {
+      // If tmux created the shell but its display failed, retain the record for
+      // a future attachment. Creation failures never destroy that live shell.
+      if (!restored && (!tmuxSocket || terminalTmuxStatus(tmuxSocket, id) === 'missing')) deleteTerminal.run(id);
+      throw error;
+    }
+    const term = processHandle.pty;
+    console.log(`[TERMINAL] ${restored ? 'Attached' : 'Created'} terminal ${id}: shell=${shell}, cwd=${deck.root}, pid=${term.pid}`);
+    let detached = false;
 
     const session: TerminalSession = {
       id,
       deckId: deck.id,
       title: resolvedTitle,
-      command: command || null,
+      command: savedCommand,
       createdAt,
       sockets: new Set(),
       clients: new Map(),
@@ -356,7 +372,17 @@ export function createTerminalRouter(
         try { term.write(payload); } catch { /* terminal may be dying */ }
       },
       resize: (cols, rows) => { try { term.resize(cols, rows); } catch { /* terminal may be dying */ } },
-      kill: () => { try { term.kill(); } catch { /* already dead */ } },
+      kill: () => {
+        processHandle.kill();
+        deleteTerminal.run(id);
+      },
+      detach: () => {
+        detached = true;
+        if (!tmuxSocket) deleteTerminal.run(id);
+        else db.prepare('UPDATE terminals SET cols = ?, rows = ? WHERE id = ?').run(session.cols, session.rows, id);
+        resumePty();
+        try { processHandle.detach(); } catch { /* already detached */ }
+      },
     };
     session.mirror = createTerminalMirror({
       cols,
@@ -443,10 +469,20 @@ export function createTerminalRouter(
 
     term.onExit(() => {
       resumePty();
+      if (detached || terminals.get(id) !== session) return;
+      // A display client may disconnect while the tmux-owned shell is alive.
+      // Keep its metadata for restoration instead of deleting or killing it.
+      if (tmuxSocket && terminalTmuxStatus(tmuxSocket, id) !== 'missing') {
+        unavailableDisplays.add(id);
+        closeTerminalClients(session, 'Terminal display disconnected');
+        restoreSessions();
+        return;
+      }
       handleTerminalExit(id);
     });
 
     terminals.set(id, session);
+    unavailableDisplays.delete(id);
     emitDeckIdeEvent({
       type: 'terminal.created',
       deckId: deck.id,
@@ -457,6 +493,8 @@ export function createTerminalRouter(
   }
 
   function requireTerminal(id: string): TerminalSession {
+    if (unavailableDisplays.has(id)) restoreSessions();
+    if (unavailableDisplays.has(id)) throw createHttpError('Terminal display unavailable', 503);
     const session = terminals.get(id);
     if (!session) throw createHttpError('Terminal not found', 404);
     return session;
@@ -464,6 +502,7 @@ export function createTerminalRouter(
 
   // ?deckId= limits to one deck; without it every terminal is listed (CLI).
   router.get('/', (c) => {
+    restoreSessions();
     const deckId = c.req.query('deckId');
     const sessions = Array.from(terminals.values())
       .filter((session) => !deckId || session.deckId === deckId)
@@ -475,6 +514,38 @@ export function createTerminalRouter(
   router.get('/:id', (c) => {
     try {
       return c.json(describeTerminal(requireTerminal(c.req.param('id'))));
+    } catch (error) {
+      return handleError(c, error);
+    }
+  });
+
+  // Metadata only: never send input, detach clients, resize, or recreate the PTY.
+  router.patch('/:id', async (c) => {
+    try {
+      const session = requireTerminal(c.req.param('id'));
+      const body = await readJson<{ deckId?: unknown; title?: unknown }>(c);
+      if (!body || typeof body !== 'object' || Array.isArray(body) ||
+          (body.deckId === undefined && body.title === undefined)) {
+        throw createHttpError('deckId or title is required', 400);
+      }
+      if (body.deckId !== undefined && (typeof body.deckId !== 'string' || !body.deckId.trim())) {
+        throw createHttpError('deckId must be a nonblank string', 400);
+      }
+      if (body.title !== undefined && (typeof body.title !== 'string' || !body.title.trim())) {
+        throw createHttpError('title must be a nonblank string', 400);
+      }
+      const deckId = body.deckId === undefined ? session.deckId : body.deckId as string;
+      const title = body.title === undefined ? session.title : (body.title as string).trim();
+      if (!decks.has(deckId)) throw createHttpError('Deck not found', 404);
+      const previousDeckId = session.deckId;
+      // Persist first. A missing row or SQLite failure must leave memory intact.
+      const result = updateTerminal.run(deckId, title, session.id);
+      if (result.changes !== 1) throw createHttpError('Terminal metadata not found', 409);
+      session.deckId = deckId;
+      session.title = title;
+      emitDeckIdeEvent({ type: 'terminal.updated', deckId, previousDeckId,
+        terminal: { id: session.id, title, createdAt: session.createdAt } });
+      return c.json(describeTerminal(session));
     } catch (error) {
       return handleError(c, error);
     }
@@ -550,9 +621,9 @@ export function createTerminalRouter(
       const session = terminals.get(terminalId);
       if (!session) throw createHttpError('Terminal not found', 404);
 
+      session.kill();
       terminals.delete(terminalId);
       closeTerminalClients(session, 'Terminal deleted');
-      session.kill();
       emitDeckIdeEvent({ type: 'terminal.removed', deckId: session.deckId, terminalId, reason: 'deleted' });
 
       return c.body(null, 204);
@@ -561,5 +632,42 @@ export function createTerminalRouter(
     }
   });
 
-  return router;
+  function restoreSessions() {
+    if (!tmuxSocket) return;
+    const rows = db.prepare('SELECT * FROM terminals WHERE tmux_socket = ? ORDER BY created_at').all(tmuxSocket);
+    for (const row of rows) {
+      const id = String(row.id);
+      if (terminals.has(id) && !unavailableDisplays.has(id)) continue;
+      const deck = decks.get(String(row.deck_id));
+      if (!deck) continue; // Discovery never destroys unrecognized sessions.
+      if (!hasTerminalTmuxSession(tmuxSocket, id)) continue;
+      try {
+        createTerminalSession(deck, undefined, undefined, Number(row.cols), Number(row.rows), {
+          id, title: String(row.title), command: row.command === null ? null : String(row.command),
+          createdAt: String(row.created_at),
+        });
+      } catch (error) {
+        // Keep a failed display in the Map so explicit deletion still owns the
+        // live tmux session; a later read retries attachment without recreating it.
+        console.error(`[TERMINAL] Unable to attach ${id}:`, error);
+      }
+    }
+  }
+
+  function deleteUnattachedDeckTerminals(deckId: string) {
+    // Initial display creation/restore may have failed after tmux launched the
+    // shell. Explicit deck deletion also owns those DB records, not just Map entries.
+    const rows = db.prepare('SELECT id, tmux_socket FROM terminals WHERE deck_id = ?').all(deckId);
+    for (const row of rows) {
+      const id = String(row.id);
+      if (terminals.has(id)) continue;
+      if (row.tmux_socket !== null) {
+        if (row.tmux_socket !== tmuxSocket) continue; // Never touch another instance's socket.
+        deleteTerminalTmuxSession(tmuxSocket!, id);
+      }
+      deleteTerminal.run(id);
+    }
+  }
+
+  return Object.assign(router, { restoreSessions, deleteUnattachedDeckTerminals });
 }
