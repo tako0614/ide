@@ -99,6 +99,31 @@ export function createDeckRouter(
     }
   });
 
+  const updateDeckNameStmt = db.prepare('UPDATE decks SET name = ? WHERE id = ?');
+
+  router.patch('/:id', async (c) => {
+    try {
+      const deck = decks.get(c.req.param('id'));
+      if (!deck) throw createHttpError('Deck not found', 404);
+      const body = await readJson<{ name?: unknown }>(c);
+      if (!body || typeof body !== 'object' || Array.isArray(body) ||
+          typeof body.name !== 'string' || !body.name.trim()) {
+        throw createHttpError('name must be a nonblank string', 400);
+      }
+      const name = body.name.trim();
+      // Persist first: a failed write must leave memory and subscribers intact.
+      const result = updateDeckNameStmt.run(name, deck.id);
+      if (result.changes !== 1) throw createHttpError('Deck metadata not found', 409);
+      deck.name = name;
+      emitDeckIdeEvent({ type: 'deck.updated', deck });
+      return c.json(deck);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  });
+
+  const hasDeckTerminalsStmt = db.prepare('SELECT 1 FROM terminals WHERE deck_id = ? LIMIT 1');
+
   const deleteDeckStmt = db.prepare('DELETE FROM decks WHERE id = ?');
 
   router.delete('/:id', (c) => {
@@ -108,19 +133,28 @@ export function createDeckRouter(
         throw createHttpError('Deck not found', 404);
       }
 
-      deleteUnattachedTerminals?.(deckId);
-
-      const deckTerminalIds = Array.from(terminals.values())
-        .filter((session) => session.deckId === deckId)
-        .map((session) => session.id);
-
-      deckTerminalIds.forEach((terminalId) => {
-        const session = terminals.get(terminalId);
-        if (!session) return;
-        session.kill();
-        terminals.delete(terminalId);
-        closeTerminalClients(session, 'Deck deleted');
-      });
+      // CLI deletion has a server-side precondition, even with auth disabled.
+      // Check persisted rows too: a terminal may have no attached display.
+      const onlyIfEmpty = c.req.query('ifEmpty') === '1';
+      if (onlyIfEmpty) {
+        if (Array.from(terminals.values()).some((session) => session.deckId === deckId) ||
+            hasDeckTerminalsStmt.get(deckId)) {
+          throw createHttpError('Deck still contains terminals; delete or move them first', 409);
+        }
+      } else {
+        // Preserve the existing explicit browser/MCP cascading delete behavior.
+        deleteUnattachedTerminals?.(deckId);
+        const deckTerminalIds = Array.from(terminals.values())
+          .filter((session) => session.deckId === deckId)
+          .map((session) => session.id);
+        deckTerminalIds.forEach((terminalId) => {
+          const session = terminals.get(terminalId);
+          if (!session) return;
+          session.kill();
+          terminals.delete(terminalId);
+          closeTerminalClients(session, 'Deck deleted');
+        });
+      }
 
       deleteDeckStmt.run(deckId);
       decks.delete(deckId);

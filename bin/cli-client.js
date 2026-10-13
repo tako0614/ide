@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
-export const CLIENT_COMMANDS = new Set(['ls', 'list', 'open', 'new', 'attach', 'a', 'send', 'kill', 'show', 'events', 'resize', 'gui', 'session']);
+export const CLIENT_COMMANDS = new Set(['ls', 'list', 'open', 'new', 'attach', 'a', 'send', 'kill', 'show', 'events', 'resize', 'gui', 'session', 'deck']);
 
 export const CLIENT_HELP = `
 Terminals (talk to the running server; the web UI updates live):
@@ -27,6 +27,9 @@ Terminals (talk to the running server; the web UI updates live):
   deckide resize <t> <cols> <rows>  Set the size for every client
   deckide session move <id> <deckId>  Move a terminal without interrupting its process
   deckide session rename <id> <title>  Change a terminal's saved title
+  deckide deck list [--json]     List decks with their full IDs
+  deckide deck delete <id>       Delete an empty deck (refuses remaining terminals)
+  deckide deck rename <id> <name>  Change a deck's saved name
   deckide events                 Stream state changes as JSON lines
 
 Desktop (one shared GUI desktop for the agent browser and your GUI apps;
@@ -387,6 +390,36 @@ async function commandSession(conn, args) {
   return 0;
 }
 
+async function commandDeck(conn, args) {
+  const [action, id, name] = args;
+  if (action === 'list') {
+    const { options, positional } = parseOptions(args.slice(1), { '--json': { name: 'json', flag: true } });
+    if (positional.length) fail(`Unexpected argument: ${positional[0]}`);
+    const decks = await api(conn, 'GET', '/api/decks');
+    if (options.json) console.log(JSON.stringify(decks, null, 2));
+    else if (!decks.length) console.log('No decks. Create one with "deckide open [dir]".');
+    else for (const deck of decks) console.log(`${deck.id}  ${bold(deck.name)}  ${dim(tildify(deck.root))}`);
+    return 0;
+  }
+  if (!id?.trim() || (action === 'delete' ? args.length !== 2 :
+    action === 'rename' ? args.length !== 3 || !name?.trim() : true)) {
+    fail('Usage: deckide deck list [--json] | deckide deck delete <id> | deckide deck rename <id> <name>');
+  }
+  // Require an exact ID for mutations: deck names need not be unique.
+  const decks = await api(conn, 'GET', '/api/decks');
+  if (!decks.some((deck) => deck.id === id)) fail(`No deck with id "${id}". See "deckide deck list".`);
+  const route = `/api/decks/${encodeURIComponent(id)}`;
+  if (action === 'delete') {
+    // Enforce emptiness in the server, including unattached persisted terminals.
+    await api(conn, 'DELETE', route + '?ifEmpty=1');
+    console.log(`Deleted deck ${id}`);
+  } else {
+    const result = await api(conn, 'PATCH', route, { name });
+    console.log(`${result.id}  ${result.name}`);
+  }
+  return 0;
+}
+
 async function commandEvents(conn) {
   const headers = conn.token ? { Authorization: `Bearer ${conn.token}` } : {};
   let response;
@@ -642,6 +675,7 @@ export async function runClientCommand(command, args, { dataDir, settings }) {
       case 'show': return await commandShow(conn, args);
       case 'resize': return await commandResize(conn, args);
       case 'session': return await commandSession(conn, args);
+      case 'deck': return await commandDeck(conn, args);
       case 'events': return await commandEvents(conn);
       case 'gui': return await commandGui(conn, args);
       default: return 1;
