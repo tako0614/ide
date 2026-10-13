@@ -677,7 +677,10 @@ export function createTerminalRouter(
     } catch (error) { return handleError(c, error); }
   });
 
-  return Object.assign(router, { restoreSessions, hasNativeTerminals: (deckId: string) => backend.hasDeckRecords(deckId), nativeAttachment: (id: string, readOnly = false) => {
+  return Object.assign(router, { restoreSessions, hasNativeTerminals: (deckId: string) => backend.hasDeckRecords(deckId),
+    inspectNativeTerminals: (deckId: string) => backend.inspectDeckRecords(deckId),
+    inspectTerminalRecord: (id: string, socketPath?: string | null) => backend.inspectTerminalRecord(id, socketPath),
+    pruneNativeTerminals: (deckId: string, expected?: import('../terminal/tmuxAdapter.js').TerminalRecordStatus[]) => backend.pruneDeadRecords(deckId, expected), nativeAttachment: (id: string, readOnly = false) => {
     const session = terminals.get(id);
     if (!session?.available) throw Error('Terminal unavailable');
     return backend.nativeAttachment(id, readOnly);

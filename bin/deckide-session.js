@@ -19,18 +19,58 @@ export function sessionRpc(method, args = {}, socketPath = sessionSocket()) {
   return new Promise((resolve, reject) => {
     const client = net.createConnection(socketPath); let pending = '', bytes = 0, done = false;
     const fail = () => { if (!done) { done = true; client.destroy(); reject(Error('session_unavailable')); } };
-    client.setEncoding('utf8'); client.setTimeout(12000, fail); client.once('error', fail);
+    client.setEncoding('utf8'); client.setTimeout(method === 'decks.delete' && args.pruneStale === true ? 60000 : 12000, fail); client.once('error', fail);
     client.once('connect', () => client.write(data));
     client.on('data', chunk => {
       bytes += Buffer.byteLength(chunk); if (bytes > 4 * 1024 * 1024) return fail();
       pending += chunk; if (!pending.includes('\n')) return;
       try { const result = JSON.parse(pending.slice(0, pending.indexOf('\n')));
-        if (!result.ok) return fail();
+        if (!result.ok) {
+          if (isDeckDeleteBlockedPayload(result)) {
+            done = true; client.destroy(); reject(deckDeleteBlockedError(result)); return;
+          }
+          return fail();
+        }
         done = true; client.destroy(); resolve(result.value);
       } catch { fail(); }
     });
     client.once('end', () => { if (!done) fail(); });
   });
+}
+
+const DECK_BLOCKER_SOURCES = new Set(['registry', 'pending', 'legacy-db', 'native-db', 'memory']);
+const DECK_BLOCKER_STATES = new Set(['live', 'dead', 'unavailable']);
+function boundedText(value, maxLength) {
+  return typeof value === 'string' && value.length > 0 && value.length <= maxLength &&
+    !/[\u0000-\u001f\u007f-\u009f\u001b]/.test(value);
+}
+function isDeckDeleteBlockedPayload(result) {
+  return result?.error === 'Deck deletion blocked' && result.status === 409 && result.code === 'deck_delete_blocked' &&
+    Array.isArray(result.blockers) && result.blockers.length > 0 && result.blockers.length <= 128 &&
+    result.blockers.every((blocker) => blocker && typeof blocker === 'object' && !Array.isArray(blocker) &&
+      boundedText(blocker.terminalId, 128) && DECK_BLOCKER_SOURCES.has(blocker.source) &&
+      DECK_BLOCKER_STATES.has(blocker.state) && boundedText(blocker.reason, 256)) && boundedText(result.hint, 256);
+}
+function deckDeleteBlockedError(payload) {
+  const error = Error('deck_delete_blocked');
+  error.code = payload.code;
+  error.status = payload.status;
+  error.blockers = payload.blockers.map(({ terminalId, source, state, reason }) => ({ terminalId, source, state, reason }));
+  error.hint = payload.hint;
+  return error;
+}
+function displayText(value) {
+  // The service controls these strings. Keep printable text while hiding absolute paths.
+  return value.replace(/(?:\/(?:[^\s/:]+\/)*[^\s/:]*|[A-Za-z]:\\[^\s]+)/g, '[path]');
+}
+export function formatDeckOperationError(error) {
+  if (error?.code !== 'deck_delete_blocked' || error.status !== 409 || !Array.isArray(error.blockers))
+    return 'Deck operation failed. Check the backend, socket, deck ID and CLI installation.';
+  const lines = ['Deck operation failed (409)'];
+  for (const { terminalId, source, state, reason } of error.blockers)
+    lines.push(`  ${source}: ${terminalId} (${state}) — ${displayText(reason)}`);
+  lines.push(displayText(error.hint));
+  return lines.join('\n');
 }
 export function parseSessionArgs(argv) {
   const action = argv[0] || 'help'; const args = {}; const positionals = [];
@@ -59,20 +99,25 @@ export function parseDeckArgs(argv) {
   const action = argv[0] || 'help';
   const rest = argv.slice(1);
   let json = false;
+  let pruneStale = false;
   const positionals = [];
   for (const item of rest) {
     if (item === '--json') {
       if (json) throw Error('invalid_deck_arguments');
       json = true;
+    } else if (item === '--prune-stale') {
+      if (pruneStale) throw Error('invalid_deck_arguments');
+      pruneStale = true;
     } else if (item.startsWith('-')) throw Error('unknown_option');
     else positionals.push(item);
   }
   if (action === 'list' && positionals.length !== 0) throw Error('invalid_deck_arguments');
   if (action === 'rename' && (positionals.length !== 2 || !positionals[1].trim() || json)) throw Error('invalid_deck_arguments');
   if (action === 'delete' && (positionals.length !== 1 || json)) throw Error('invalid_deck_arguments');
+  if (action !== 'delete' && pruneStale) throw Error('invalid_deck_arguments');
   if (!['help', '--help', '-h', 'list', 'rename', 'delete'].includes(action)) throw Error('unknown_action');
   if (['help', '--help', '-h'].includes(action) && (positionals.length || json)) throw Error('invalid_deck_arguments');
-  return { action, json, positionals };
+  return { action, json, ...(pruneStale ? { pruneStale: true } : {}), positionals };
 }
 export async function attachNative(value, readOnly = false) {
   const { TmuxTerminalAdapter } = await import('../dist/terminal/tmuxAdapter.js');
@@ -259,12 +304,12 @@ async function resolveDeckId(selector) {
 }
 
 export async function runDeckClient(argv) {
-  const { action, json, positionals } = parseDeckArgs(argv);
+  const { action, json, pruneStale = false, positionals } = parseDeckArgs(argv);
   if (['help', '--help', '-h'].includes(action)) {
     console.log(`Usage:
   deckide deck list [--json]
   deckide deck rename ID NAME
-  deckide deck delete ID
+  deckide deck delete ID [--prune-stale]
 
 Deck mutations accept a deck ID or a unique ID prefix of at least four characters.`);
     return;
@@ -278,6 +323,6 @@ Deck mutations accept a deck ID or a unique ID prefix of at least four character
   const id = await resolveDeckId(positionals[0]);
   const value = action === 'rename'
     ? await sessionRpc('decks.rename', { id, name: positionals[1] })
-    : await sessionRpc('decks.delete', { id });
+    : await sessionRpc('decks.delete', { id, ...(pruneStale ? { pruneStale: true } : {}) });
   console.log(JSON.stringify(value, null, 2));
 }

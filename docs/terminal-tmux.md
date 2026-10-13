@@ -333,9 +333,40 @@ terminal sockets, detaches clients or kills shells.
 launcher pair. `scripts/verify-runtime-package.mjs` validates the actual archive
 against the `.10` runtime inventory; changed web asset fingerprints are expected.
 
-If a crash leaves an orphan projection row after registry removal, deletion
-continues to refuse rather than assuming a missing registry proves shell exit.
-Recovery requires operator verification of that row's recorded socket and native
-session, with the HTTP instance stopped and a copied DB backup, before removing
-only the confirmed obsolete projection row. Legacy rows require the same explicit
-review; automatic migration never deletes them.
+## Explicit stale cleanup on deck deletion
+
+Ordinary `deckide deck delete <id>` reports every blocker with its terminal ID,
+record source (`registry`, `pending`, `legacy-db`, `native-db`, or `memory`),
+state (`live`, `dead`, or `unavailable`), and a fixed classification reason.
+`DELETE /api/decks/:id` returns the same structured 409 diagnostics. Large lists
+are capped with an explicit remainder; titles, command text and raw exceptions
+are not part of these errors.
+
+`deckide deck delete <id> --prune-stale` (or the owner API's
+`DELETE /api/decks/:id?pruneStale=true`) explicitly removes obsolete records
+before deleting the deck. Any live or unavailable blocker refuses the entire
+operation before cleanup starts. A registry-backed terminal is dead only after
+both recorded PIDs are absent, its exact canonical socket has no kernel listener,
+and any remaining owner-only Unix socket returns ECONNREFUSED. A responsive
+tmux session is verified using `has-session -N`, native IDs and generation.
+Timeouts, PID reuse, pending creation, unsafe files, changed identities and
+unclassifiable entries fail closed. Linux's socket table is checked even when
+the socket pathname has already been unlinked.
+
+A registryless DB row can be pruned with reason `no-managed-native-session` only
+when its canonical registry, pending record, config, socket pathname and kernel
+listener are all absent. A remembered noncanonical socket remains unavailable.
+This establishes absence of a managed native session, rather than the death of
+an arbitrary process that may have been launched outside DeckIDE. Canonical
+orphan resources without an associated registry or DB row are left untouched.
+
+Cleanup rechecks registry bytes/inodes, runtime ownership and native state
+immediately before each unlink. It never sends input, detaches clients or issues
+a tmux kill command. SQLite row deletion and deck deletion share a writer
+transaction. Filesystem cleanup cannot roll back: a later failure can leave
+some proven-dead artifacts removed while retaining DB rows and the deck for a
+safe retry. Normal creation uses fresh UUIDs and rejects existing artifacts;
+external manipulation of runtime files during administration is unsupported.
+The CLI allows 60 seconds for explicit pruning; a client disconnect does not
+cancel a server operation, so check `deck list` before retrying an uncertain
+result. Neither mode changes running terminal processes.

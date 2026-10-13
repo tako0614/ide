@@ -54,7 +54,58 @@ export type TmuxAdapterDependencies = {
   /** Test seam; production verifies an owner-only Unix socket. */
   assertSocket?: (socketPath: string) => void;
   socketExists?: (socketPath: string) => boolean;
+  /** Test seam. Only ESRCH proves a recorded process is gone. */
+  isProcessAlive?: (pid: number) => boolean;
+  /** Test seam for Linux's current Unix socket table. */
+  hasUnixListener?: (socketPath: string) => boolean;
+  /** True only when a bounded connect confirms ECONNREFUSED. */
+  isSocketConnectionRefused?: (socketPath: string) => boolean;
 };
+
+export type TerminalRecordStatus = {
+  terminalId: string;
+  source: 'registry' | 'pending' | 'native-db' | 'legacy-db';
+  state: 'live' | 'dead' | 'unavailable';
+  reason: string;
+  entry?: string;
+};
+
+type RecordSnapshot = { path: string; bytes: Buffer; dev: number; ino: number };
+
+function processAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
+    return true; // EPERM and unknown failures do not prove death.
+  }
+}
+
+function unixListener(socketPath: string): boolean {
+  if (process.platform !== 'linux') throw new Error('Unix listener proof requires Linux');
+  // The final field is the path. A bound socket, including a foreign tmux
+  // server, is a blocker even when it does not answer our target query.
+  return fs.readFileSync('/proc/net/unix', 'utf8').split('\n').slice(1).some((line) => {
+    const columns = line.trim().split(/\s+/);
+    return columns.length >= 8 && columns.slice(7).join(' ') === socketPath;
+  });
+}
+
+function socketConnectionRefused(socketPath: string): boolean {
+  // Node's socket API is asynchronous. A short, isolated process gives this
+  // synchronous deletion guard a bounded, exact ECONNREFUSED result. It sends
+  // no application data and cannot create or kill a tmux session.
+  const probe = `const net = require('node:net');
+    const socket = net.createConnection({ path: process.argv[1] });
+    socket.once('connect', () => process.exit(2));
+    socket.once('error', (error) => process.exit(error.code === 'ECONNREFUSED' ? 0 : 3));
+    socket.setTimeout(1000, () => process.exit(4));`;
+  try {
+    execFileSync(process.execPath, ['-e', probe, socketPath], {
+      stdio: 'ignore', timeout: 1500, env: { PATH: process.env.PATH ?? '' },
+    });
+    return true;
+  } catch { return false; }
+}
 
 type Identity = {
   serverPid: number;
@@ -152,6 +203,10 @@ function realRun(args: string[], env?: Record<string, string>): string {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       throw new Error('tmux is unavailable; install a supported tmux binary before creating or restoring terminals');
     }
+    if ((error as NodeJS.ErrnoException).code === 'ETIMEDOUT' ||
+        (error as { killed?: boolean }).killed) {
+      throw Object.assign(new Error('tmux probe timed out'), { code: 'ETIMEDOUT' });
+    }
     // Do not echo tmux stderr: startup failures may include the user's command text.
     throw new Error('tmux command failed; inspect the terminal runtime and socket ownership');
   }
@@ -216,7 +271,11 @@ export class TmuxTerminalAdapter {
   private ptySpawn: NonNullable<TmuxAdapterDependencies['ptySpawn']>;
   private assertSocket: NonNullable<TmuxAdapterDependencies['assertSocket']>;
   private socketExists: NonNullable<TmuxAdapterDependencies['socketExists']>;
+  private isProcessAlive: NonNullable<TmuxAdapterDependencies['isProcessAlive']>;
+  private hasUnixListener: NonNullable<TmuxAdapterDependencies['hasUnixListener']>;
+  private isSocketConnectionRefused: NonNullable<TmuxAdapterDependencies['isSocketConnectionRefused']>;
   private runtimeIdentity: { dev: number; ino: number };
+  private recordFingerprints = new WeakMap<TerminalRecordStatus, string>();
 
   constructor(options: { runtimeDir: string; dependencies?: TmuxAdapterDependencies }) {
     this.runtimeDir = options.runtimeDir;
@@ -224,6 +283,9 @@ export class TmuxTerminalAdapter {
     this.ptySpawn = options.dependencies?.ptySpawn ?? ((file, args, ptyOptions) => spawnPty(file, args, ptyOptions as any));
     this.assertSocket = options.dependencies?.assertSocket ?? ((socketPath) => assertOwnedFile(socketPath, 'socket'));
     this.socketExists = options.dependencies?.socketExists ?? pathExists;
+    this.isProcessAlive = options.dependencies?.isProcessAlive ?? processAlive;
+    this.hasUnixListener = options.dependencies?.hasUnixListener ?? unixListener;
+    this.isSocketConnectionRefused = options.dependencies?.isSocketConnectionRefused ?? socketConnectionRefused;
     assertPrivateDirectory(this.runtimeDir);
     this.runtimeIdentity = fs.lstatSync(this.runtimeDir);
   }
@@ -237,6 +299,245 @@ export class TmuxTerminalAdapter {
   private registryPath(id: string): string { return path.join(this.runtimeDir, `${id}.json`); }
   private pendingPath(id: string): string { return path.join(this.runtimeDir, `${id}.pending.json`); }
   private configPath(id: string): string { return path.join(this.runtimeDir, `${id}.conf`); }
+
+  private assertRuntimeCurrent(): void {
+    assertPrivateDirectory(this.runtimeDir, false);
+    const current = fs.lstatSync(this.runtimeDir);
+    if (current.dev !== this.runtimeIdentity.dev || current.ino !== this.runtimeIdentity.ino) {
+      throw new Error('Terminal runtime directory changed; refusing deck deletion');
+    }
+  }
+
+  private snapshotOwnedFile(file: string): RecordSnapshot {
+    const fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+    try {
+      const info = fs.fstatSync(fd);
+      const atPath = fs.lstatSync(file);
+      if (!info.isFile() || info.isSymbolicLink() || (info.mode & 0o077) ||
+          (process.getuid && info.uid !== process.getuid()) ||
+          info.dev !== atPath.dev || info.ino !== atPath.ino) {
+        throw new Error('Unsafe terminal file');
+      }
+      return { path: file, bytes: fs.readFileSync(fd), dev: info.dev, ino: info.ino };
+    } finally { fs.closeSync(fd); }
+  }
+
+  private unchangedFile(snapshot: RecordSnapshot): boolean {
+    try {
+      const latest = this.snapshotOwnedFile(snapshot.path);
+      return latest.dev === snapshot.dev && latest.ino === snapshot.ino && latest.bytes.equals(snapshot.bytes);
+    } catch { return false; }
+  }
+
+  private fingerprint(snapshot: RecordSnapshot): string {
+    return `${snapshot.dev}:${snapshot.ino}:${crypto.createHash('sha256').update(snapshot.bytes).digest('hex')}`;
+  }
+
+  private recordStatus(id: string, source: TerminalRecordStatus['source'],
+    state: TerminalRecordStatus['state'], reason: string, entry?: string): TerminalRecordStatus {
+    return { terminalId: id, source, state, reason, ...(entry === undefined ? {} : { entry }) };
+  }
+
+  private inspectRegistry(meta: TmuxTerminalMeta): TerminalRecordStatus {
+    const entry = `${meta.id}.json`;
+    const unavailable = (reason: string) => this.recordStatus(meta.id, 'registry', 'unavailable', reason, entry);
+    const socket = meta.socketPath;
+    let socketPresent: boolean;
+    try {
+      socketPresent = this.socketExists(socket);
+      if (socketPresent) this.assertSocket(socket);
+    } catch { return unavailable('unsafe-or-unreadable-socket'); }
+    if (socketPresent) {
+      try {
+        // -N forbids tmux from starting a server. The exact target prevents a
+        // responsive, unrelated server from being mistaken for our terminal.
+        this.run(this.tmuxArgs(socket, 'has-session', '-t', `=${meta.sessionName}`));
+        try {
+          const actual = this.verify(meta);
+          return actual.dead ? unavailable('native-server-still-live') :
+            this.recordStatus(meta.id, 'registry', 'live', 'verified-native-session', entry);
+        } catch { return unavailable('native-identity-changed'); }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ETIMEDOUT' || /timed?\s*out/i.test(String(error))) {
+          return unavailable('native-probe-timeout');
+        }
+      }
+    }
+    // A failed tmux probe alone cannot establish death. Both recorded PIDs
+    // must be gone; PID reuse, EPERM, and all other uncertainty block pruning.
+    try {
+      if (this.isProcessAlive(meta.serverPid) || this.isProcessAlive(meta.pid)) {
+        return unavailable('recorded-process-may-be-live');
+      }
+      // A live Unix listener can outlive unlink(2) of its pathname. Inspect
+      // the kernel table even when lstat says the filesystem entry is gone.
+      if (this.hasUnixListener(socket)) return unavailable('unix-socket-has-listener');
+      if (socketPresent && !this.isSocketConnectionRefused(socket)) return unavailable('socket-connectivity-unverified');
+    } catch { return unavailable('native-death-unverified'); }
+    return this.recordStatus(meta.id, 'registry', 'dead', 'recorded-processes-gone', entry);
+  }
+
+  private scanDeckRecords(deckId: string): { statuses: TerminalRecordStatus[]; snapshots: Map<string, RecordSnapshot> } {
+    this.assertRuntimeCurrent();
+    const statuses: TerminalRecordStatus[] = [];
+    const snapshots = new Map<string, RecordSnapshot>();
+    const entries = fs.readdirSync(this.runtimeDir).sort();
+    const knownResources = new Set<string>();
+    for (const entry of entries) {
+      if (!entry.endsWith('.json')) continue;
+      const pending = entry.endsWith('.pending.json');
+      const id = entry.slice(0, pending ? -'.pending.json'.length : -'.json'.length);
+      const source = pending ? 'pending' : 'registry';
+      if (!ID_RE.test(id)) {
+        statuses.push(this.recordStatus('unknown', source, 'unavailable', 'unrecognized-runtime-entry', '<unknown>'));
+        continue;
+      }
+      try {
+        const snapshot = this.snapshotOwnedFile(path.join(this.runtimeDir, entry));
+        const value = JSON.parse(snapshot.bytes.toString('utf8'));
+        const meta = pending ? validatePending(value, this.runtimeDir) : validateMeta(value, this.runtimeDir);
+        if (meta.id !== id) throw new Error('Terminal registry ID mismatch');
+        snapshots.set(entry, snapshot);
+        knownResources.add(`${id}.conf`);
+        knownResources.add(path.basename(this.socketPath(id)));
+        if (meta.deckId !== deckId) continue;
+        const status = pending ? this.recordStatus(id, 'pending', 'unavailable', 'pending-creation', entry) :
+          this.inspectRegistry(meta as TmuxTerminalMeta);
+        this.recordFingerprints.set(status, this.fingerprint(snapshot));
+        statuses.push(status);
+      } catch {
+        // An unreadable or unclassifiable entry might belong to this deck.
+        statuses.push(this.recordStatus(id, source, 'unavailable', 'unclassifiable-runtime-entry', entry));
+      }
+    }
+    for (const entry of entries) {
+      if (entry.endsWith('.json')) continue;
+      if (knownResources.has(entry)) {
+        try {
+          assertOwnedFile(path.join(this.runtimeDir, entry), entry.endsWith('.sock') ? 'socket' : 'file');
+        } catch {
+          statuses.push(this.recordStatus('', 'registry', 'unavailable', 'unsafe-runtime-resource', entry));
+        }
+        continue;
+      }
+      // A canonical orphan config/socket has no deck owner without a matching
+      // registry or DB row. The DB-only inspection checks its own canonical
+      // path; assigning these orphans globally would block unrelated decks.
+      if ((entry.endsWith('.conf') && ID_RE.test(entry.slice(0, -'.conf'.length))) ||
+          /^s-[0-9a-f]{16}\.sock$/.test(entry)) continue;
+      statuses.push(this.recordStatus('unknown', 'registry', 'unavailable', 'unclassified-runtime-resource', '<unknown>'));
+    }
+    this.assertRuntimeCurrent();
+    return { statuses, snapshots };
+  }
+
+  /** Raw native records plus global blockers for entries whose deck cannot be established. */
+  inspectDeckRecords(deckId: string): TerminalRecordStatus[] {
+    return this.scanDeckRecords(deckId).statuses;
+  }
+
+  /** Inspect a DB-only terminal ID against its one canonical runtime socket. */
+  inspectTerminalRecord(id: string, socketPath?: string | null): TerminalRecordStatus {
+    this.assertRuntimeCurrent();
+    const status = (state: TerminalRecordStatus['state'], reason: string) =>
+      this.recordStatus(id, 'native-db', state, reason);
+    if (!ID_RE.test(id)) return status('unavailable', 'invalid-terminal-id');
+    const canonical = this.socketPath(id);
+    if (socketPath && socketPath !== canonical) return status('unavailable', 'noncanonical-remembered-socket');
+    try {
+      if (pathExists(this.registryPath(id))) {
+        const snapshot = this.snapshotOwnedFile(this.registryPath(id));
+        const meta = validateMeta(JSON.parse(snapshot.bytes.toString('utf8')), this.runtimeDir);
+        if (meta.id !== id) return status('unavailable', 'registry-identity-mismatch');
+        return this.inspectRegistry(meta);
+      }
+      if (pathExists(this.pendingPath(id))) return status('unavailable', 'pending-creation');
+      for (const entry of fs.readdirSync(this.runtimeDir)) {
+        if (!entry.endsWith('.json')) continue;
+        const other = entry.replace(/\.pending\.json$|\.json$/, '');
+        if (!ID_RE.test(other)) return status('unavailable', 'unclassifiable-runtime-entry');
+        if (other !== id && this.socketPath(other) === canonical) {
+          return status('unavailable', 'canonical-socket-shared');
+        }
+      }
+      if (pathExists(this.configPath(id))) return status('unavailable', 'orphan-native-config');
+      if (this.socketExists(canonical)) return status('unavailable', 'orphan-native-socket');
+      if (this.hasUnixListener(canonical)) return status('unavailable', 'unix-socket-has-listener');
+      this.assertRuntimeCurrent();
+      return status('dead', 'no-managed-native-session');
+    } catch { return status('unavailable', 'native-runtime-unreadable'); }
+  }
+
+  /** Recheck every native record immediately before removing only proven dead artifacts. */
+  pruneDeadRecords(deckId: string, expected?: TerminalRecordStatus[]): { terminalIds: string[] } {
+    const scan = this.scanDeckRecords(deckId);
+    if (scan.statuses.some((item) => item.state !== 'dead')) {
+      throw new Error('Terminal record is live or unavailable; refusing stale prune');
+    }
+    const dead = scan.statuses.filter((item) => item.source === 'registry');
+    if (expected) {
+      const prior = expected.filter((item) => item.source === 'registry' || item.source === 'pending');
+      const key = (item: TerminalRecordStatus) => `${item.terminalId}\0${item.source}\0${item.state}\0${item.entry ?? ''}`;
+      if (prior.map(key).sort().join('\n') !== dead.map(key).sort().join('\n')) {
+        throw new Error('Terminal record set changed; refusing stale prune');
+      }
+      for (const previous of prior) {
+        const current = dead.find((item) => item.terminalId === previous.terminalId && item.source === previous.source);
+        if (!current || this.recordFingerprints.get(previous) !== this.recordFingerprints.get(current)) {
+          throw new Error('Terminal registry changed; refusing stale prune');
+        }
+      }
+    }
+    const removed: string[] = [];
+    for (const item of dead) {
+      this.assertRuntimeCurrent();
+      const id = item.terminalId;
+      const original = scan.snapshots.get(`${id}.json`);
+      if (!original || !this.unchangedFile(original)) throw new Error('Terminal registry changed; refusing stale prune');
+      const meta = validateMeta(JSON.parse(original.bytes.toString('utf8')), this.runtimeDir);
+      if (meta.deckId !== deckId || this.inspectRegistry(meta).state !== 'dead') {
+        throw new Error('Terminal native state changed; refusing stale prune');
+      }
+      const config = this.configPath(id);
+      const socket = meta.socketPath;
+      const assertStillDead = () => {
+        this.assertRuntimeCurrent();
+        if (!this.unchangedFile(original)) throw new Error('Terminal registry changed; refusing stale prune');
+        if (this.inspectRegistry(meta).state !== 'dead') {
+          throw new Error('Terminal native state changed; refusing stale prune');
+        }
+        this.assertRuntimeCurrent();
+        if (!this.unchangedFile(original)) throw new Error('Terminal registry changed; refusing stale prune');
+      };
+      const configSnapshot = pathExists(config) ? this.snapshotOwnedFile(config) : null;
+      let socketIdentity: { dev: number; ino: number } | null = null;
+      if (this.socketExists(socket)) {
+        this.assertSocket(socket);
+        const info = fs.lstatSync(socket);
+        socketIdentity = { dev: info.dev, ino: info.ino };
+      }
+      if (configSnapshot) {
+        assertStillDead();
+        if (!this.unchangedFile(configSnapshot)) throw new Error('Terminal config changed; refusing stale prune');
+        fs.unlinkSync(config);
+      }
+      if (socketIdentity) {
+        assertStillDead();
+        this.assertSocket(socket);
+        const info = fs.lstatSync(socket);
+        if (info.dev !== socketIdentity.dev || info.ino !== socketIdentity.ino ||
+            this.isProcessAlive(meta.serverPid) || this.isProcessAlive(meta.pid) ||
+            this.hasUnixListener(socket) || !this.isSocketConnectionRefused(socket)) {
+          throw new Error('Terminal socket changed or became live; refusing stale prune');
+        }
+        fs.unlinkSync(socket);
+      }
+      assertStillDead();
+      fs.unlinkSync(original.path);
+      removed.push(id);
+    }
+    return { terminalIds: removed };
+  }
   private tmuxArgs(socketPath: string, ...command: string[]): string[] {
     return ['-S', socketPath, '-N', ...command];
   }

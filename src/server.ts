@@ -260,7 +260,9 @@ export async function createServer(options: CreateServerOptions = {}) {
   app.route('/api/settings', createSettingsRouter());
   app.route('/api/workspaces', createWorkspaceRouter(db, workspaces, workspacePathIndex));
   const terminalRouter = createTerminalRouter(decks, terminals, { db, hostSessions, workspaces });
-  app.route('/api/decks', createDeckRouter(db, workspaces, decks, terminals, { hasNativeTerminals: terminalRouter.hasNativeTerminals }));
+  app.route('/api/decks', createDeckRouter(db, workspaces, decks, terminals, { hasNativeTerminals: terminalRouter.hasNativeTerminals, inspectNativeTerminals: terminalRouter.inspectNativeTerminals,
+    inspectTerminalRecord: terminalRouter.inspectTerminalRecord, pruneNativeTerminals: terminalRouter.pruneNativeTerminals,
+    revokeTerminal: (id) => hostSessions?.revokeTerminal(id) }));
   await terminalRouter.restoreSessions();
   app.route('/api/terminals', terminalRouter);
   // Live state for every open UI/CLI: terminals and decks created anywhere appear everywhere.
@@ -329,7 +331,16 @@ export async function createServer(options: CreateServerOptions = {}) {
     api: async (route: string, method = 'GET', body?: unknown) => {
       const response = await app.fetch(new Request('http://localhost:' + PORT + route, { method,
         headers: { Host: 'localhost:' + PORT, 'X-DeckIDE-Internal': internalBridgeHeader(), 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) }));
-      if (!response.ok) throw Error('local_api_failed');
+      if (!response.ok) {
+        if (response.status === 409 && method === 'DELETE' && route.startsWith('/api/decks/')) {
+          const failure = await response.json() as { code?: string; blockers?: unknown; hint?: string };
+          if (failure.code === 'deck_delete_blocked' && Array.isArray(failure.blockers)) {
+            throw Object.assign(Error('Deck deletion blocked'), { status: 409, code: failure.code,
+              blockers: failure.blockers, hint: failure.hint });
+          }
+        }
+        throw Error('local_api_failed');
+      }
       return response.status === 204 ? null : response.json();
     } });
   let localBridge: { close(): Promise<void> } | null = null;

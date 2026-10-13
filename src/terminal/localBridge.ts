@@ -1,6 +1,30 @@
 import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
+const deckBlockerSources = new Set(['registry', 'pending', 'legacy-db', 'native-db', 'memory']);
+const deckBlockerStates = new Set(['live', 'dead', 'unavailable']);
+function safeDeckDeleteBlocked(error: unknown) {
+    const value = error as { status?: unknown; code?: unknown; blockers?: unknown; hint?: unknown };
+    if (value?.status !== 409 || value.code !== 'deck_delete_blocked' || !Array.isArray(value.blockers) ||
+        value.blockers.length === 0 || value.blockers.length > 128 || typeof value.hint !== 'string' ||
+        !value.hint || value.hint.length > 256 || /[\u0000-\u001f\u007f-\u009f\u001b]/.test(value.hint)) return null;
+    const blockers = [];
+    for (const raw of value.blockers) {
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+        const blocker = raw as { terminalId?: unknown; source?: unknown; state?: unknown; reason?: unknown; entry?: unknown };
+        if (typeof blocker.terminalId !== 'string' || !blocker.terminalId || blocker.terminalId.length > 128 ||
+            /[\u0000-\u001f\u007f-\u009f\u001b]/.test(blocker.terminalId) ||
+            typeof blocker.source !== 'string' || !deckBlockerSources.has(blocker.source) ||
+            typeof blocker.state !== 'string' || !deckBlockerStates.has(blocker.state) ||
+            typeof blocker.reason !== 'string' || !blocker.reason || blocker.reason.length > 256 ||
+            /[\u0000-\u001f\u007f-\u009f\u001b]/.test(blocker.reason) ||
+            blocker.entry !== undefined && (typeof blocker.entry !== 'string' || blocker.entry.length > 256 ||
+                /[\u0000-\u001f\u007f-\u009f\u001b]/.test(blocker.entry))) return null;
+        blockers.push({ terminalId: blocker.terminalId, source: blocker.source, state: blocker.state,
+            reason: blocker.reason, ...(blocker.entry === undefined ? {} : { entry: blocker.entry }) });
+    }
+    return { ok: false, error: 'Deck deletion blocked', status: 409, code: 'deck_delete_blocked', blockers, hint: value.hint };
+}
 export async function startLocalSessionBridge(directory, handle) {
     if (process.platform === 'win32')
         throw Error('Local terminal attachment requires a POSIX host');
@@ -66,8 +90,9 @@ export async function startLocalSessionBridge(directory, handle) {
                     throw Error('response_too_large');
                 client.end(data);
             }
-            catch {
-                client.end(JSON.stringify({ ok: false, error: '操作できません。ID、保存先、接続状態を確認してください。' }) + '\n');
+            catch (error) {
+                const structured = safeDeckDeleteBlocked(error);
+                client.end(JSON.stringify(structured || { ok: false, error: '操作できません。ID、保存先、接続状態を確認してください。' }) + '\n');
             }
         });
     });
