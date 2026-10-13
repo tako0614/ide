@@ -73,9 +73,9 @@ test('deck CLI lists full IDs, persists rename, deletes empty decks and refuses 
   assert.equal((await fetch(`http://127.0.0.1:${port}/api/decks/${empty.id}`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'unauthorized' }),
   })).status, 401);
-  assert.equal((await fetch(`http://127.0.0.1:${port}/api/decks/${empty.id}?ifEmpty=1`, { method: 'DELETE' })).status, 401);
+  assert.equal((await fetch(`http://127.0.0.1:${port}/api/decks/${empty.id}`, { method: 'DELETE' })).status, 401);
   const { token } = JSON.parse(await readFile(path.join(dataDir, 'cli.json'), 'utf8'));
-  assert.equal((await fetch(`http://127.0.0.1:${port}/api/decks/${empty.id}?ifEmpty=1`, {
+  assert.equal((await fetch(`http://127.0.0.1:${port}/api/decks/${empty.id}`, {
     method: 'DELETE', headers: { Authorization: `Bearer ${token}`, Origin: 'https://foreign.example' },
   })).status, 403);
   assert.match(cli('deck', 'list'), new RegExp(empty.id));
