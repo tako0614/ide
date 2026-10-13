@@ -30,3 +30,8 @@ metadata. An empty deck is removed from both SQLite and memory and emits
 failure atomicity. `deck-commands.test.mjs` exercises the actual CLI and API with
 authentication enabled, verifies deletion refusal for unattached metadata, and
 checks that renamed decks survive a server restart.
+
+`deck-cli.test.mjs` additionally drives a live shell through deletion refusal,
+checks cross-site and unauthenticated mutation rejection, and verifies the
+authentication-disabled case with a missing CLI token. The server still refuses
+saved terminal rows before deleting an empty deck in that mode.
