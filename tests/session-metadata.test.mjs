@@ -29,6 +29,15 @@ async function fixture(t, persistent) {
   await mkdir(dataDir);
   await mkdir(workdir);
   await mkdir(commandsDir);
+  // Match the supplied backup schema. Existing records must be preserved and
+  // must never become candidates for the independent instance's tmux socket.
+  const legacyDb = new DatabaseSync(path.join(dataDir, 'deck-ide.db'));
+  legacyDb.exec(`CREATE TABLE terminals (
+    id TEXT PRIMARY KEY, deck_id TEXT NOT NULL, title TEXT NOT NULL, command TEXT,
+    buffer TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
+  ); INSERT INTO terminals VALUES ('legacy-terminal', 'legacy-deck', 'legacy title',
+    'original command', 'retained history', '2026-10-13');`);
+  legacyDb.close();
   if (persistent) {
     const binary = execFileSync('sh', ['-c', 'command -v tmux'], { encoding: 'utf8' }).trim();
     await writeFile(path.join(commandsDir, 'tmux'), `#!/bin/sh\nfor argument in "$@"; do\n  if [ "$argument" = 'has-session' ] && [ -f '${dir}/query-unavailable' ]; then\n    printf 'injected lookup failure' >&2; exit 1\n  fi\ndone\nexec '${binary}' "$@"\n`, { mode: 0o700 });
@@ -137,6 +146,8 @@ for (const persistent of [false, true]) {
           const row = db.prepare('SELECT deck_id, title FROM terminals WHERE id = ?').get(terminal.id);
           assert.equal(row.deck_id, destination.id);
           assert.equal(row.title, current.title);
+          const legacy = db.prepare('SELECT title, command, buffer, tmux_socket FROM terminals WHERE id = ?').get('legacy-terminal');
+          assert.deepEqual({ ...legacy }, { title: 'legacy title', command: 'original command', buffer: 'retained history', tmux_socket: null });
         } finally { db.close(); }
         process.kill(shellPid, 0);
         process.kill(childPid, 0);
