@@ -36,6 +36,17 @@ export function createLocalControl(options) {
             return { pid: process.pid, uid: process.getuid?.(), sharedTerminals: true };
         if (request.method === 'decks.list')
             return options.api('/api/decks');
+        if (request.method === 'decks.rename') {
+            if (typeof args.id !== 'string' || !args.id || typeof args.name !== 'string' || !args.name.trim())
+                throw Error('invalid_request');
+            return options.api('/api/decks/' + encodeURIComponent(args.id), 'PATCH', { name: args.name });
+        }
+        if (request.method === 'decks.delete') {
+            if (typeof args.id !== 'string' || !args.id)
+                throw Error('invalid_request');
+            await options.api('/api/decks/' + encodeURIComponent(args.id), 'DELETE');
+            return { id: args.id, deleted: true };
+        }
         if (request.method === 'agents.list')
             return options.agents.list(String(args.search || ''), Number(args.offset || 0), Number(args.limit || 100), args.tool);
         if (request.method === 'agents.read')
@@ -86,6 +97,17 @@ export function createLocalControl(options) {
                 throw Error('invalid_request');
             await options.api('/api/terminals/' + encodeURIComponent(args.id), 'DELETE');
             return { id: args.id, deleted: true };
+        }
+        if (request.method === 'terminals.update') {
+            if (typeof args.id !== 'string' || !args.id ||
+                args.deckId !== undefined && (typeof args.deckId !== 'string' || !args.deckId) ||
+                args.title !== undefined && (typeof args.title !== 'string' || !args.title.trim()) ||
+                args.deckId === undefined && args.title === undefined)
+                throw Error('invalid_request');
+            const body: { deckId?: string; title?: string } = {};
+            if (args.deckId !== undefined) body.deckId = args.deckId;
+            if (args.title !== undefined) body.title = args.title;
+            return options.api('/api/terminals/' + encodeURIComponent(args.id), 'PATCH', body);
         }
         if (request.method === 'terminals.run') {
             const command = agentShellCommand(args.tool, args.argv || []);

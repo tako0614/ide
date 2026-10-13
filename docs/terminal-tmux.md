@@ -20,8 +20,8 @@ alternate screen and incomplete UTF-8/ANSI parser tail. Snapshot bytes are
 distinct from live output offsets. Input is sent once through the live client;
 failed writes, shell creation, and input are never replayed. Shell exit is
 recognized only after checking the recorded tmux identity and dead-pane state.
-HTTP shutdown detaches display clients. Explicit terminal/deck deletion closes
-only verified sessions. Unknown or changed identities retain their registry
+HTTP shutdown detaches display clients. Explicit terminal deletion closes
+only verified sessions. Deck deletion refuses any remaining terminal. Unknown or changed identities retain their registry
 for investigation and are never automatically restarted or killed.
 
 Creation retains the service user, inherited environment, original shell and
@@ -294,3 +294,48 @@ not package qualification.
 Primary references: [tmux manual](https://github.com/tmux/tmux/blob/master/tmux.1),
 [tmux resize policy](https://github.com/tmux/tmux/blob/master/resize.c), and
 [systemd kill policy](https://www.freedesktop.org/software/systemd/man/latest/systemd.kill.html).
+
+## Metadata administration on the recovered .10 base
+
+The production `.10` source is reconstructed from commit
+`5593907009721ed3e15b9af66f6b8762ee271ca7` and its recovered source overlay.
+Before feature changes, rebuilding matches all 65 installed dist files and all
+four web files byte for byte. `docs/source-provenance.json` records the source
+and release recovery; the snapshot branch is not this release's source.
+
+`deckide session move <terminal> <deck-id>` and `session rename <terminal> <title>`
+use the existing owner-only Unix RPC, as do `deckide deck list [--json]`,
+`deck rename <deck-id> <name>` and `deck delete <deck-id>`. Deck mutations accept
+an exact ID or an unambiguous ID prefix of at least four characters. Terminal
+selectors retain the session CLI rules. Metadata changes neither restart nor
+resize the shell, attach another client, nor send terminal input.
+
+`PATCH /api/decks/:id` accepts a nonempty name, trims it, and updates SQLite and
+memory before broadcasting `deck.updated`. `PATCH /api/terminals/:id` accepts
+`deckId` and/or `title`. It verifies the native identity and current registry,
+updates a SQLite projection within a transaction, and atomically replaces the
+owner-only registry before committing. Failed writes retain the prior state;
+failed compensation revokes host capabilities and makes the display unavailable
+until verified restoration. Startup repairs stale SQLite projections from the
+canonical native registry, including a crash between registry replacement and
+SQLite commit. Moving a terminal revokes its previous host computer capability.
+The terminal's working directory and environment remain those of its creation.
+
+The legacy `terminals` table is migrated idempotently with `cols`, `rows` and
+`tmux_socket`. Old rows and history are preserved; they are not native adoption
+authority. `terminal_metadata` contains only a rebuildable native projection,
+without command, output or environment. Deck deletion returns 409 for terminals
+in memory, either database table, unavailable registry entries, or pending
+creation. An unreadable registry fails closed. A refused deletion never closes
+terminal sockets, detaches clients or kills shells.
+
+`npm pack` includes the ops directory, broker, session CLI and reviewed native
+launcher pair. `scripts/verify-runtime-package.mjs` validates the actual archive
+against the `.10` runtime inventory; changed web asset fingerprints are expected.
+
+If a crash leaves an orphan projection row after registry removal, deletion
+continues to refuse rather than assuming a missing registry proves shell exit.
+Recovery requires operator verification of that row's recorded socket and native
+session, with the HTTP instance stopped and a copied DB backup, before removing
+only the confirmed obsolete projection row. Legacy rows require the same explicit
+review; automatic migration never deletes them.

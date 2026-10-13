@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import type { DatabaseSync } from 'node:sqlite';
+import { persistTerminalMetadata, commitTerminalMetadata } from '../utils/database.js';
 import { Hono } from 'hono';
 import path from 'node:path';
 import { TerminalSnapshot } from '../terminal/snapshot.js';
@@ -89,14 +91,32 @@ function pickFallbackUtf8Locale(inheritedLang: string | undefined): string | nul
 export function createTerminalRouter(
   decks: Map<string, Deck>,
   terminals: Map<string, TerminalSession>,
-  options: { hostSessions?: HostComputerSessions; workspaces?: Map<string, Workspace> } = {}
+  options: { db?: DatabaseSync; hostSessions?: HostComputerSessions; workspaces?: Map<string, Workspace> } = {}
 ) {
   const router = new Hono();
   const backend = new TmuxTerminalAdapter({ runtimeDir: process.env.DECKIDE_TMUX_RUNTIME_DIR || path.resolve(dataDir, 'terminal-tmux') });
   const restoring = new Map<string, Promise<void>>();
 
   async function restoreSession(meta: TmuxTerminalMeta): Promise<void> {
-    if (terminals.get(meta.id)?.available) return;
+    if (options.db) persistTerminalMetadata(options.db, meta);
+    const existing = terminals.get(meta.id);
+    const sameNativeIdentity = existing && ['generation', 'serverPid', 'sessionId', 'windowId', 'paneId', 'pid']
+      .every((key) => existing.tmux[key as keyof TmuxTerminalMeta] === meta[key as keyof TmuxTerminalMeta]);
+    if (existing?.available && !sameNativeIdentity) {
+      options.hostSessions?.revokeTerminal(meta.id);
+      existing.detach();
+    }
+    if (existing?.available) {
+      const previousDeckId = existing.deckId;
+      const changed = previousDeckId !== meta.deckId || existing.title !== meta.title;
+      if (previousDeckId !== meta.deckId) options.hostSessions?.revokeTerminal(meta.id);
+      existing.deckId = meta.deckId;
+      existing.title = meta.title;
+      Object.assign(existing.tmux, meta);
+      if (changed) emitDeckIdeEvent({ type: 'terminal.updated', previousDeckId, deckId: meta.deckId,
+        terminal: { id: meta.id, title: meta.title, createdAt: meta.createdAt } });
+      return;
+    }
     const pending = restoring.get(meta.id);
     if (pending) return pending;
     const deck = decks.get(meta.deckId);
@@ -132,6 +152,9 @@ export function createTerminalRouter(
           console.warn(`[TERMINAL] ${session.id} registry unavailable; shell state unknown`);
         }
       }
+    }
+    for (const id of verifiedExited) {
+      options.db?.prepare('DELETE FROM terminal_metadata WHERE id = ?').run(id);
     }
     for (const meta of records) {
       try { await restoreSession(meta); }
@@ -283,6 +306,7 @@ export function createTerminalRouter(
 
   function handleTerminalExit(id: string): void {
     options.hostSessions?.revokeTerminal(id);
+    options.db?.prepare('DELETE FROM terminal_metadata WHERE id = ?').run(id);
     const session = terminals.get(id);
     if (!session) return;
 
@@ -389,6 +413,8 @@ export function createTerminalRouter(
       if (capability) options.hostSessions?.revokeTerminal(id);
       throw error;
     }
+    try { if (options.db) persistTerminalMetadata(options.db, term.meta); }
+    catch (error) { term.detach(); throw error; } // Keep the canonical registry and native shell.
     cols = term.meta.cols;
     rows = term.meta.rows;
     console.log(`[TERMINAL] ${restored ? 'Attached' : 'Created'} terminal ${id}: pid=${term.pid}`);
@@ -431,6 +457,7 @@ export function createTerminalRouter(
         session.cols = nextCols;
         session.rows = nextRows;
         session.tmux = term.meta;
+        if (options.db) persistTerminalMetadata(options.db, term.meta);
       },
       kill: async () => { await term.close(); await screen.dispose(); },
       detach: () => { session.available = false; term.detach(); screen.dispose(); },
@@ -537,6 +564,54 @@ export function createTerminalRouter(
     }
   });
 
+  router.patch('/:id', async (c) => {
+    try {
+      const session = terminals.get(c.req.param('id'));
+      if (!session) throw createHttpError('Terminal not found', 404);
+      if (!session.available) throw createHttpError('Terminal unavailable', 503);
+      const body = await readJson<Record<string, unknown>>(c);
+      if (!body || Array.isArray(body) || !Object.keys(body).length ||
+          Object.keys(body).some((key) => key !== 'deckId' && key !== 'title')) {
+        throw createHttpError('deckId or title is required', 400);
+      }
+      if ('deckId' in body && (typeof body.deckId !== 'string' || !decks.has(body.deckId))) {
+        throw createHttpError(typeof body.deckId === 'string' ? 'Deck not found' : 'Invalid deckId', typeof body.deckId === 'string' ? 404 : 400);
+      }
+      if ('title' in body && (typeof body.title !== 'string' || !body.title.trim())) {
+        throw createHttpError('title must be a non-empty string', 400);
+      }
+      const previous = { ...session.tmux };
+      const next = { ...previous, deckId: body.deckId as string ?? session.deckId,
+        title: typeof body.title === 'string' ? body.title.trim() : session.title, command: null };
+      if (next.deckId === session.deckId && next.title === session.title) {
+        backend.verify(previous);
+        return c.json({ id: session.id, deckId: session.deckId, title: session.title, createdAt: session.createdAt });
+      }
+      if (!options.db) throw createHttpError('Metadata persistence unavailable', 503);
+      try {
+        commitTerminalMetadata(options.db, next,
+          () => { backend.updateMetadata(previous, { deckId: next.deckId, title: next.title }); },
+          () => { backend.updateMetadata(next, { deckId: previous.deckId, title: previous.title }); });
+      } catch (error) {
+        // If compensation also failed, prevent stale metadata from authorizing further operations.
+        // Restore/list reconciles verified canonical registry metadata before reattaching.
+        if ((error as { metadataUncertain?: boolean }).metadataUncertain) {
+          options.hostSessions?.revokeTerminal(session.id);
+          session.detach();
+        }
+        throw error;
+      }
+      const previousDeckId = session.deckId;
+      session.deckId = next.deckId;
+      session.title = next.title;
+      Object.assign(session.tmux, next);
+      if (previousDeckId !== next.deckId) options.hostSessions?.revokeTerminal(session.id);
+      emitDeckIdeEvent({ type: 'terminal.updated', previousDeckId, deckId: next.deckId,
+        terminal: { id: session.id, title: session.title, createdAt: session.createdAt } });
+      return c.json({ id: session.id, deckId: session.deckId, title: session.title, createdAt: session.createdAt });
+    } catch (error) { return handleError(c, error); }
+  });
+
   router.delete('/:id', async (c) => {
     try {
       const terminalId = c.req.param('id');
@@ -544,6 +619,7 @@ export function createTerminalRouter(
       if (!session) throw createHttpError('Terminal not found', 404);
 
       await session.kill();
+      options.db?.prepare('DELETE FROM terminal_metadata WHERE id = ?').run(terminalId);
       terminals.delete(terminalId);
       options.hostSessions?.revokeTerminal(terminalId);
       emitDeckIdeEvent({ type: 'terminal.removed', deckId: session.deckId, terminalId, reason: 'deleted' });
@@ -595,7 +671,7 @@ export function createTerminalRouter(
     } catch (error) { return handleError(c, error); }
   });
 
-  return Object.assign(router, { restoreSessions, nativeAttachment: (id: string, readOnly = false) => {
+  return Object.assign(router, { restoreSessions, hasNativeTerminals: (deckId: string) => backend.hasDeckRecords(deckId), nativeAttachment: (id: string, readOnly = false) => {
     const session = terminals.get(id);
     if (!session?.available) throw Error('Terminal unavailable');
     return backend.nativeAttachment(id, readOnly);

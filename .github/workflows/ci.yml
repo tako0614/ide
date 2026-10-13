@@ -1,0 +1,44 @@
+name: Build and verify package
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install tmux for live terminal tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tmux
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Materialize and verify reviewed native launcher
+        run: npm run prepare:vnc-launcher
+
+      - name: Test (launcher UID isolation fixtures require root)
+        run: sudo env PATH="$PATH" DECKIDE_TMUX_TEST_WITH_BROKER=1 npm test
+
+      - name: Pack and verify runtime inventory
+        run: |
+          npm pack --pack-destination "$RUNNER_TEMP"
+          version="$(node -p "require('./package.json').version")"
+          node scripts/verify-runtime-package.mjs "$RUNNER_TEMP/deckide-${version}.tgz"

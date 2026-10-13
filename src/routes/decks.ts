@@ -1,7 +1,6 @@
 import crypto from 'node:crypto';
 import { Hono } from 'hono';
 import type { DatabaseSync } from 'node:sqlite';
-import type { WebSocket } from 'ws';
 import type { Workspace, Deck } from '../types.js';
 import { createHttpError, handleError, readJson } from '../utils/error.js';
 import { requireWorkspace } from './workspaces.js';
@@ -11,7 +10,8 @@ export function createDeckRouter(
   db: DatabaseSync,
   workspaces: Map<string, Workspace>,
   decks: Map<string, Deck>,
-  terminals: Map<string, import('../types.js').TerminalSession>
+  terminals: Map<string, import('../types.js').TerminalSession>,
+  options: { hasNativeTerminals?: (deckId: string) => boolean } = {}
 ) {
   const router = new Hono();
 
@@ -98,14 +98,27 @@ export function createDeckRouter(
     }
   });
 
-  const deleteDeckStmt = db.prepare('DELETE FROM decks WHERE id = ?');
+  router.patch('/:id', async (c) => {
+    try {
+      const deck = decks.get(c.req.param('id'));
+      if (!deck) throw createHttpError('Deck not found', 404);
+      const body = await readJson<Record<string, unknown>>(c);
+      if (!body || Array.isArray(body) || Object.keys(body).some((key) => key !== 'name') ||
+          typeof body.name !== 'string' || !body.name.trim()) {
+        throw createHttpError('name must be a non-empty string', 400);
+      }
+      const name = body.name.trim();
+      const result = db.prepare('UPDATE decks SET name = ? WHERE id = ?').run(name, deck.id);
+      if (result.changes !== 1) throw createHttpError('Deck not found', 404);
+      deck.name = name;
+      emitDeckIdeEvent({ type: 'deck.updated', deck });
+      return c.json(deck);
+    } catch (error) { return handleError(c, error); }
+  });
 
-  function closeDeckTerminalSockets(sockets: Set<WebSocket>, reason: string): void {
-    sockets.forEach((socket) => {
-      try { socket.close(1000, reason); } catch { /* ignore */ }
-    });
-    sockets.clear();
-  }
+  const deleteDeckStmt = db.prepare(`DELETE FROM decks WHERE id = ?
+    AND NOT EXISTS (SELECT 1 FROM terminals WHERE deck_id = ?)
+    AND NOT EXISTS (SELECT 1 FROM terminal_metadata WHERE deck_id = ?)`);
 
   router.delete('/:id', async (c) => {
     try {
@@ -114,19 +127,16 @@ export function createDeckRouter(
         throw createHttpError('Deck not found', 404);
       }
 
-      const deckTerminalIds = Array.from(terminals.values())
-        .filter((session) => session.deckId === deckId)
-        .map((session) => session.id);
-
-      for (const terminalId of deckTerminalIds) {
-        const session = terminals.get(terminalId);
-        if (!session) continue;
-        await session.kill();
-        terminals.delete(terminalId);
-        closeDeckTerminalSockets(session.sockets, 'Deck deleted');
+      let nativeRecords = false;
+      try { nativeRecords = options.hasNativeTerminals?.(deckId) ?? false; }
+      catch { throw createHttpError('Terminal registry unavailable; cannot delete deck', 409); }
+      if (nativeRecords || Array.from(terminals.values()).some((session) => session.deckId === deckId)) {
+        throw createHttpError('Deck contains terminals; close or move them before deleting', 409);
       }
-
-      deleteDeckStmt.run(deckId);
+      const result = deleteDeckStmt.run(deckId, deckId, deckId);
+      if (result.changes !== 1) {
+        throw createHttpError('Deck contains persisted terminals; close or move them before deleting', 409);
+      }
       decks.delete(deckId);
       emitDeckIdeEvent({ type: 'deck.deleted', deckId });
       return c.json({ deleted: true });

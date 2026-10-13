@@ -88,6 +88,9 @@ export const useDecks = ({
           setDecks((prev) => (prev.some((d) => d.id === event.deck.id) ? prev : [...prev, event.deck]));
           initializeDeckStates([event.deck.id]);
           return;
+        case 'deck.updated':
+          setDecks((prev) => prev.map((deck) => deck.id === event.deck.id ? event.deck : deck));
+          return;
         case 'deck.deleted':
           setDecks((prev) => prev.filter((d) => d.id !== event.deckId));
           setActiveDeckIds((prev) => prev.filter((id) => id !== event.deckId));
@@ -116,6 +119,23 @@ export const useDecks = ({
                   activeTerminalId: state.activeTerminalId ?? event.terminal.id
                 }
           );
+          return;
+        case 'terminal.updated':
+          setDeckStates((prev) => {
+            const next = { ...prev };
+            if (event.previousDeckId !== event.deckId && next[event.previousDeckId]) {
+              next[event.previousDeckId] = withoutTerminal(next[event.previousDeckId], event.terminal.id);
+            }
+            const target = next[event.deckId];
+            if (target) {
+              next[event.deckId] = { ...target,
+                terminals: target.terminals.some((terminal) => terminal.id === event.terminal.id)
+                  ? target.terminals.map((terminal) => terminal.id === event.terminal.id ? event.terminal : terminal)
+                  : [...target.terminals, event.terminal],
+                activeTerminalId: target.activeTerminalId ?? event.terminal.id };
+            }
+            return next;
+          });
           return;
         case 'terminal.removed':
           updateDeckState(event.deckId, (state) => withoutTerminal(state, event.terminalId));

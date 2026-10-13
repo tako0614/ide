@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "platform": "linux",
+  "arch": "x64",
+  "source": {
+    "path": "src/computer/native/vnc-launcher.c",
+    "sha256": "92a74d607ec673b72e1eed82bd179e66d92b42d52753a47fddcd77eb0b305105"
+  },
+  "binary": {
+    "path": "dist/computer/native/vnc-launcher",
+    "sha256": "927ff0b4d21183e008f665d68978f944c2550ea65202ec1462087f7ef31cfeec"
+  },
+  "compiler": {
+    "path": "/usr/bin/gcc",
+    "realpath": "/usr/bin/x86_64-linux-gnu-gcc-15",
+    "sha256": "b5f1b773a7c733738352000c92a077dc5852a1a2fc6d836b1e411be1e9ec5f88",
+    "version": "15.2.0"
+  },
+  "flags": [
+    "-std=c11",
+    "-O2",
+    "-Wall",
+    "-Wextra",
+    "-Werror",
+    "-fstack-protector-strong",
+    "-D_FORTIFY_SOURCE=2",
+    "-fPIE",
+    "-pie",
+    "-Wl,-z,relro,-z,now"
+  ],
+  "filterSha256": "dc159080d3fb3013273eb8badcee46347501de0054da5bab7e72b130fab91c7e"
+}

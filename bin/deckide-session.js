@@ -48,8 +48,31 @@ export function parseSessionArgs(argv) {
   if (action === 'attach' && (positionals.length !== 1 || args['read-only'] && args.fit)) throw Error('invalid_attach');
   if (action === 'read' && positionals.length !== 3) throw Error('invalid_read');
   if ((action === 'send' && positionals.length < 2) || (['kill', 'show', 'focus'].includes(action) && positionals.length !== 1)) throw Error('invalid_terminal');
+  if (['move', 'rename'].includes(action) && (positionals.length !== 2 || Object.keys(args).length)) throw Error('invalid_terminal');
+  if (action === 'rename' && !positionals[1].trim()) throw Error('invalid_title');
+  if (action === 'move' && !positionals[1]) throw Error('invalid_deck');
   if (args.lines !== undefined && !(/^\d{1,5}$/.test(args.lines))) throw Error('invalid_lines');
   return { action, args, positionals };
+}
+
+export function parseDeckArgs(argv) {
+  const action = argv[0] || 'help';
+  const rest = argv.slice(1);
+  let json = false;
+  const positionals = [];
+  for (const item of rest) {
+    if (item === '--json') {
+      if (json) throw Error('invalid_deck_arguments');
+      json = true;
+    } else if (item.startsWith('-')) throw Error('unknown_option');
+    else positionals.push(item);
+  }
+  if (action === 'list' && positionals.length !== 0) throw Error('invalid_deck_arguments');
+  if (action === 'rename' && (positionals.length !== 2 || !positionals[1].trim() || json)) throw Error('invalid_deck_arguments');
+  if (action === 'delete' && (positionals.length !== 1 || json)) throw Error('invalid_deck_arguments');
+  if (!['help', '--help', '-h', 'list', 'rename', 'delete'].includes(action)) throw Error('unknown_action');
+  if (['help', '--help', '-h'].includes(action) && (positionals.length || json)) throw Error('invalid_deck_arguments');
+  return { action, json, positionals };
 }
 export async function attachNative(value, readOnly = false) {
   const { TmuxTerminalAdapter } = await import('../dist/terminal/tmuxAdapter.js');
@@ -130,7 +153,7 @@ export async function attachFollowing(value, claimSize) {
 }
 
 /** Terminal by id, unique id prefix (4+), number from `list`, or exact title. */
-async function resolveTerminalId(selector) {
+export async function resolveTerminalId(selector) {
   const terminals = await sessionRpc('terminals.list', {});
   const value = String(selector);
   if (/^\d+$/.test(value) && terminals[Number(value) - 1]) return terminals[Number(value) - 1].id;
@@ -170,6 +193,8 @@ export async function runSessionClient(argv) {
   deckide session show [--lines N] TERMINAL
   deckide session focus TERMINAL
   deckide session kill TERMINAL
+  deckide session move TERMINAL DECK_ID
+  deckide session rename TERMINAL TITLE
 
 CLI and Web/MCP use the same persistent terminal. Ctrl-b d detaches this
 client and leaves the agent running. The client used last (typing, or
@@ -215,6 +240,44 @@ Use the backend's DECKIDE_DATA_DIR or DECKIDE_SESSION_SOCKET when customized.`);
     value = await sessionRpc('terminals.focus', { id: await resolveTerminalId(positionals[0]) });
   } else if (action === 'kill') {
     value = await sessionRpc('terminals.delete', { id: await resolveTerminalId(positionals[0]) });
+  } else if (action === 'move') {
+    value = await sessionRpc('terminals.update', { id: await resolveTerminalId(positionals[0]), deckId: positionals[1] });
+  } else if (action === 'rename') {
+    value = await sessionRpc('terminals.update', { id: await resolveTerminalId(positionals[0]), title: positionals[1] });
   } else throw Error('unknown_action');
+  console.log(JSON.stringify(value, null, 2));
+}
+
+/** Deck mutations select by ID or by a unique ID prefix of at least four characters. */
+async function resolveDeckId(selector) {
+  const decks = await sessionRpc('decks.list');
+  const exact = decks.find((deck) => deck.id === selector);
+  if (exact) return exact.id;
+  const matches = selector.length >= 4 ? decks.filter((deck) => deck.id.startsWith(selector)) : [];
+  if (matches.length === 1) return matches[0].id;
+  throw Error(matches.length > 1 ? 'deck_ambiguous' : 'deck_not_found');
+}
+
+export async function runDeckClient(argv) {
+  const { action, json, positionals } = parseDeckArgs(argv);
+  if (['help', '--help', '-h'].includes(action)) {
+    console.log(`Usage:
+  deckide deck list [--json]
+  deckide deck rename ID NAME
+  deckide deck delete ID
+
+Deck mutations accept a deck ID or a unique ID prefix of at least four characters.`);
+    return;
+  }
+  if (action === 'list') {
+    const decks = await sessionRpc('decks.list');
+    if (json) console.log(JSON.stringify(decks, null, 2));
+    else for (const deck of decks) console.log(`${deck.name}\t${deck.id}`);
+    return;
+  }
+  const id = await resolveDeckId(positionals[0]);
+  const value = action === 'rename'
+    ? await sessionRpc('decks.rename', { id, name: positionals[1] })
+    : await sessionRpc('decks.delete', { id });
   console.log(JSON.stringify(value, null, 2));
 }

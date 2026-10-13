@@ -1,6 +1,6 @@
 {
   "name": "deckide",
-  "version": "3.5.49-combined.20261004.10",
+  "version": "3.5.49-combined.20261004.10-port.1",
   "description": "Deck IDE - Browser-based shell workspace with decks and terminals",
   "type": "module",
   "bin": {
@@ -28,7 +28,8 @@
     "test:terminal:all": "node --import tsx --experimental-vm-modules --test --test-concurrency=1 tests/terminal-frame.test.ts tests/terminal-queries.test.ts tests/terminal-reconnect.test.ts tests/terminal-snapshot.test.mjs tests/terminal-tmux-adapter.test.ts tests/terminal-websocket-lifecycle.test.mjs tests/terminal-tmux-broker.test.mjs tests/terminal-tmux-live.test.mjs tests/session-auth.test.mjs tests/cli-auth.test.mjs tests/terminal-update-guards.test.mjs",
     "build:vnc-launcher": "node scripts/build-vnc-launcher.mjs",
     "build:vnc-candidate": "npm run build:server && npm run build:vnc-launcher",
-    "prepack": "node scripts/build-vnc-launcher.mjs --check"
+    "prepare:vnc-launcher": "node scripts/build-vnc-launcher.mjs --prepare",
+    "prepack": "node scripts/build-vnc-launcher.mjs --prepare"
   },
   "dependencies": {
     "@hono/node-server": "^1.12.2",

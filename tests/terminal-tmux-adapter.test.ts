@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import fs from 'node:fs';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -159,6 +160,108 @@ test('list and attach verify native identity without creating or replaying input
   assert.equal(f.displays[1].pty.writes.length, 0);
   assert.equal(f.displays[1].args.at(-1), `=deckide-${ID}`);
   restored.detach();
+});
+
+test('metadata move and rename preserve native identity, shell, display and input', (t) => {
+  const f = fixture(t);
+  const handle = f.create();
+  const original = { ...handle.meta };
+  const callsBefore = f.calls.length;
+  const displaysBefore = f.displays.length;
+  const updated = f.adapter.updateMetadata(handle.meta, { deckId: 'deck-2', title: 'Renamed 日本語' });
+  const saved = JSON.parse(readFileSync(path.join(f.runtimeDir, `${ID}.json`), 'utf8'));
+  assert.equal(updated.deckId, 'deck-2');
+  assert.equal(updated.title, 'Renamed 日本語');
+  assert.equal(saved.deckId, updated.deckId);
+  assert.equal(saved.title, updated.title);
+  for (const key of ['id', 'generation', 'socketPath', 'sessionName', 'pid', 'serverPid',
+    'sessionId', 'windowId', 'paneId', 'createdAt', 'cols', 'rows'] as const) {
+    assert.equal(updated[key], original[key], key);
+  }
+  assert.deepEqual(handle.meta, original, 'caller-held metadata changes only after its owner commits');
+  assert.equal(f.displays.length, displaysBefore);
+  assert.equal(f.displays[0].pty.writes.length, 0);
+  assert.equal(f.displays[0].pty.kills, 0);
+  assert.equal(f.state.killed, false);
+  assert.ok(f.calls.slice(callsBefore).every((call) =>
+    !['new-session', 'kill-session', 'resize-window', 'set-option'].some((verb) => call.args.includes(verb))));
+  assert.deepEqual(f.adapter.list().map((meta) => [meta.id, meta.deckId, meta.title]),
+    [[ID, 'deck-2', 'Renamed 日本語']]);
+  handle.detach();
+});
+
+test('metadata mutation refuses changed native generation and stale registry metadata', (t) => {
+  const f = fixture(t);
+  const handle = f.create();
+  const file = path.join(f.runtimeDir, `${ID}.json`);
+  const original = readFileSync(file, 'utf8');
+  f.state.generation = 'a455393a-7bc2-4717-8e51-8ce4e0205e37';
+  assert.throws(() => f.adapter.updateMetadata(handle.meta, { title: 'not written' }), /identity changed|generation/i);
+  assert.equal(readFileSync(file, 'utf8'), original);
+  f.state.generation = handle.meta.generation;
+  const first = f.adapter.updateMetadata(handle.meta, { title: 'first' });
+  assert.equal(first.title, 'first');
+  const saved = readFileSync(file, 'utf8');
+  assert.throws(() => f.adapter.updateMetadata(handle.meta, { title: 'stale' }), /stale|changed|metadata/i);
+  assert.equal(readFileSync(file, 'utf8'), saved);
+  assert.equal(handle.meta.title, 'Terminal');
+  assert.equal(f.state.killed, false);
+  assert.equal(f.displays[0].pty.writes.length, 0);
+  handle.detach();
+});
+
+test('failed atomic registry replacement leaves the old metadata and shell untouched', (t) => {
+  const f = fixture(t);
+  const handle = f.create();
+  const file = path.join(f.runtimeDir, `${ID}.json`);
+  const before = readFileSync(file, 'utf8');
+  const originalRename = fs.renameSync;
+  try {
+    fs.renameSync = ((from, to) => {
+      if (String(to) === file) throw new Error('injected registry rename failure');
+      return originalRename(from, to);
+    }) as typeof fs.renameSync;
+    assert.throws(() => f.adapter.updateMetadata(handle.meta, { title: 'not saved' }), /injected registry rename failure/);
+  } finally {
+    fs.renameSync = originalRename;
+  }
+  assert.equal(readFileSync(file, 'utf8'), before);
+  assert.equal(handle.meta.title, 'Terminal');
+  assert.deepEqual(readdirSync(f.runtimeDir).filter((name) => name.endsWith('.tmp')), []);
+  assert.equal(f.state.killed, false);
+  assert.equal(f.displays[0].pty.kills, 0);
+  assert.equal(f.displays[0].pty.writes.length, 0);
+  handle.detach();
+});
+
+test('deck guard sees unavailable registry and pending creation records', (t) => {
+  const f = fixture(t);
+  f.create().detach();
+  assert.equal(f.adapter.hasDeckRecords('deck-1'), true);
+  assert.equal(f.adapter.hasDeckRecords('other-deck'), false);
+  f.state.serverPid++;
+  assert.equal(f.adapter.hasDeckRecords('deck-1'), true, 'identity uncertainty cannot make a deck look empty');
+  const pendingId = 'a455393a-7bc2-4717-8e51-8ce4e0205e37';
+  const pending = {
+    id: pendingId, deckId: 'pending-deck', title: 'pending', createdAt: '2026-10-04T00:00:00Z',
+    cols: 120, rows: 32, generation: pendingId, sessionName: `deckide-${pendingId}`,
+    socketPath: path.join(f.runtimeDir, `s-${pendingId.replace(/-/g, '').slice(0, 16)}.sock`),
+  };
+  writeFileSync(path.join(f.runtimeDir, `${pendingId}.pending.json`), JSON.stringify(pending), { mode: 0o600 });
+  assert.equal(f.adapter.hasDeckRecords('pending-deck'), true);
+  assert.equal(f.state.killed, false);
+  assert.ok(f.calls.every((call) => !call.args.includes('kill-session')));
+});
+
+test('deck guard fails closed on unreadable or unclassifiable owner registry', (t) => {
+  const f = fixture(t);
+  f.create().detach();
+  const file = path.join(f.runtimeDir, `${ID}.json`);
+  writeFileSync(file, '{invalid', { mode: 0o600 });
+  assert.equal(typeof f.adapter.hasDeckRecords, 'function');
+  assert.throws(() => f.adapter.hasDeckRecords('other-deck'));
+  assert.equal(f.state.killed, false);
+  assert.ok(f.calls.every((call) => !call.args.includes('kill-session')));
 });
 
 test('zero-argument shell is execed without a login or interactive flag', (t) => {
@@ -389,6 +492,15 @@ test('pending metadata with private extra fields or an array is retained without
   assert.deepEqual(unavailable, [ID, ID]);
   assert.equal(readFileSync(file, 'utf8'), '[]');
   assert.equal(f.calls.length, beforeCalls);
+});
+
+test('deck guard fails closed when the runtime directory disappears after initialization', (t) => {
+  const f = fixture(t);
+  f.create().detach();
+  rmSync(f.runtimeDir, { recursive: true });
+  assert.throws(() => f.adapter.hasDeckRecords('deck-1'), /runtime|directory|ENOENT/i);
+  assert.equal(f.state.killed, false);
+  assert.ok(f.calls.every((call) => !call.args.includes('kill-session')));
 });
 
 test('explicit close kills only the exact owned session', async (t) => {
