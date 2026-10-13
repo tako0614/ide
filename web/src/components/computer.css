@@ -1,0 +1,356 @@
+.computer-shell-layout {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.computer-shell-main {
+  display: flex;
+  flex: 1 1 50%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Desktop shown large: it takes the whole main area. */
+.computer-shell-layout.is-desktop-expanded > .computer-shell-main { display: none; }
+
+.computer-toolbar-button-active {
+  color: var(--color-ink);
+  border-color: var(--color-accent);
+  background: var(--color-list-active);
+}
+
+.computer-pane {
+  position: relative;
+  display: flex;
+  flex: 1 1 50%;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border-left: 1px solid var(--color-border);
+  background: var(--color-bg);
+  color: var(--color-ink);
+  overflow: hidden;
+}
+
+.computer-pane.is-expanded { flex-basis: 100%; border-left: none; }
+
+.computer-pane-header {
+  display: flex;
+  flex: 0 0 38px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 10px 0 12px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-sidebar);
+}
+
+.computer-pane-header h2 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.computer-pane-heading,
+.computer-pane-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.desktop-meta {
+  overflow: hidden;
+  color: var(--color-ink-muted);
+  font: 11px/1 var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.computer-icon-button {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--color-ink-muted);
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.computer-icon-button:hover {
+  border-color: var(--color-border);
+  background: var(--color-list-hover);
+  color: var(--color-ink);
+}
+
+.computer-icon-button:focus-visible,
+.computer-small-button:focus-visible,
+.computer-primary-button:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.computer-small-button,
+.computer-primary-button {
+  min-height: 30px;
+  padding: 4px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 2px;
+  background: var(--color-panel);
+  color: var(--color-ink);
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.computer-small-button:hover:not(:disabled) { border-color: var(--color-accent); }
+.computer-small-button.active { border-color: var(--color-accent); color: var(--color-accent); }
+.computer-small-button:disabled,
+.computer-primary-button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.computer-empty-state {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px 18px;
+  text-align: center;
+}
+
+.computer-empty-state h3 { margin: 2px 0 0; font-size: 13px; font-weight: 600; }
+.computer-empty-state p { max-width: 320px; margin: 0; color: var(--color-ink-muted); font-size: 11px; }
+
+.computer-primary-button {
+  min-height: 34px;
+  margin-top: 8px;
+  padding-inline: 12px;
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+.computer-primary-button:hover:not(:disabled) { filter: brightness(1.08); }
+
+.computer-status-dot {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: #777;
+}
+
+.computer-status-dot.running { background: #73c991; box-shadow: 0 0 0 3px rgb(115 201 145 / 12%); }
+.computer-status-dot.stopped { background: #8b8b8b; }
+.computer-status-dot.unsupported { background: #d2a84d; }
+
+.computer-feedback,
+.computer-loading {
+  margin: 0;
+  padding: 6px 10px;
+  color: var(--color-ink-muted);
+  font-size: 11px;
+}
+
+.computer-feedback.error { color: #e99696; }
+
+/* ── Live desktop ── */
+.desktop-toolbar {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-sidebar);
+}
+
+.desktop-apps { position: relative; }
+
+.desktop-apps-menu {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 4px);
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 200px;
+  max-height: 60vh;
+  padding: 4px;
+  overflow-y: auto;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-panel);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
+}
+
+.desktop-apps-item {
+  padding: 8px 10px;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--color-ink);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.desktop-apps-item:hover { background: var(--color-list-hover); }
+.desktop-apps-empty { padding: 8px 10px; color: var(--color-ink-muted); font-size: 11px; }
+
+.desktop-command,
+.desktop-type {
+  display: flex;
+  flex: 1 1 220px;
+  gap: 6px;
+  min-width: 0;
+}
+
+.desktop-command input,
+.desktop-type input {
+  flex: 1;
+  min-width: 0;
+  min-height: 30px;
+  padding: 4px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 2px;
+  background: var(--color-bg-soft);
+  color: var(--color-ink);
+  font-size: 12px;
+}
+
+.desktop-command input { font-family: var(--font-mono); }
+
+.computer-small-button.desktop-stop { border-color: #7a3434; color: #e99696; }
+
+.desktop-screen-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  background: #101010;
+}
+
+/* noVNC renders its own canvas inside; it fills this box. */
+.desktop-screen {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  touch-action: none;
+}
+
+.desktop-screen-overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--color-ink-muted);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.desktop-screen-overlay.is-failed { pointer-events: auto; }
+
+.desktop-keys {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+  padding: 4px 6px;
+  overflow-x: auto;
+  border-top: 1px solid var(--color-border);
+  background: var(--color-sidebar);
+  scrollbar-width: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.desktop-keys::-webkit-scrollbar { display: none; }
+
+.desktop-key {
+  flex: 0 0 auto;
+  min-width: 34px;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-bg-soft);
+  color: var(--color-ink);
+  font: 600 12px/1 var(--font-mono);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.desktop-key:active { background: var(--color-list-active); }
+.desktop-key.is-latched { border-color: var(--color-accent); background: var(--color-accent); color: #fff; }
+.desktop-key:disabled { opacity: 0.4; }
+
+.desktop-type {
+  flex: 0 0 auto;
+  padding: 6px 8px;
+  border-top: 1px solid var(--color-border);
+  background: var(--color-sidebar);
+}
+
+.desktop-clipboard {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-top: 1px solid var(--color-border);
+  background: var(--color-panel);
+  font-size: 11px;
+}
+
+.desktop-clipboard span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Receives the phone keyboard's input; kept on-screen (but invisible) so
+   mobile browsers agree to focus it and open the keyboard. */
+.desktop-ime {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  font-size: 16px; /* below 16px iOS zooms the page on focus */
+  resize: none;
+  pointer-events: none;
+}
+
+@media (pointer: coarse) {
+  .desktop-key { min-width: 44px; height: 38px; font-size: 13px; }
+  .computer-small-button { min-height: 36px; }
+}
+
+@media (max-width: 720px) {
+  /* On a phone the desktop covers the whole screen. */
+  .computer-pane {
+    position: absolute;
+    z-index: 20;
+    inset: 0;
+    border-left: none;
+  }
+  .desktop-command { flex-basis: 100%; order: 10; }
+  html.keyboard-open .desktop-toolbar,
+  html.keyboard-open .desktop-type { display: none; }
+}

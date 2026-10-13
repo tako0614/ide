@@ -14,8 +14,6 @@ import {
   PORT,
   HOST,
   NODE_ENV,
-  BASIC_AUTH_USER,
-  BASIC_AUTH_PASSWORD,
   CORS_ORIGIN,
   MAX_FILE_SIZE,
   MAX_REQUEST_BODY_SIZE,
@@ -27,10 +25,22 @@ import {
   AGENT_BROWSER_CDP_PORT,
   AGENT_BROWSER_MAX_MCP_PER_AGENT,
   AGENT_BROWSER_MCP_IDLE_MS,
+  DATA_DIR,
+  DESKTOP_ENABLED,
+  DESKTOP_DISPLAY,
+  DESKTOP_WIDTH,
+  DESKTOP_HEIGHT,
 } from './config.js';
 import { securityHeaders } from './middleware/security.js';
 import { corsMiddleware } from './middleware/cors.js';
-import { basicAuthMiddleware, generateWsToken, isBasicAuthEnabled } from './middleware/auth.js';
+import { originGuard } from './middleware/origin.js';
+import { currentSession, generateWsToken, isAuthEnabled, login, logout, onSessionRevoked, sessionGuard, sessionStatus, validBrowserMutation, verifiedInternalActor } from './middleware/auth.js';
+import { initializeCredentials } from './auth/credentials.js';
+import { initializeCliToken, removeCliToken } from './auth/cli-token.js';
+import { createEventsRouter } from './utils/events.js';
+import { closeTerminalClients } from './utils/terminal-control.js';
+import { SharedDesktop } from './desktop/shared-desktop.js';
+import { createDesktopRouter } from './routes/desktop.js';
 import {
   checkDatabaseIntegrity,
   handleDatabaseCorruption,
@@ -45,9 +55,9 @@ import { createGitRouter } from './routes/git.js';
 import { createSettingsRouter } from './routes/settings.js';
 import { createMcpRouter } from './routes/mcp.js';
 import { createBrowserRouter } from './routes/browser.js';
-import { createCodeServerRouter } from './routes/codeserver.js';
 import { AgentBrowserService } from './utils/agent-browser.js';
-import { CodeServerService } from './utils/code-server.js';
+import { DesktopComputer } from './computer/desktop.js';
+import { createComputerRouter } from './routes/computer.js';
 import { startMcpReaper } from './utils/browser-maintenance.js';
 import {
   setupWebSocketServer,
@@ -80,6 +90,8 @@ const requestIdMiddleware: MiddlewareHandler = async (c, next) => {
 };
 
 export async function createServer() {
+  await initializeCredentials();
+  initializeCliToken();
   // Check database integrity before opening
   if (fsSync.existsSync(dbPath) && !checkDatabaseIntegrity(dbPath)) {
     handleDatabaseCorruption(dbPath);
@@ -93,8 +105,18 @@ export async function createServer() {
   const workspacePathIndex = new Map<string, string>();
   const decks = new Map<string, Deck>();
   const terminals = new Map<string, TerminalSession>();
+  const sharedDesktop = DESKTOP_ENABLED
+    ? new SharedDesktop({
+        display: DESKTOP_DISPLAY,
+        width: DESKTOP_WIDTH,
+        height: DESKTOP_HEIGHT,
+        stateDir: path.join(DATA_DIR, 'desktop'),
+      })
+    : null;
   const browserService = new AgentBrowserService();
-  const codeServerService = new CodeServerService(workspaces);
+  browserService.useSharedDesktop(sharedDesktop);
+  // The computer tools observe and drive the same shared desktop.
+  const computer = new DesktopComputer(undefined, sharedDesktop ?? undefined);
 
   // 共有ブラウザを起動時から常駐させ、BrowserPane を開いていなくても
   // Codex/Claude の chrome MCP（--browserUrl 127.0.0.1:9222）が常に使えるようにする。
@@ -126,6 +148,12 @@ export async function createServer() {
   app.use('*', corsMiddleware);
   app.use('*', requestIdMiddleware);
 
+  // Runs after corsMiddleware so OPTIONS preflights are already answered, and
+  // before bodyLimit/auth so a cross-site request is dropped before any work.
+  app.use('/api/*', originGuard);
+  app.use('/mcp', originGuard);
+  app.use('/oauth/*', originGuard);
+
   app.use('/api/*', bodyLimit({
     maxSize: MAX_REQUEST_BODY_SIZE,
     onError: (c) => c.json({ error: 'Request body too large' }, 413),
@@ -139,18 +167,27 @@ export async function createServer() {
     onError: (c) => c.json({ error: 'Request body too large' }, 413),
   }));
 
-  if (basicAuthMiddleware) {
-    app.use('/api/*', basicAuthMiddleware);
-    app.use('/oauth/authorize', basicAuthMiddleware);
-    // code-server runs with --auth none; this same-origin proxy is the gate.
-    app.use('/codeserver/*', basicAuthMiddleware);
-  }
+  app.get('/api/auth/session', sessionStatus);
+  app.post('/api/auth/login', login);
+  app.post('/api/auth/logout', logout);
+  app.use('/api/*', sessionGuard);
+  app.use('/api/computer/*', async (c, next) => {
+    if (c.req.method !== 'GET' && !verifiedInternalActor(c) && !validBrowserMutation(c)) {
+      return c.json({ error: 'Invalid desktop origin or CSRF header' }, 403);
+    }
+    return next();
+  });
 
   app.get('/health', (c) =>
     c.json({ status: 'ok', timestamp: new Date().toISOString(), uptime: process.uptime() })
   );
 
   // Mount routers
+  app.route('/api/desktop', createDesktopRouter(sharedDesktop));
+  app.route('/api/events', createEventsRouter((c, close) => {
+    const session = currentSession(c);
+    return session ? onSessionRevoked(session.key, close) : () => {};
+  }));
   app.route('/api/settings', createSettingsRouter());
   app.route('/api/workspaces', createWorkspaceRouter(db, workspaces, workspacePathIndex));
   app.route('/api/decks', createDeckRouter(db, workspaces, decks, terminals));
@@ -159,13 +196,19 @@ export async function createServer() {
   app.route('/api/terminals', terminalRouter);
   app.route('/api/git', createGitRouter(workspaces));
   app.route('/api/browser', createBrowserRouter(browserService));
-  app.route('/codeserver', createCodeServerRouter(codeServerService));
+  app.route('/api/computer', createComputerRouter(computer, (c) => {
+    const session = currentSession(c);
+    return session ? 'browser:' + session.key : verifiedInternalActor(c);
+  }));
 
   app.get('/api/config', getConfigHandler());
 
-  app.get('/api/ws-token', (c) =>
-    c.json({ token: generateWsToken(), authEnabled: isBasicAuthEnabled() })
-  );
+  app.post('/api/ws-token', (c) => {
+    const authEnabled = isAuthEnabled();
+    const session = currentSession(c);
+    if (authEnabled && !session) return c.json({ error: 'Authentication required' }, 401);
+    return c.json({ token: authEnabled && session ? generateWsToken(session.key) : '', authEnabled });
+  });
 
   app.get('/api/ws/stats', (c) =>
     c.json({ limit: getConnectionLimit(), connections: getConnectionStats() })
@@ -203,7 +246,7 @@ export async function createServer() {
   }
 
   const server = serve({ fetch: app.fetch, port: PORT, hostname: HOST }) as Server;
-  setupWebSocketServer(server, terminals, browserService, codeServerService);
+  setupWebSocketServer(server, terminals, browserService, sharedDesktop);
 
   server.on('listening', () => {
     const baseUrl = `http://localhost:${PORT}`;
@@ -214,7 +257,7 @@ export async function createServer() {
     console.log(`Health: ${baseUrl}/health`);
     console.log('');
     console.log('Security Status:');
-    console.log(`  - Basic Auth: ${BASIC_AUTH_USER && BASIC_AUTH_PASSWORD ? 'enabled' : 'DISABLED'}`);
+    console.log(`  - Session Auth: ${isAuthEnabled() ? 'enabled' : 'DISABLED'}`);
     console.log(`  - Max File Size: ${Math.round(MAX_FILE_SIZE / 1024 / 1024)}MB`);
     console.log(`  - Max Request Body: ${Math.round(MAX_REQUEST_BODY_SIZE / 1024)}KB`);
     console.log('  - MCP OAuth: enabled');
@@ -231,15 +274,16 @@ export async function createServer() {
     shutdownPromise = (async () => {
       // Kill all terminals
       terminals.forEach((session) => {
-        session.sockets.forEach((socket) => {
-          try { socket.close(1000, 'Server shutting down'); } catch { /* ignore */ }
-        });
+        closeTerminalClients(session, 'Server shutting down');
         session.kill();
       });
       terminals.clear();
+      removeCliToken();
       stopMcpReaper?.();
+      await computer.shutdown();
       await browserService.stop();
-      await codeServerService.stopAll();
+      // Leave the desktop and its apps running for the next start.
+      sharedDesktop?.shutdown();
 
       try { db.close(); } catch { /* ignore */ }
     })();

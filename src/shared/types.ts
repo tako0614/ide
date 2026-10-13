@@ -99,6 +99,9 @@ export interface BrowserTab {
 
 export interface BrowserStatus {
   running: boolean;
+  // True when Deck connected to an externally-launched shared browser (it did
+  // not spawn Chrome itself, so it will never kill it on stop).
+  attached?: boolean;
   launching: boolean;
   profileDir: string;
   outputDir: string;
@@ -121,19 +124,6 @@ export interface BrowserAudioStatus {
   source: string | null;
   ffmpegPath: string | null;
   mimeType: string;
-  reason?: string;
-  error?: string;
-}
-
-// Capability + live state for the code-server "power editor".
-// `acquired:false` means the binary isn't installed yet.
-export interface CodeServerStatus {
-  available: boolean;
-  acquired: boolean;
-  binPath: string | null;
-  running: boolean;
-  instances: number;
-  wsId: string | null;
   reason?: string;
   error?: string;
 }

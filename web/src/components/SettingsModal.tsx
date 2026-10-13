@@ -1,10 +1,18 @@
 import { useState, useEffect } from 'react';
+import { apiJson, logout } from '../api';
 
 interface Settings {
   port: number;
-  basicAuthEnabled: boolean;
-  basicAuthUser: string;
-  basicAuthPassword: string;
+  authEnabled: boolean;
+  authUser: string;
+  passwordConfigured: boolean;
+}
+
+interface SettingsSave {
+  port: number;
+  authEnabled: boolean;
+  authUser: string;
+  authPassword?: string;
 }
 
 interface WsStats {
@@ -15,20 +23,19 @@ interface WsStats {
 interface SettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSave: (settings: Settings) => Promise<void>;
+  onSave: (settings: SettingsSave) => Promise<void>;
 }
 
 const LABEL_SETTINGS = '設定';
 const LABEL_SERVER = 'サーバー設定';
 const LABEL_PORT = 'ポート番号';
-const LABEL_AUTH = 'Basic認証';
-const LABEL_AUTH_ENABLE = 'Basic認証を有効にする';
+const LABEL_AUTH = 'セッション認証';
+const LABEL_AUTH_ENABLE = 'セッション認証を有効にする';
 const LABEL_USERNAME = 'ユーザー名';
-const LABEL_PASSWORD = 'パスワード';
-const LABEL_PASSWORD_NOTE = '※ 12文字以上推奨';
+const LABEL_PASSWORD = '新しいパスワード';
+const LABEL_PASSWORD_NOTE = '変更する場合は12文字以上入力してください。空欄なら現在のパスワードを維持します。';
 const LABEL_CANCEL = 'キャンセル';
 const LABEL_SAVE = '保存';
-const LABEL_RESTART_NOTE = '※ 設定を保存すると、サーバーが再起動されます';
 const LABEL_WEBSOCKET = 'WebSocket設定';
 const LABEL_WS_LIMIT = '接続数上限 (IP毎)';
 const LABEL_WS_CONNECTIONS = '現在の接続数';
@@ -39,9 +46,10 @@ const INPUT_CLASS = 'bg-panel border border-border rounded-[2px] px-2 py-1.5 tex
 
 export function SettingsModal({ isOpen, onClose, onSave }: SettingsModalProps) {
   const [port, setPort] = useState(8787);
-  const [basicAuthEnabled, setBasicAuthEnabled] = useState(false);
-  const [basicAuthUser, setBasicAuthUser] = useState('');
-  const [basicAuthPassword, setBasicAuthPassword] = useState('');
+  const [authEnabled, setAuthEnabled] = useState(false);
+  const [authUser, setAuthUser] = useState('');
+  const [passwordConfigured, setPasswordConfigured] = useState(false);
+  const [authPassword, setAuthPassword] = useState('');
   const [isSaving, setIsSaving] = useState(false);
 
   // WebSocket settings
@@ -50,9 +58,8 @@ export function SettingsModal({ isOpen, onClose, onSave }: SettingsModalProps) {
   const [isClearing, setIsClearing] = useState(false);
 
   const loadWsStats = () => {
-    fetch('/api/ws/stats')
-      .then(res => res.json())
-      .then((data: WsStats) => {
+    apiJson<WsStats>('/api/ws/stats')
+      .then((data) => {
         setWsStats(data);
         setWsLimit(data.limit);
       })
@@ -72,13 +79,13 @@ export function SettingsModal({ isOpen, onClose, onSave }: SettingsModalProps) {
 
   useEffect(() => {
     if (isOpen) {
-      fetch('/api/settings')
-        .then(res => res.json())
-        .then((data: Settings) => {
+      apiJson<Settings>('/api/settings')
+        .then((data) => {
           setPort(data.port);
-          setBasicAuthEnabled(data.basicAuthEnabled);
-          setBasicAuthUser(data.basicAuthUser);
-          setBasicAuthPassword(data.basicAuthPassword);
+          setAuthEnabled(data.authEnabled);
+          setAuthUser(data.authUser);
+          setPasswordConfigured(data.passwordConfigured);
+          setAuthPassword('');
         })
         .catch(err => {
           console.error('Failed to load settings:', err);
@@ -90,7 +97,7 @@ export function SettingsModal({ isOpen, onClose, onSave }: SettingsModalProps) {
 
   const handleWsLimitApply = async () => {
     try {
-      await fetch('/api/ws/limit', {
+      await apiJson('/api/ws/limit', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ limit: wsLimit })
@@ -104,7 +111,7 @@ export function SettingsModal({ isOpen, onClose, onSave }: SettingsModalProps) {
   const handleWsClear = async () => {
     setIsClearing(true);
     try {
-      await fetch('/api/ws/clear', { method: 'POST' });
+      await apiJson('/api/ws/clear', { method: 'POST' });
       loadWsStats();
     } catch (err) {
       console.error('Failed to clear WS connections:', err);
@@ -119,10 +126,11 @@ export function SettingsModal({ isOpen, onClose, onSave }: SettingsModalProps) {
     try {
       await onSave({
         port,
-        basicAuthEnabled,
-        basicAuthUser,
-        basicAuthPassword
+        authEnabled,
+        authUser,
+        ...(authPassword ? { authPassword } : {})
       });
+      setAuthPassword('');
       onClose();
     } catch (err) {
       console.error('Failed to save settings:', err);
@@ -171,14 +179,14 @@ export function SettingsModal({ isOpen, onClose, onSave }: SettingsModalProps) {
                 <label className="flex items-center gap-2 text-xs cursor-pointer">
                   <input
                     type="checkbox"
-                    checked={basicAuthEnabled}
-                    onChange={(e) => setBasicAuthEnabled(e.target.checked)}
+                    checked={authEnabled}
+                    onChange={(e) => setAuthEnabled(e.target.checked)}
                   />
                   <span>{LABEL_AUTH_ENABLE}</span>
                 </label>
               </div>
 
-              {basicAuthEnabled && (
+              {authEnabled && (
                 <>
                   <div className="flex flex-col gap-1">
                     <label htmlFor="username" className="text-xs text-ink-muted">{LABEL_USERNAME}</label>
@@ -186,9 +194,9 @@ export function SettingsModal({ isOpen, onClose, onSave }: SettingsModalProps) {
                       type="text"
                       id="username"
                       className={INPUT_CLASS}
-                      value={basicAuthUser}
-                      onChange={(e) => setBasicAuthUser(e.target.value)}
-                      required={basicAuthEnabled}
+                      value={authUser}
+                      onChange={(e) => setAuthUser(e.target.value)}
+                      required={authEnabled}
                       autoComplete="username"
                     />
                   </div>
@@ -199,14 +207,23 @@ export function SettingsModal({ isOpen, onClose, onSave }: SettingsModalProps) {
                       type="password"
                       id="password"
                       className={INPUT_CLASS}
-                      value={basicAuthPassword}
-                      onChange={(e) => setBasicAuthPassword(e.target.value)}
-                      required={basicAuthEnabled}
-                      minLength={12}
+                      value={authPassword}
+                      onChange={(e) => setAuthPassword(e.target.value)}
+                      required={authEnabled && !passwordConfigured}
+                      minLength={authPassword ? 12 : undefined}
                       autoComplete="new-password"
                     />
-                    <p className="m-0 text-[11px] text-muted">{LABEL_PASSWORD_NOTE}</p>
+                    <p className="m-0 text-[11px] text-muted">
+                      {passwordConfigured ? LABEL_PASSWORD_NOTE : '初回設定は12文字以上のパスワードが必要です。'}
+                    </p>
                   </div>
+                  <button
+                    type="button"
+                    className="border border-border bg-transparent text-ink px-2.5 py-1.5 text-xs rounded-[2px] cursor-pointer hover:bg-list-hover self-start"
+                    onClick={() => void logout().catch((err) => console.error('Failed to log out:', err))}
+                  >
+                    ログアウト
+                  </button>
                 </>
               )}
             </section>
@@ -264,7 +281,6 @@ export function SettingsModal({ isOpen, onClose, onSave }: SettingsModalProps) {
               </div>
             </section>
 
-            <p className="m-0 text-[11px] text-muted italic">{LABEL_RESTART_NOTE}</p>
           </div>
 
           <div className="flex justify-end gap-2 mt-4 border-t border-border pt-4">

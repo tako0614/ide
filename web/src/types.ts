@@ -16,7 +16,6 @@ export type {
   ApiTerminalCreateResponse,
   BrowserAudioStatus,
   BrowserWebRtcStatus,
-  CodeServerStatus,
   BrowserStatus,
   BrowserTab,
   BrowserNavigateRequest,

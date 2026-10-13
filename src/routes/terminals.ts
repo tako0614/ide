@@ -4,10 +4,13 @@ import { spawn } from 'node-pty';
 import type { IPty } from 'node-pty';
 import type { WebSocket } from 'ws';
 import type { Deck, TerminalSession } from '../types.js';
-import { TERMINAL_BUFFER_LIMIT } from '../config.js';
+import { DATA_DIR, PORT, TERMINAL_BUFFER_LIMIT, TERMINAL_MIRROR_SCROLLBACK } from '../config.js';
 import { createHttpError, handleError, readJson } from '../utils/error.js';
 import { getDefaultShell, getAvailableLocales, getShellBasename } from '../utils/shell.js';
 import { alignToUtf8Start, skipPartialEscapeSequence } from '../utils/utf8.js';
+import { createTerminalMirror } from '../utils/terminal-mirror.js';
+import { clampTerminalSize, closeTerminalClients, resizeTerminal } from '../utils/terminal-control.js';
+import { emitDeckIdeEvent } from '../utils/events.js';
 
 const DEFAULT_TERMINAL_TITLE = 'ターミナル';
 const MAX_SOCKET_BUFFERED_AMOUNT = 1024 * 1024;
@@ -15,9 +18,6 @@ const MAX_SOCKET_BUFFERED_AMOUNT = 1024 * 1024;
 // 初期端末サイズ（リクエストで指定がない場合のデフォルト）。
 const DEFAULT_TERMINAL_COLS = 120;
 const DEFAULT_TERMINAL_ROWS = 32;
-// WebSocket の resize と同じ範囲でバリデーションする。
-const MIN_TERMINAL_SIZE = 1;
-const MAX_TERMINAL_SIZE = 500;
 
 // ログインシェルとして扱う POSIX シェルのベース名。
 const POSIX_LOGIN_SHELLS = new Set(['bash', 'zsh', 'sh', 'fish', 'csh', 'tcsh']);
@@ -27,18 +27,30 @@ function isUtf8Locale(value: string | undefined): boolean {
   return /\.(utf-?8)$/i.test(value);
 }
 
-/**
- * リクエストボディの cols/rows を整数化し 1..500 の範囲に収める。
- * 数値でない場合は fallback を返す。
- */
-function normalizeTerminalSize(value: unknown, fallback: number): number {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    return fallback;
+// Input accepted per POST /api/terminals/:id/input request (CLI `deckide send`).
+const MAX_HTTP_INPUT_BYTES = 1024 * 1024;
+
+/** Public view of a terminal for list/info responses (CLI `deckide ls`). */
+function describeTerminal(session: TerminalSession) {
+  let web = 0;
+  let cli = 0;
+  for (const client of session.clients.values()) {
+    if (client.kind === 'cli') cli++;
+    else web++;
   }
-  const intValue = Math.floor(value);
-  if (intValue < MIN_TERMINAL_SIZE) return MIN_TERMINAL_SIZE;
-  if (intValue > MAX_TERMINAL_SIZE) return MAX_TERMINAL_SIZE;
-  return intValue;
+  const owner = session.resizeOwner ? session.clients.get(session.resizeOwner) : undefined;
+  return {
+    id: session.id,
+    deckId: session.deckId,
+    title: session.title,
+    liveTitle: session.mirror?.title() ?? null,
+    command: session.command,
+    createdAt: session.createdAt,
+    cols: session.cols,
+    rows: session.rows,
+    clients: { web, cli, primary: owner?.kind ?? null },
+    lastActive: new Date(session.lastActive).toISOString(),
+  };
 }
 
 /**
@@ -228,12 +240,8 @@ export function createTerminalRouter(
 
     console.log(`[TERMINAL] Terminal ${id} exited`);
     terminals.delete(id);
-
-    session.sockets.forEach((socket) => {
-      try { socket.close(1000, 'Terminal exited'); } catch { /* ignore */ }
-    });
-    session.sockets.clear();
-    session.resizeOwner = null;
+    closeTerminalClients(session, 'Terminal exited');
+    emitDeckIdeEvent({ type: 'terminal.removed', deckId: session.deckId, terminalId: id, reason: 'exited' });
   }
 
   function createTerminalSession(
@@ -279,6 +287,12 @@ export function createTerminalRouter(
       if (value !== undefined) env[key] = value;
     }
     env.TERM = env.TERM || 'xterm-256color';
+    // Lets `deckide` run inside this terminal find its server and act on
+    // "this" deck/terminal by default (e.g. `deckide new` opens a sibling).
+    env.DECKIDE_TERMINAL_ID = id;
+    env.DECKIDE_DECK_ID = deck.id;
+    env.DECKIDE_DATA_DIR = DATA_DIR;
+    env.DECKIDE_PORT = String(PORT);
     env.COLORTERM = 'truecolor';
     env.TERM_PROGRAM = 'xterm.js';
     env.TERM_PROGRAM_VERSION = '5.5.0';
@@ -326,7 +340,13 @@ export function createTerminalRouter(
       command: command || null,
       createdAt,
       sockets: new Set(),
+      clients: new Map(),
       resizeOwner: null,
+      cols,
+      rows,
+      lastResizeOffset: 0,
+      resizeEpoch: 0,
+      mirror: null,
       bufferChunks: [],
       bufferLength: 0,
       bufferBase: 0,
@@ -338,6 +358,12 @@ export function createTerminalRouter(
       resize: (cols, rows) => { try { term.resize(cols, rows); } catch { /* terminal may be dying */ } },
       kill: () => { try { term.kill(); } catch { /* already dead */ } },
     };
+    session.mirror = createTerminalMirror({
+      cols,
+      rows,
+      scrollback: TERMINAL_MIRROR_SCROLLBACK,
+      currentOffset: () => session.bufferBase + session.bufferLength,
+    });
 
     // ── Flow control ────────────────────────────────────────────────────
     // Instead of closing a slow client when its send buffer fills (which then
@@ -405,9 +431,11 @@ export function createTerminalRouter(
 
     // Wire up PTY output → buffer + WebSocket broadcast
     (term as unknown as { on(eventName: 'data', listener: (data: Buffer | string) => void): void }).on('data', (data) => {
-      appendToTerminalBuffer(session, data);
+      const chunk = toBuffer(data);
+      session.mirror?.write(chunk);
+      appendToTerminalBuffer(session, chunk);
       session.lastActive = Date.now();
-      broadcastToSockets(session, data);
+      broadcastToSockets(session, chunk);
       if (!ptyPaused && maxBufferedAmount() > FLOW_HIGH_WATER) {
         pausePty();
       }
@@ -419,23 +447,79 @@ export function createTerminalRouter(
     });
 
     terminals.set(id, session);
+    emitDeckIdeEvent({
+      type: 'terminal.created',
+      deckId: deck.id,
+      terminal: { id, title: resolvedTitle, createdAt },
+    });
 
     return session;
   }
 
+  function requireTerminal(id: string): TerminalSession {
+    const session = terminals.get(id);
+    if (!session) throw createHttpError('Terminal not found', 404);
+    return session;
+  }
+
+  // ?deckId= limits to one deck; without it every terminal is listed (CLI).
   router.get('/', (c) => {
     const deckId = c.req.query('deckId');
-    if (!deckId) {
-      return c.json({ error: 'deckId is required' }, 400);
-    }
-    const sessions: Array<{ id: string; title: string; createdAt: string }> = [];
-    terminals.forEach((session) => {
-      if (session.deckId === deckId) {
-        sessions.push({ id: session.id, title: session.title, createdAt: session.createdAt });
-      }
-    });
+    const sessions = Array.from(terminals.values())
+      .filter((session) => !deckId || session.deckId === deckId)
+      .map(describeTerminal);
     sessions.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     return c.json(sessions);
+  });
+
+  router.get('/:id', (c) => {
+    try {
+      return c.json(describeTerminal(requireTerminal(c.req.param('id'))));
+    } catch (error) {
+      return handleError(c, error);
+    }
+  });
+
+  // Send keyboard input without attaching (CLI `deckide send`).
+  router.post('/:id/input', async (c) => {
+    try {
+      const session = requireTerminal(c.req.param('id'));
+      const body = await readJson<{ data?: unknown }>(c);
+      if (typeof body?.data !== 'string') throw createHttpError('data must be a string', 400);
+      const bytes = Buffer.byteLength(body.data, 'utf8');
+      if (bytes > MAX_HTTP_INPUT_BYTES) throw createHttpError('data is too large', 413);
+      session.write(body.data);
+      session.lastActive = Date.now();
+      return c.json({ bytesWritten: bytes });
+    } catch (error) {
+      return handleError(c, error);
+    }
+  });
+
+  // Set the PTY size for every client (resizes are otherwise driven by the
+  // primary client's viewport, which takes over again when it next resizes).
+  router.post('/:id/resize', async (c) => {
+    try {
+      const session = requireTerminal(c.req.param('id'));
+      const body = await readJson<{ cols?: unknown; rows?: unknown }>(c);
+      const cols = clampTerminalSize(body?.cols, session.cols);
+      const rows = clampTerminalSize(body?.rows, session.rows);
+      resizeTerminal(session, cols, rows);
+      return c.json({ cols: session.cols, rows: session.rows });
+    } catch (error) {
+      return handleError(c, error);
+    }
+  });
+
+  // Ask open web UIs to bring this terminal to the front.
+  router.post('/:id/focus', (c) => {
+    try {
+      const session = requireTerminal(c.req.param('id'));
+      emitDeckIdeEvent({ type: 'ui.focus', deckId: session.deckId, terminalId: session.id });
+      return c.json({ ok: true });
+    } catch (error) {
+      return handleError(c, error);
+    }
   });
 
   router.post('/', async (c) => {
@@ -451,10 +535,10 @@ export function createTerminalRouter(
       if (!deckId) throw createHttpError('deckId is required', 400);
       const deck = decks.get(deckId);
       if (!deck) throw createHttpError('Deck not found', 404);
-      const cols = normalizeTerminalSize(body?.cols, DEFAULT_TERMINAL_COLS);
-      const rows = normalizeTerminalSize(body?.rows, DEFAULT_TERMINAL_ROWS);
+      const cols = clampTerminalSize(body?.cols, DEFAULT_TERMINAL_COLS);
+      const rows = clampTerminalSize(body?.rows, DEFAULT_TERMINAL_ROWS);
       const session = createTerminalSession(deck, body?.title, body?.command, cols, rows);
-      return c.json({ id: session.id, title: session.title }, 201);
+      return c.json({ id: session.id, title: session.title, deckId: deck.id, cols, rows }, 201);
     } catch (error) {
       return handleError(c, error);
     }
@@ -467,14 +551,9 @@ export function createTerminalRouter(
       if (!session) throw createHttpError('Terminal not found', 404);
 
       terminals.delete(terminalId);
-
-      session.sockets.forEach((socket) => {
-        try { socket.close(1000, 'Terminal deleted'); } catch { /* ignore */ }
-      });
-      session.sockets.clear();
-      session.resizeOwner = null;
-
+      closeTerminalClients(session, 'Terminal deleted');
       session.kill();
+      emitDeckIdeEvent({ type: 'terminal.removed', deckId: session.deckId, terminalId, reason: 'deleted' });
 
       return c.body(null, 204);
     } catch (error) {

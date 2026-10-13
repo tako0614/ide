@@ -93,6 +93,28 @@ export async function resolveSafePath(workspacePath: string, inputPath = ''): Pr
 }
 
 /**
+ * True when `target` (already resolved through resolveSafePath) is the
+ * workspace root itself rather than something inside it. Root-equivalent
+ * inputs such as '', '.' and 'sub/..' all normalize to the root and pass the
+ * containment checks, so destructive callers have to reject it explicitly.
+ */
+export async function isWorkspaceRoot(workspacePath: string, target: string): Promise<boolean> {
+  const root = path.resolve(workspacePath);
+  if (path.relative(root, target) === '') {
+    return true;
+  }
+
+  // resolveSafePath returns a realpath for existing targets, so a symlinked
+  // workspace root only matches after resolving the root too.
+  try {
+    const realRoot = await fs.realpath(root);
+    return path.relative(realRoot, target) === '';
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Validates a file path without resolving it.
  * Useful for quick validation before more expensive operations.
  */

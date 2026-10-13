@@ -3,14 +3,14 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import type { TerminalSession } from '../types.js';
 import { alignToUtf8Start, alignToUtf8End } from '../utils/utf8.js';
+import { resizeTerminal } from '../utils/terminal-control.js';
 import {
-  BASIC_AUTH_PASSWORD,
-  BASIC_AUTH_USER,
   CORS_ORIGIN,
   NODE_ENV,
   PORT,
   TRUST_PROXY,
 } from '../config.js';
+import { currentSession, internalBridgeHeader, isAuthEnabled, oauthCsrfToken, validOauthConsent } from '../middleware/auth.js';
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 type JsonRecord = Record<string, unknown>;
@@ -47,11 +47,13 @@ type McpTool = {
   description: string;
   inputSchema: JsonRecord;
   annotations?: JsonRecord;
+  imageResult?: boolean;
   handler: (args: JsonRecord, ctx: ToolContext) => Promise<unknown> | unknown;
 };
 
 type ToolContext = {
   resource: string;
+  actor: string;
 };
 
 type CreateMcpRouterOptions = {
@@ -75,12 +77,21 @@ const PROTOCOL_VERSION = '2025-11-25';
 const SUPPORTED_PROTOCOL_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26'];
 const ACCESS_TOKEN_TTL_SECONDS = 60 * 60;
 const AUTH_CODE_TTL_MS = 5 * 60 * 1000;
+const MAX_OAUTH_CLIENTS = 256;
+const MAX_OAUTH_CODES = 256;
+const MAX_OAUTH_TOKENS = 1024;
 const OAUTH_SCOPE = 'deckide:all';
 const clients = new Map<string, OAuthClient>();
 const authorizationCodes = new Map<string, AuthorizationCode>();
 const accessTokens = new Map<string, AccessToken>();
 
-setInterval(() => {
+/** Credential rotation removes grants issued under the former operator authority. */
+export function revokeMcpGrants(): void {
+  authorizationCodes.clear();
+  accessTokens.clear();
+}
+
+function cleanExpiredGrants(): void {
   const now = Date.now();
   for (const [code, record] of authorizationCodes.entries()) {
     if (record.expiresAt <= now) authorizationCodes.delete(code);
@@ -88,7 +99,8 @@ setInterval(() => {
   for (const [token, record] of accessTokens.entries()) {
     if (record.expiresAt <= now) accessTokens.delete(token);
   }
-}, 60_000).unref();
+}
+setInterval(cleanExpiredGrants, 60_000).unref();
 
 function jsonRpcResult(id: RequestId, result: unknown) {
   return { jsonrpc: '2.0', id, result };
@@ -273,8 +285,10 @@ async function readForm(c: Context): Promise<URLSearchParams> {
   return new URLSearchParams(text);
 }
 
-function renderConsentPage(params: URLSearchParams, client: OAuthClient): string {
-  const hiddenInputs = Array.from(params.entries())
+function renderConsentPage(params: URLSearchParams, client: OAuthClient, csrfToken: string | null): string {
+  const allowed = new Set(['response_type', 'client_id', 'redirect_uri', 'code_challenge',
+    'code_challenge_method', 'resource', 'scope', 'state']);
+  const hiddenInputs = Array.from(params.entries()).filter(([key]) => allowed.has(key))
     .map(([key, value]) => `<input type="hidden" name="${escapeHtml(key)}" value="${escapeHtml(value)}">`)
     .join('\n');
   const scope = params.get('scope') || OAUTH_SCOPE;
@@ -297,9 +311,10 @@ function renderConsentPage(params: URLSearchParams, client: OAuthClient): string
     <h1>Deck IDE MCP access</h1>
     <p><strong>${escapeHtml(client.clientName || client.clientId)}</strong> にDeck IDEのMCPツール使用を許可します。</p>
     <p>Scope: <code>${escapeHtml(scope)}</code></p>
-    <p>許可すると、このクライアントはワークスペース、ファイル、デッキ、端末、Git、設定、サーバー操作をMCP経由で実行できます。</p>
+    <p>許可すると、このクライアントはワークスペース、ファイル、デッキ、端末、Git、設定、サーバー操作と専用デスクトップの表示・操作をMCP経由で実行できます。</p>
     <form method="post" action="/oauth/authorize">
       ${hiddenInputs}
+      ${csrfToken ? `<input type="hidden" name="deckide_csrf" value="${escapeHtml(csrfToken)}">` : ''}
       <button type="submit" name="decision" value="approve">許可</button>
       <button class="secondary" type="submit" name="decision" value="deny">拒否</button>
     </form>
@@ -319,7 +334,8 @@ function validateAuthorizationRequest(params: URLSearchParams, c: Context) {
   if (responseType !== 'code') throw new ToolExecutionError('response_type must be code', 400);
   if (!clientId) throw new ToolExecutionError('client_id is required', 400);
   if (!redirectUri) throw new ToolExecutionError('redirect_uri is required', 400);
-  if (!codeChallenge) throw new ToolExecutionError('code_challenge is required', 400);
+  if (!codeChallenge || !/^[A-Za-z0-9_-]{43}$/.test(codeChallenge)) throw new ToolExecutionError('code_challenge must be an S256 digest', 400);
+  if ((params.get('state')?.length ?? 0) > 1024) throw new ToolExecutionError('state is too long', 400);
   if (codeChallengeMethod !== 'S256') throw new ToolExecutionError('code_challenge_method must be S256', 400);
   if (resource !== getMcpResource(c)) throw new ToolExecutionError('resource does not match this MCP server', 400);
 
@@ -331,11 +347,6 @@ function validateAuthorizationRequest(params: URLSearchParams, c: Context) {
 
   const scopes = normalizeScopes(params.get('scope'));
   return { client, clientId, redirectUri, codeChallenge, scopes, resource };
-}
-
-function basicAuthHeader(): string | undefined {
-  if (!BASIC_AUTH_USER || !BASIC_AUTH_PASSWORD) return undefined;
-  return `Basic ${Buffer.from(`${BASIC_AUTH_USER}:${BASIC_AUTH_PASSWORD}`).toString('base64')}`;
 }
 
 function appendQuery(path: string, query?: JsonRecord): string {
@@ -352,11 +363,12 @@ function appendQuery(path: string, query?: JsonRecord): string {
   return `${url.pathname}${url.search}`;
 }
 
-async function apiJson(apiFetch: (request: Request) => Promise<Response>, method: string, path: string, body?: unknown): Promise<unknown> {
+async function apiJson(apiFetch: (request: Request) => Promise<Response>, method: string, path: string, body?: unknown, ctx?: ToolContext): Promise<unknown> {
   const headers = new Headers();
   headers.set('Accept', 'application/json');
-  const auth = basicAuthHeader();
-  if (auth) headers.set('Authorization', auth);
+  headers.set('Host', `localhost:${PORT}`);
+  headers.set('X-DeckIDE-Internal', internalBridgeHeader());
+  if (ctx) headers.set('X-DeckIDE-Actor', ctx.actor);
 
   let requestBody: string | undefined;
   if (body !== undefined) {
@@ -364,7 +376,7 @@ async function apiJson(apiFetch: (request: Request) => Promise<Response>, method
     requestBody = JSON.stringify(body);
   }
 
-  const response = await apiFetch(new Request(`http://deckide.local${path}`, {
+  const response = await apiFetch(new Request(`http://localhost:${PORT}${path}`, {
     method,
     headers,
     body: requestBody,
@@ -398,9 +410,9 @@ function apiTool(
   path: string | ((args: JsonRecord) => string),
   body?: (args: JsonRecord) => unknown
 ) {
-  return (args: JsonRecord) => {
+  return (args: JsonRecord, ctx: ToolContext) => {
     const resolvedPath = typeof path === 'function' ? path(args) : path;
-    return apiJson(apiFetch, method, resolvedPath, body ? body(args) : undefined);
+    return apiJson(apiFetch, method, resolvedPath, body ? body(args) : undefined, ctx);
   };
 }
 
@@ -470,10 +482,9 @@ function terminalWrite(terminals: Map<string, TerminalSession>, args: JsonRecord
 }
 
 function terminalResize(terminals: Map<string, TerminalSession>, args: JsonRecord) {
-  // 注意: ブラウザクライアントが接続中の場合、そのクライアントの
-  // ResizeObserver/fit が次のフレームでサイズを再設定するため、この
-  // リサイズは一時的になる。クライアント未接続（ヘッドレス）の端末では
-  // 指定サイズがそのまま維持される。
+  // 接続中の全クライアントへ新サイズを配信する（resizeTerminal 経由）。
+  // 主クライアントのビューポートが次に変化するか、誰かが操作権を取ると
+  // そのクライアントのサイズに戻る。
   const terminalId = stringArg(args, 'terminalId');
   const cols = numberArg(args, 'cols');
   const rows = numberArg(args, 'rows');
@@ -483,7 +494,7 @@ function terminalResize(terminals: Map<string, TerminalSession>, args: JsonRecor
   if (!cols || !rows || cols < 1 || rows < 1 || cols > 500 || rows > 500) {
     throw new ToolExecutionError('cols and rows must be within a reasonable terminal size', 400);
   }
-  session.resize(Math.floor(cols), Math.floor(rows));
+  resizeTerminal(session, Math.floor(cols), Math.floor(rows));
   session.lastActive = Date.now();
   return { terminalId, cols: Math.floor(cols), rows: Math.floor(rows) };
 }
@@ -510,20 +521,20 @@ function buildTools(options: CreateMcpRouterOptions): McpTool[] {
     {
       name: 'deckide.settings.get',
       title: 'Get settings',
-      description: 'Return Deck IDE settings with any configured Basic Auth password masked.',
+      description: 'Return Deck IDE settings without the password verifier.',
       inputSchema: emptySchema(),
       handler: apiTool(api, 'GET', '/api/settings'),
     },
     {
       name: 'deckide.settings.update',
       title: 'Update settings',
-      description: 'Update Deck IDE settings. A server restart may be required for auth and port changes.',
+      description: 'Update Deck IDE settings. A server restart is required for a port change.',
       inputSchema: schema({
         port: { type: 'number' },
-        basicAuthEnabled: { type: 'boolean' },
-        basicAuthUser: { type: 'string' },
-        basicAuthPassword: { type: 'string' },
-      }, ['port', 'basicAuthEnabled', 'basicAuthUser', 'basicAuthPassword']),
+        authEnabled: { type: 'boolean' },
+        authUser: { type: 'string' },
+        authPassword: { type: 'string' },
+      }),
       annotations: { destructiveHint: true },
       handler: apiTool(api, 'POST', '/api/settings', (args) => args),
     },
@@ -979,11 +990,59 @@ function buildTools(options: CreateMcpRouterOptions): McpTool[] {
       handler: apiTool(api, 'POST', '/api/ws/clear', () => ({})),
     },
     {
-      name: 'deckide.websocket.create_token',
-      title: 'Create WebSocket token',
-      description: 'Create a short-lived one-time WebSocket auth token.',
+      name: 'deckide.computer.status',
+      title: 'Desktop status',
+      description: 'Check whether the optional private Linux desktop is available and running.',
       inputSchema: emptySchema(),
-      handler: apiTool(api, 'GET', '/api/ws-token'),
+      annotations: { readOnlyHint: true },
+      handler: apiTool(api, 'GET', '/api/computer/status'),
+    },
+    {
+      name: 'deckide.computer.prepare',
+      title: 'Prepare desktop',
+      description: 'Start the optional private virtual desktop. This does not open or capture the host desktop.',
+      inputSchema: emptySchema(),
+      handler: apiTool(api, 'POST', '/api/computer/prepare', () => ({})),
+    },
+    {
+      name: 'deckide.computer.stop',
+      title: 'Stop desktop',
+      description: 'Stop the private desktop and its applications, discarding their temporary profile.',
+      inputSchema: emptySchema(),
+      annotations: { destructiveHint: true },
+      handler: apiTool(api, 'POST', '/api/computer/stop', () => ({})),
+    },
+    {
+      name: 'deckide.computer.launch',
+      title: 'Launch desktop application',
+      description: 'Open a terminal or sandboxed browser on the private desktop. Browser launch requires a non-root server. Only HTTP/HTTPS URLs are accepted.',
+      inputSchema: schema({ app: { type: 'string', enum: ['browser', 'terminal'] }, url: { type: 'string' } }, ['app']),
+      handler: apiTool(api, 'POST', '/api/computer/launch', (args) => ({
+        app: stringArg(args, 'app'), url: stringArg(args, 'url', false),
+      })),
+    },
+    {
+      name: 'deckide.computer.screenshot',
+      title: 'Observe desktop',
+      description: 'Return a JPEG observation of the private desktop at 960 x 540 and a single-use observationId valid for 30 seconds. Coordinates in input use this image. Pass previousHash to omit identical image bytes. Take a fresh observation after every input.',
+      inputSchema: schema({ previousHash: { type: 'string' } }),
+      annotations: { readOnlyHint: true },
+      imageResult: true,
+      handler: apiTool(api, 'POST', '/api/computer/screenshot', (args) => ({ previousHash: stringArg(args, 'previousHash', false) })),
+    },
+    {
+      name: 'deckide.computer.input',
+      title: 'Operate desktop',
+      description: 'Click, type, press a key, scroll, or drag using a fresh observationId from this MCP grant. Coordinates are pixels in the 960 x 540 screenshot. Each input consumes its observation; observe again before the next input.',
+      inputSchema: schema({
+        observationId: { type: 'string' },
+        action: { type: 'string', enum: ['click', 'type', 'key', 'scroll', 'drag'] },
+        x: { type: 'number' }, y: { type: 'number' }, toX: { type: 'number' }, toY: { type: 'number' },
+        text: { type: 'string', maxLength: 16384 }, key: { type: 'string' },
+        direction: { type: 'string', enum: ['up', 'down'] }, steps: { type: 'number' },
+      }, ['observationId', 'action']),
+      annotations: { destructiveHint: true },
+      handler: apiTool(api, 'POST', '/api/computer/input', (args) => args),
     },
     {
       name: 'deckide.api.request',
@@ -996,7 +1055,7 @@ function buildTools(options: CreateMcpRouterOptions): McpTool[] {
         body: { type: 'object' },
       }, ['method', 'path']),
       annotations: { destructiveHint: true },
-      handler: (args) => {
+      handler: (args, ctx) => {
         const method = stringArg(args, 'method')!.toUpperCase();
         const path = stringArg(args, 'path')!;
         if (!['GET', 'POST', 'PUT', 'DELETE'].includes(method)) {
@@ -1007,7 +1066,7 @@ function buildTools(options: CreateMcpRouterOptions): McpTool[] {
         }
         const query = objectArg(args, 'query');
         const body = objectArg(args, 'body');
-        return apiJson(api, method, appendQuery(path, query), body);
+        return apiJson(api, method, appendQuery(path, query), body, ctx);
       },
     },
   ];
@@ -1025,6 +1084,16 @@ function toolResult(data: unknown) {
     structuredContent,
     isError: false,
   };
+}
+
+function screenshotToolResult(data: unknown) {
+  if (!isObject(data)) return toolResult(data);
+  const { image, ...metadata } = data;
+  const content: JsonRecord[] = [{ type: 'text', text: JSON.stringify(metadata, null, 2) }];
+  if (isObject(image) && image.type === 'image' && image.mimeType === 'image/jpeg' && typeof image.data === 'string') {
+    content.push({ type: 'image', mimeType: image.mimeType, data: image.data });
+  }
+  return { content, structuredContent: metadata, isError: false };
 }
 
 function toolErrorResult(error: unknown) {
@@ -1060,7 +1129,7 @@ export function createMcpRouter(options: CreateMcpRouterOptions) {
   const tools = buildTools(options);
   const toolByName = new Map(tools.map((tool) => [tool.name, tool]));
 
-  async function handleMcpRequest(message: JsonRecord, resource: string) {
+  async function handleMcpRequest(message: JsonRecord, resource: string, actor: string) {
     const id = (message.id ?? null) as RequestId;
     const method = message.method;
 
@@ -1093,7 +1162,7 @@ export function createMcpRouter(options: CreateMcpRouterOptions) {
         return jsonRpcResult(id, {});
       case 'tools/list':
         return jsonRpcResult(id, {
-          tools: tools.map(({ handler: _handler, ...tool }) => tool),
+          tools: tools.map(({ handler: _handler, imageResult: _imageResult, ...tool }) => tool),
         });
       case 'tools/call': {
         const params = isObject(message.params) ? message.params : {};
@@ -1107,8 +1176,8 @@ export function createMcpRouter(options: CreateMcpRouterOptions) {
           return jsonRpcError(id, -32602, `Unknown tool: ${name}`);
         }
         try {
-          const result = await tool.handler(args, { resource });
-          return jsonRpcResult(id, toolResult(result));
+          const result = await tool.handler(args, { resource, actor });
+          return jsonRpcResult(id, tool.imageResult ? screenshotToolResult(result) : toolResult(result));
         } catch (error) {
           return jsonRpcResult(id, toolErrorResult(error));
         }
@@ -1166,16 +1235,19 @@ export function createMcpRouter(options: CreateMcpRouterOptions) {
     } catch {
       return c.json({ error: 'invalid_client_metadata', error_description: 'Expected JSON body' }, 400);
     }
-
-    const redirectUris = Array.isArray(body.redirect_uris)
-      ? body.redirect_uris.filter((uri): uri is string => typeof uri === 'string')
-      : [];
-    if (redirectUris.length === 0 || redirectUris.some((uri) => !validRedirectUri(uri))) {
+    if (!isObject(body) ||
+      (body.client_name !== undefined && (typeof body.client_name !== 'string' || body.client_name.length > 256))) {
+      return c.json({ error: 'invalid_client_metadata' }, 400);
+    }
+    const redirectUris = body.redirect_uris;
+    if (!Array.isArray(redirectUris) || redirectUris.length === 0 || redirectUris.length > 8 ||
+      redirectUris.some((uri) => typeof uri !== 'string' || uri.length > 2048 || !validRedirectUri(uri))) {
       return c.json({
         error: 'invalid_redirect_uri',
         error_description: 'redirect_uris must contain HTTPS or localhost HTTP redirect URIs',
       }, 400);
     }
+    if (clients.size >= MAX_OAUTH_CLIENTS) return c.json({ error: 'temporarily_unavailable', error_description: 'Client registration capacity reached' }, 429);
 
     const clientId = `deckide-${crypto.randomUUID()}`;
     const client: OAuthClient = {
@@ -1199,10 +1271,17 @@ export function createMcpRouter(options: CreateMcpRouterOptions) {
   });
 
   router.get('/oauth/authorize', (c) => {
+    if (isAuthEnabled() && !currentSession(c)) {
+      const url = new URL(c.req.url);
+      const continuation = '/oauth/authorize' + url.search;
+      if (continuation.length > 4096) return c.text('Authorization request too large', 414);
+      return c.redirect('/?returnTo=' + encodeURIComponent(continuation));
+    }
     try {
       const params = new URL(c.req.url).searchParams;
       const { client } = validateAuthorizationRequest(params, c);
-      return c.html(renderConsentPage(params, client));
+      c.header('Cache-Control', 'no-store');
+      return c.html(renderConsentPage(params, client, oauthCsrfToken(c)));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return c.text(message, error instanceof ToolExecutionError && error.status ? error.status as 400 : 400);
@@ -1212,8 +1291,12 @@ export function createMcpRouter(options: CreateMcpRouterOptions) {
   router.post('/oauth/authorize', async (c) => {
     try {
       const params = await readForm(c);
+      if (isAuthEnabled() && !currentSession(c)) return c.text('Authentication required', 401);
+      if (!validOauthConsent(c, params.get('deckide_csrf'))) return c.text('Invalid consent origin or CSRF token', 403);
+      params.delete('deckide_csrf');
       const state = params.get('state') || undefined;
-      const decision = params.get('decision');
+      const decisions = params.getAll('decision');
+      const decision = decisions.length === 1 ? decisions[0] : null;
       const validated = validateAuthorizationRequest(params, c);
 
       if (decision !== 'approve') {
@@ -1222,7 +1305,8 @@ export function createMcpRouter(options: CreateMcpRouterOptions) {
           ...(state ? { state } : {}),
         });
       }
-
+      cleanExpiredGrants();
+      if (authorizationCodes.size >= MAX_OAUTH_CODES) return c.text('Authorization capacity reached', 429);
       const code = crypto.randomBytes(32).toString('base64url');
       authorizationCodes.set(code, {
         code,
@@ -1256,7 +1340,7 @@ export function createMcpRouter(options: CreateMcpRouterOptions) {
     if (grantType !== 'authorization_code') {
       return c.json({ error: 'unsupported_grant_type' }, 400);
     }
-    if (!code || !redirectUri || !clientId || !codeVerifier) {
+    if (!code || !redirectUri || !clientId || !codeVerifier || !/^[A-Za-z0-9._~-]{43,128}$/.test(codeVerifier)) {
       return c.json({ error: 'invalid_request' }, 400);
     }
 
@@ -1275,6 +1359,8 @@ export function createMcpRouter(options: CreateMcpRouterOptions) {
       return c.json({ error: 'invalid_grant' }, 400);
     }
 
+    cleanExpiredGrants();
+    if (accessTokens.size >= MAX_OAUTH_TOKENS) return c.json({ error: 'temporarily_unavailable' }, 429);
     authorizationCodes.delete(code);
     const token = crypto.randomBytes(32).toString('base64url');
     accessTokens.set(token, {
@@ -1336,9 +1422,12 @@ export function createMcpRouter(options: CreateMcpRouterOptions) {
     }
 
     const resource = getMcpResource(c);
+    // Derived from a verified bearer grant, never from caller arguments/headers.
+    const actor = 'oauth:' + crypto.createHash('sha256').update(token.token).digest('hex');
     if (Array.isArray(payload)) {
+      if (payload.length > 64) return c.json(jsonRpcError(null, -32600, 'Batch is too large'), 400);
       const responses = (await Promise.all(payload.map((item) =>
-        isObject(item) ? handleMcpRequest(item, resource) : jsonRpcError(null, -32600, 'Invalid JSON-RPC request')
+        isObject(item) ? handleMcpRequest(item, resource, actor) : jsonRpcError(null, -32600, 'Invalid JSON-RPC request')
       ))).filter(Boolean);
       if (responses.length === 0) return c.body(null, 202);
       return c.json(responses);
@@ -1348,7 +1437,7 @@ export function createMcpRouter(options: CreateMcpRouterOptions) {
       return c.json(jsonRpcError(null, -32600, 'Invalid JSON-RPC request'), 400);
     }
 
-    const response = await handleMcpRequest(payload, resource);
+    const response = await handleMcpRequest(payload, resource, actor);
     if (!response) return c.body(null, 202);
     return c.json(response);
   });

@@ -1,8 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
-import { FileTree } from './FileTree';
-import type { FileTreeNode } from '../types';
-import { previewFiles } from '../api';
-import { getErrorMessage, getParentPath, joinPath, toTreeNodes } from '../utils';
+import { useEffect, useState, type FormEvent } from 'react';
 import { useModalKeyboard } from '../hooks/useModalKeyboard';
 
 interface WorkspaceModalProps {
@@ -19,43 +15,8 @@ export const WorkspaceModal = ({
   onClose
 }: WorkspaceModalProps) => {
   const [workspacePathDraft, setWorkspacePathDraft] = useState('');
-  const [previewTree, setPreviewTree] = useState<FileTreeNode[]>([]);
-  const [previewLoading, setPreviewLoading] = useState(false);
-  const [previewError, setPreviewError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const formRef = useModalKeyboard<HTMLFormElement>(isOpen, onClose);
-
-  const previewRoot = workspacePathDraft.trim() || defaultRoot;
-  const canPreviewBack = useMemo(() => {
-    if (!previewRoot) return false;
-    return getParentPath(previewRoot) !== previewRoot;
-  }, [previewRoot]);
-
-  useEffect(() => {
-    if (!isOpen) {
-      setPreviewTree([]);
-      setPreviewLoading(false);
-      setPreviewError(null);
-      return;
-    }
-    let alive = true;
-    setPreviewLoading(true);
-    setPreviewError(null);
-    previewFiles(previewRoot, '')
-      .then((entries) => {
-        if (!alive) return;
-        setPreviewTree(toTreeNodes(entries));
-        setPreviewLoading(false);
-      })
-      .catch((error: unknown) => {
-        if (!alive) return;
-        setPreviewError(getErrorMessage(error));
-        setPreviewLoading(false);
-      });
-    return () => {
-      alive = false;
-    };
-  }, [isOpen, previewRoot]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -64,35 +25,6 @@ export const WorkspaceModal = ({
       setWorkspacePathDraft(defaultRoot);
     }
   }, [defaultRoot, isOpen, workspacePathDraft]);
-
-  const handlePreviewRefresh = () => {
-    if (!isOpen) return;
-    setPreviewLoading(true);
-    setPreviewError(null);
-    previewFiles(previewRoot, '')
-      .then((entries) => {
-        setPreviewTree(toTreeNodes(entries));
-        setPreviewLoading(false);
-      })
-      .catch((error: unknown) => {
-        setPreviewError(getErrorMessage(error));
-        setPreviewLoading(false);
-      });
-  };
-
-  const handlePreviewToggleDir = (node: FileTreeNode) => {
-    if (node.type !== 'dir') return;
-    const nextPath = joinPath(previewRoot, node.name);
-    setWorkspacePathDraft(nextPath);
-  };
-
-  const handlePreviewBack = () => {
-    if (!previewRoot) return;
-    const parent = getParentPath(previewRoot);
-    if (parent && parent !== previewRoot) {
-      setWorkspacePathDraft(parent);
-    }
-  };
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
@@ -110,9 +42,9 @@ export const WorkspaceModal = ({
 
   return (
     <div className="fixed inset-0 bg-black/50 grid place-items-center z-[500]" role="dialog" aria-modal="true" aria-labelledby="workspace-modal-title">
-      <form className="modal flex flex-col !overflow-hidden" ref={formRef} onSubmit={handleSubmit}>
+      <form className="modal flex flex-col" ref={formRef} onSubmit={handleSubmit}>
         <div className="text-[14px] font-semibold mb-3 shrink-0" id="workspace-modal-title">
-          {'\u30ef\u30fc\u30af\u30b9\u30da\u30fc\u30b9\u8ffd\u52a0'}
+          {'\u4f5c\u696d\u30c7\u30a3\u30ec\u30af\u30c8\u30ea\u767b\u9332'}
         </div>
         <label className="grid gap-1 text-xs shrink-0">
           <span>{'\u30d1\u30b9'}</span>
@@ -126,20 +58,6 @@ export const WorkspaceModal = ({
             onChange={(event) => setWorkspacePathDraft(event.target.value)}
           />
         </label>
-        <div className="flex-1 min-h-0 mt-3">
-          <FileTree
-            root={previewRoot}
-            entries={previewTree}
-            loading={previewLoading}
-            error={previewError}
-            mode="navigator"
-            canBack={canPreviewBack}
-            onBack={handlePreviewBack}
-            onToggleDir={handlePreviewToggleDir}
-            onOpenFile={() => undefined}
-            onRefresh={handlePreviewRefresh}
-          />
-        </div>
         <div className="flex justify-end gap-2 mt-4 shrink-0">
           <button
             type="button"

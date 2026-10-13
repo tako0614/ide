@@ -3,8 +3,8 @@
  */
 
 // API configuration
-export const API_BASE = import.meta.env.VITE_API_BASE || '';
-export const DEFAULT_ROOT_FALLBACK = import.meta.env.VITE_DEFAULT_ROOT || '';
+export const API_BASE = import.meta.env?.VITE_API_BASE || '';
+export const DEFAULT_ROOT_FALLBACK = import.meta.env?.VITE_DEFAULT_ROOT || '';
 
 // UI messages
 export const MESSAGE_SAVED = '保存しました。';
@@ -49,41 +49,40 @@ export const EDITOR_FONT_FAMILY = '"JetBrains Mono", monospace';
 export const EDITOR_FONT_SIZE = 14;
 
 // Terminal configuration
-// CJK monospace fallbacks (Noto Sans Mono CJK JP / Source Han Mono / MS Gothic)
-// を末尾の monospace の前に追加し、日本語・中国語・韓国語のグリフ崩れを防ぐ。
+// Match Vibe's local system terminal font stack, followed by CJK monospace
+// fallbacks to preserve Japanese glyph quality.
 export const TERMINAL_FONT_FAMILY =
-  '"Cascadia Code", "JetBrains Mono", "Consolas", "Menlo", "Noto Sans Mono CJK JP", "Source Han Mono", "MS Gothic", monospace';
-export const TERMINAL_FONT_SIZE = 13;
-export const TERMINAL_BACKGROUND_COLOR = '#000000';
-export const TERMINAL_FOREGROUND_COLOR = '#ffffff';
+  '"SFMono-Regular", Consolas, "Liberation Mono", "Noto Sans Mono CJK JP", "Source Han Mono", "MS Gothic", monospace';
+export const TERMINAL_FONT_SIZE = 14;
+export const TERMINAL_BACKGROUND_COLOR = '#181818';
+export const TERMINAL_FOREGROUND_COLOR = '#e5e5e5';
 
-// 16-entry ANSI palette (index 0..15).  モダンでダークな配色で、
-// 背景 #000000 / 前景 #ffffff の上でも読みやすいコントラストを確保する。
+// xterm 6.0.0's default 16 ANSI colors (index 0..15).
 // 0..7  : black, red, green, yellow, blue, magenta, cyan, white
 // 8..15 : brightBlack, brightRed, brightGreen, brightYellow,
 //         brightBlue, brightMagenta, brightCyan, brightWhite
 export const TERMINAL_ANSI_PALETTE: readonly string[] = [
-  '#1e1e1e', // 0  black
-  '#f44747', // 1  red
-  '#23d18b', // 2  green
-  '#e5c07b', // 3  yellow
-  '#4aa5f0', // 4  blue
-  '#c586c0', // 5  magenta
-  '#29b8db', // 6  cyan
-  '#d4d4d4', // 7  white
-  '#666666', // 8  brightBlack
-  '#ff6e6e', // 9  brightRed
-  '#5ff967', // 10 brightGreen
-  '#f5f543', // 11 brightYellow
-  '#6ab7ff', // 12 brightBlue
-  '#d670d6', // 13 brightMagenta
-  '#62e8f5', // 14 brightCyan
-  '#ffffff'  // 15 brightWhite
+  '#2e3436', // 0  black
+  '#cc0000', // 1  red
+  '#4e9a06', // 2  green
+  '#c4a000', // 3  yellow
+  '#3465a4', // 4  blue
+  '#75507b', // 5  magenta
+  '#06989a', // 6  cyan
+  '#d3d7cf', // 7  white
+  '#555753', // 8  brightBlack
+  '#ef2929', // 9  brightRed
+  '#8ae234', // 10 brightGreen
+  '#fce94f', // 11 brightYellow
+  '#729fcf', // 12 brightBlue
+  '#ad7fa8', // 13 brightMagenta
+  '#34e2e2', // 14 brightCyan
+  '#eeeeec'  // 15 brightWhite
 ];
 
-// カーソル色と選択範囲の背景色（テーマ palette と整合させる）。
-export const TERMINAL_CURSOR_COLOR = '#ffffff';
-export const TERMINAL_SELECTION_BACKGROUND = '#264f78';
+// Match Vibe's terminal cursor and selection colors.
+export const TERMINAL_CURSOR_COLOR = '#fafafa';
+export const TERMINAL_SELECTION_BACKGROUND = '#454545';
 
 // Local storage keys
 export const STORAGE_KEY_THEME = 'deck-theme';

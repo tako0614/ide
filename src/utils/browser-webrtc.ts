@@ -12,6 +12,7 @@ import {
   AGENT_BROWSER_WEBRTC_FPS,
   AGENT_BROWSER_DISPLAY,
   AGENT_BROWSER_WEBRTC_ICE_SERVERS,
+  AGENT_BROWSER_CDP_PORT,
 } from '../config.js';
 
 const execFileAsync = promisify(execFile);
@@ -39,6 +40,9 @@ export interface WebRtcHost {
   // Position+size the active tab's OS window on the X display so the captured
   // framebuffer region maps 1:1 to the page. Best-effort.
   setActiveWindowBounds(left: number, top: number, width: number, height: number): Promise<void>;
+  // Pin the active tab's render viewport (device metrics) to the captured
+  // framebuffer size so page coordinates equal captured pixels. Best-effort.
+  pinViewport(width: number, height: number): Promise<void>;
 }
 
 type SignalMessage =
@@ -90,7 +94,7 @@ async function resolveExecutable(envName: string, names: string[]): Promise<stri
 // picks the display number for the Chrome child and exports DISPLAY/XAUTHORITY
 // only into that child's environment, so the server process can't read them from
 // its own env — we recover them from /proc/<pid>/environ instead.
-async function resolveXEnv(): Promise<{ display: string; xauthority: string | null } | null> {
+async function resolveXEnv(cdpPort?: number): Promise<{ display: string; xauthority: string | null } | null> {
   if (AGENT_BROWSER_DISPLAY) {
     return { display: AGENT_BROWSER_DISPLAY, xauthority: process.env.XAUTHORITY ?? null };
   }
@@ -102,6 +106,8 @@ async function resolveXEnv(): Promise<{ display: string; xauthority: string | nu
     return process.env.DISPLAY ? { display: process.env.DISPLAY, xauthority: process.env.XAUTHORITY ?? null } : null;
   }
 
+  const portToken = cdpPort ? `--remote-debugging-port=${cdpPort}` : null;
+  let fallback: { display: string; xauthority: string | null } | null = null;
   for (const pid of pids) {
     let comm = '';
     try {
@@ -124,9 +130,26 @@ async function resolveXEnv(): Promise<{ display: string; xauthority: string | nu
       continue;
     }
     const xauthority = vars.find((v) => v.startsWith('XAUTHORITY='))?.slice('XAUTHORITY='.length) ?? null;
-    return { display, xauthority };
+    const candidate = { display, xauthority };
+    if (!portToken) {
+      return candidate;
+    }
+    // With multiple Chrome instances, prefer the one bound to OUR CDP port so we
+    // capture (and control) the same browser. Fall back to the first found.
+    let cmdline = '';
+    try {
+      cmdline = (await fs.readFile(`/proc/${pid}/cmdline`, 'utf8')).replace(/\0/g, ' ');
+    } catch {
+      // ignore
+    }
+    if (cmdline.includes(portToken)) {
+      return candidate;
+    }
+    if (!fallback) {
+      fallback = candidate;
+    }
   }
-  return process.env.DISPLAY ? { display: process.env.DISPLAY, xauthority: process.env.XAUTHORITY ?? null } : null;
+  return fallback ?? (process.env.DISPLAY ? { display: process.env.DISPLAY, xauthority: process.env.XAUTHORITY ?? null } : null);
 }
 
 // Query the real screen geometry of the display so x11grab captures the exact
@@ -185,7 +208,7 @@ export class BrowserWebRtcRelay {
     } else {
       const werift = await loadWerift();
       const ffmpeg = await resolveExecutable('AGENT_BROWSER_FFMPEG', ['ffmpeg']);
-      const xenv = await resolveXEnv();
+      const xenv = await resolveXEnv(AGENT_BROWSER_CDP_PORT);
       if (!werift) {
         available = false;
         reason = 'werift is not installed (npm install werift)';
@@ -349,7 +372,7 @@ export class BrowserWebRtcRelay {
     if (!ffmpeg) {
       throw new Error('ffmpeg is required for WebRTC streaming');
     }
-    const xenv = await resolveXEnv();
+    const xenv = await resolveXEnv(AGENT_BROWSER_CDP_PORT);
     if (!xenv) {
       throw new Error('No X display found to capture');
     }
@@ -364,6 +387,8 @@ export class BrowserWebRtcRelay {
     // Size the page's OS window to fill the captured screen so the framebuffer
     // region maps 1:1 to page coordinates. Best-effort; ignore failures.
     await this.host.setActiveWindowBounds(0, 0, this.size.width, this.size.height).catch(() => undefined);
+    // Pin the page render size to the framebuffer so input coords map 1:1.
+    await this.host.pinViewport(this.size.width, this.size.height).catch(() => undefined);
 
     // Bind an ephemeral UDP port; ffmpeg sends RTP here and we fan each packet
     // out to every viewer's track (no re-encode in werift).

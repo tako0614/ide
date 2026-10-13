@@ -4,11 +4,12 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
-import { execSync, spawn } from 'node:child_process';
+import { execSync, execFileSync, spawn } from 'node:child_process';
 import crypto from 'node:crypto';
+import { CLIENT_COMMANDS, CLIENT_HELP, runClientCommand } from './cli-client.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const dataDir = path.join(os.homedir(), '.deckide');
+const dataDir = path.resolve(process.env.DECKIDE_DATA_DIR || path.join(os.homedir(), '.deckide'));
 const settingsFile = path.join(dataDir, 'settings.json');
 const pidFile = path.join(dataDir, 'server.pid');
 const logFile = path.join(dataDir, 'server.log');
@@ -17,24 +18,120 @@ const logFile = path.join(dataDir, 'server.log');
 
 function loadSettings() {
   try {
-    return JSON.parse(fs.readFileSync(settingsFile, 'utf-8'));
-  } catch {
-    return {};
+    const settings = JSON.parse(fs.readFileSync(settingsFile, 'utf-8'));
+    if (!settings || typeof settings !== 'object' || Array.isArray(settings)) {
+      throw new Error('Settings file must contain a JSON object');
+    }
+    return settings;
+  } catch (error) {
+    if (error?.code === 'ENOENT') return {};
+    throw new Error(`Cannot read Deck IDE settings at ${settingsFile}: ${error.message}`, { cause: error });
   }
 }
 
 function saveSettings(settings) {
-  fs.mkdirSync(dataDir, { recursive: true });
-  fs.writeFileSync(settingsFile, JSON.stringify(settings, null, 2) + '\n');
+  fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  fs.chmodSync(dataDir, 0o700);
+  const temporaryFile = path.join(dataDir, `.settings-${process.pid}-${crypto.randomBytes(6).toString('hex')}.tmp`);
+  try {
+    fs.writeFileSync(temporaryFile, JSON.stringify(settings, null, 2) + '\n', { mode: 0o600 });
+    fs.chmodSync(temporaryFile, 0o600);
+    fs.renameSync(temporaryFile, settingsFile);
+    fs.chmodSync(settingsFile, 0o600);
+  } finally {
+    try { fs.unlinkSync(temporaryFile); } catch {}
+  }
 }
 
 function getPort() {
-  return loadSettings().port || 8787;
+  return validatePort(loadSettings().port) || 8787;
+}
+
+function validatePort(value) {
+  const port = Number(value);
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : null;
+}
+
+let passwordHelpers;
+async function getPasswordHelpers() {
+  passwordHelpers ??= import(path.join(__dirname, '..', 'dist', 'auth', 'password.js'));
+  return passwordHelpers;
+}
+
+async function migrateLegacySettings(settings) {
+  const legacyPassword = settings.basicAuthPassword;
+  const legacyHash = settings.passwordHash;
+  const hasLegacyFields = settings.basicAuthEnabled !== undefined || settings.basicAuthUser !== undefined ||
+    settings.basicAuthPassword !== undefined || settings.passwordHash !== undefined;
+  if (!hasLegacyFields) return settings;
+
+  const migrated = { ...settings };
+  delete migrated.basicAuthEnabled;
+  delete migrated.basicAuthUser;
+  delete migrated.basicAuthPassword;
+  delete migrated.passwordHash;
+  if (settings.authEnabled !== undefined && typeof settings.authEnabled !== 'boolean') {
+    throw new Error('Invalid authEnabled setting; settings were not changed.');
+  }
+  if (settings.basicAuthEnabled !== undefined && typeof settings.basicAuthEnabled !== 'boolean') {
+    throw new Error('Invalid legacy auth enabled setting; settings were not changed.');
+  }
+  const enabled = settings.authEnabled ?? (settings.basicAuthEnabled === true);
+  const user = settings.authUser ?? settings.basicAuthUser;
+  if (user !== undefined && (typeof user !== 'string' || !user.trim() || user.length > 128)) {
+    throw new Error('Invalid stored auth user; settings were not changed.');
+  }
+  let hash = settings.authPasswordHash;
+  if (hash !== undefined) {
+    const { isPasswordHash } = await getPasswordHelpers();
+    if (!isPasswordHash(hash)) throw new Error('Invalid stored auth password hash; settings were not changed.');
+  } else if (legacyPassword) {
+    if (typeof legacyPassword !== 'string') throw new Error('Invalid legacy auth password; settings were not changed.');
+    const { hashPassword } = await getPasswordHelpers();
+    hash = await hashPassword(legacyPassword);
+  } else if (legacyHash !== undefined) {
+    const { isPasswordHash } = await getPasswordHelpers();
+    if (!isPasswordHash(legacyHash)) throw new Error('Invalid legacy password hash; settings were not changed.');
+    hash = legacyHash;
+  }
+  if (enabled) {
+    if (typeof user !== 'string' || !user.trim() || user.length > 128 || typeof hash !== 'string') {
+      throw new Error('Legacy authentication is enabled without valid credentials; settings were not changed.');
+    }
+    const { isPasswordHash } = await getPasswordHelpers();
+    if (!isPasswordHash(hash)) throw new Error('Authentication is enabled with an invalid password hash; settings were not changed.');
+    migrated.authEnabled = true;
+    migrated.authUser = user;
+    migrated.authPasswordHash = hash;
+  } else if (settings.authEnabled !== undefined || settings.basicAuthEnabled !== undefined) {
+    migrated.authEnabled = Boolean(enabled);
+    if (user !== undefined) migrated.authUser = user;
+    if (hash !== undefined) migrated.authPasswordHash = hash;
+  }
+  saveSettings(migrated);
+  return migrated;
+}
+
+/** Mirrors isLoopbackHost() in src/config.ts — keep the two in sync. */
+function isLoopbackHost(host) {
+  const h = String(host || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
+  if (!h) return false; // empty => Node binds every interface
+  if (h === 'localhost') return true;
+  if (h === '::1' || h === '::ffff:127.0.0.1') return true;
+  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h);
+}
+
+function isAuthConfigured(settings) {
+  if ((process.env.DECKIDE_AUTH_USER && process.env.DECKIDE_AUTH_PASSWORD) ||
+      (process.env.BASIC_AUTH_USER && process.env.BASIC_AUTH_PASSWORD)) return true;
+  return Boolean(settings.authEnabled && settings.authUser && settings.authPasswordHash);
 }
 
 function isServerRunningOnPort(port) {
+  const checkedPort = validatePort(port);
+  if (!checkedPort) return false;
   try {
-    execSync(`curl -sf -o /dev/null http://localhost:${port}/health`, {
+    execFileSync('curl', ['-sf', '-o', '/dev/null', `http://localhost:${checkedPort}/health`], {
       timeout: 2000, stdio: 'ignore',
     });
     return true;
@@ -70,48 +167,9 @@ function waitForExit(pid, timeoutMs = 5000) {
   return false;
 }
 
-/** Build curl auth flags from settings */
-function getAuthFlags() {
-  const s = loadSettings();
-  if (s.basicAuthEnabled && s.basicAuthUser && s.basicAuthPassword) {
-    return `-u '${s.basicAuthUser}:${s.basicAuthPassword}'`;
-  }
-  return '';
-}
-
-/** Try HTTP shutdown on a specific port */
-function tryHttpShutdown(port) {
-  const auth = getAuthFlags();
-  try {
-    execSync(`curl -sf ${auth} -X POST http://localhost:${port}/api/shutdown -H "Content-Type: application/json" -d '{}'`, {
-      timeout: 5000, stdio: 'ignore',
-    });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/** Stop server: try HTTP shutdown, SIGTERM, then SIGKILL as last resort */
+/** Stop only the process recorded as this data directory's server owner. */
 function stopServer() {
-  const port = getPort();
   const pid = getRunningPid();
-
-  // Try HTTP shutdown on configured port
-  if (isServerRunningOnPort(port) && tryHttpShutdown(port)) {
-    if (pid) waitForExit(pid, 5000);
-    try { fs.unlinkSync(pidFile); } catch {}
-    return true;
-  }
-
-  // Try default port 8787 if different
-  if (port !== 8787 && isServerRunningOnPort(8787) && tryHttpShutdown(8787)) {
-    if (pid) waitForExit(pid, 5000);
-    try { fs.unlinkSync(pidFile); } catch {}
-    return true;
-  }
-
-  // Fall back to killing by PID
   if (pid) {
     try {
       process.kill(pid, 'SIGTERM');
@@ -163,23 +221,41 @@ Usage:
   deckide port                   Show current port
   deckide port <number>          Change port (auto-restarts)
 
-  deckide auth on [user] [pass]  Enable basic auth
-  deckide auth off               Disable basic auth
+  deckide auth on [user] [pass]  Enable session auth
+  deckide auth off               Disable session auth
   deckide auth status            Show auth status
 
   deckide config                 Show all settings
   deckide config set <key> <val> Set a config value
   deckide config get <key>       Get a config value
   deckide config reset           Reset all settings
+${CLIENT_HELP}
 
 Options (for start):
   -p, --port <port>              Port (default: 8787)
-  --host <host>                  Host (default: 0.0.0.0)
+  --host <host>                  Host (default: 127.0.0.1, loopback only)
   --no-open                      Don't open browser
   --fg                           Run in foreground
+
+To reach Deck IDE from another device, bind a wider address AND enable auth:
+  deckide auth on <user> <password>
+  deckide config set host 0.0.0.0
+Binding a non-loopback host without auth is refused: the terminal API runs
+arbitrary commands as your user.
 `);
   process.exit(0);
 }
+
+// ── deckide ls / open / new / attach / send / kill / show / events ──
+if (CLIENT_COMMANDS.has(command)) {
+  process.exitCode = await runClientCommand(command, args.slice(1), { dataDir, settings: loadSettings() });
+  // Let stdout drain; open handles (the attach socket) are already closed.
+  setImmediate(() => process.exit(process.exitCode));
+  await new Promise(() => {});
+}
+
+// Convert one-time legacy settings before commands read or mutate them.
+await migrateLegacySettings(loadSettings());
 
 // ── deckide config ──
 if (command === 'config') {
@@ -190,10 +266,10 @@ if (command === 'config') {
     if (Object.keys(settings).length === 0) {
       console.log('No custom settings. Using defaults.');
       console.log('  port: 8787');
-      console.log('  host: 0.0.0.0');
+      console.log('  host: 127.0.0.1');
     } else {
       for (const [key, value] of Object.entries(settings)) {
-        if (key === 'basicAuthPassword' && value) {
+        if (['authPasswordHash', 'basicAuthPassword', 'passwordHash'].includes(key) && value) {
           console.log(`  ${key}: ********`);
         } else {
           console.log(`  ${key}: ${value}`);
@@ -208,7 +284,7 @@ if (command === 'config') {
     if (!key) { console.error('Usage: deckide config get <key>'); process.exit(1); }
     const val = settings[key];
     if (val === undefined) console.log(`${key}: (not set)`);
-    else if (key === 'basicAuthPassword') console.log(`${key}: ********`);
+    else if (['authPasswordHash', 'basicAuthPassword', 'passwordHash'].includes(key)) console.log(`${key}: ${val ? '********' : '(not set)'}`);
     else console.log(`${key}: ${val}`);
     process.exit(0);
   }
@@ -217,12 +293,41 @@ if (command === 'config') {
     const key = args[2];
     let value = args[3];
     if (!key || value === undefined) { console.error('Usage: deckide config set <key> <value>'); process.exit(1); }
-    if (value === 'true') value = true;
+    if (['basicAuthEnabled', 'basicAuthUser', 'basicAuthPassword', 'passwordHash', 'authPasswordHash'].includes(key)) {
+      console.error(`Error: ${key} is a legacy or secret field. Use session auth settings.`);
+      process.exit(1);
+    }
+    if (key === 'authPassword') {
+      if (value.length < 12 || Buffer.byteLength(value) > 1024) {
+        console.error('Error: password must be at least 12 characters and at most 1024 bytes.');
+        process.exit(1);
+      }
+      const { hashPassword } = await getPasswordHelpers();
+      settings.authPasswordHash = await hashPassword(value);
+      delete settings.authPassword;
+      saveSettings(settings);
+      console.log('authPassword = ********');
+      if (isServerRunning() || getRunningPid()) console.log('Run "deckide restart" to apply.');
+      process.exit(0);
+    }
+    if (key === 'authEnabled') {
+      if (value !== 'true' && value !== 'false') { console.error('Error: authEnabled must be true or false.'); process.exit(1); }
+      value = value === 'true';
+      if (value && !(settings.authUser && settings.authPasswordHash)) {
+        console.error('Error: configure credentials with "deckide auth on <user> <password>" first.');
+        process.exit(1);
+      }
+    } else if (key === 'authUser') {
+      if (!value.trim() || value.length > 128) {
+        console.error('Error: authUser must be 1 to 128 characters.');
+        process.exit(1);
+      }
+    } else if (value === 'true') value = true;
     else if (value === 'false') value = false;
     else if (/^\d+$/.test(value)) value = parseInt(value, 10);
     settings[key] = value;
     saveSettings(settings);
-    console.log(`${key} = ${key === 'basicAuthPassword' ? '********' : value}`);
+    console.log(`${key} = ${value}`);
     if (isServerRunning() || getRunningPid()) console.log('Run "deckide restart" to apply.');
     process.exit(0);
   }
@@ -286,12 +391,12 @@ if (command === 'auth') {
   const settings = loadSettings();
 
   if (!sub || sub === 'status') {
-    if (settings.basicAuthEnabled) {
-      console.log('Basic auth: enabled');
-      console.log(`  user: ${settings.basicAuthUser || '(not set)'}`);
-      console.log(`  password: ${settings.basicAuthPassword ? '********' : '(not set)'}`);
+    if (settings.authEnabled) {
+      console.log('Session auth: enabled');
+      console.log(`  user: ${settings.authUser || '(not set)'}`);
+      console.log(`  password: ${settings.authPasswordHash ? '********' : '(not set)'}`);
     } else {
-      console.log('Basic auth: disabled');
+      console.log('Session auth: disabled');
     }
     if (!sub) {
       console.log('\nUsage:');
@@ -302,11 +407,19 @@ if (command === 'auth') {
   }
 
   if (sub === 'off') {
-    settings.basicAuthEnabled = false;
+    settings.authEnabled = false;
+    delete settings.authUser;
+    delete settings.authPasswordHash;
+    delete settings.basicAuthEnabled;
     delete settings.basicAuthUser;
     delete settings.basicAuthPassword;
+    delete settings.passwordHash;
     saveSettings(settings);
-    console.log('Basic auth disabled.');
+    console.log('Session auth disabled.');
+    if (settings.host && !isLoopbackHost(settings.host)) {
+      console.log(`Note: host is ${settings.host}, so the server will now refuse to start.`);
+      console.log('Run "deckide config set host 127.0.0.1" or re-enable auth.');
+    }
     if (isServerRunning()) console.log('Run "deckide restart" to apply.');
     process.exit(0);
   }
@@ -314,21 +427,31 @@ if (command === 'auth') {
   if (sub === 'on') {
     const user = args[2];
     const password = args[3];
-    const genUser = user || 'admin';
+    const genUser = user === undefined ? 'admin' : user;
     const genPassword = password || crypto.randomBytes(16).toString('base64url');
 
-    if (password && password.length < 12) {
-      console.error('Error: password must be at least 12 characters.');
+    if (password && (password.length < 12 || Buffer.byteLength(password) > 1024)) {
+      console.error('Error: password must be at least 12 characters and at most 1024 bytes.');
       process.exit(1);
     }
 
-    settings.basicAuthEnabled = true;
-    settings.basicAuthUser = genUser;
-    settings.basicAuthPassword = genPassword;
+    if (!genUser.trim() || genUser.length > 128) {
+      console.error('Error: username must be 1 to 128 characters.');
+      process.exit(1);
+    }
+
+    const { hashPassword } = await getPasswordHelpers();
+    settings.authEnabled = true;
+    settings.authUser = genUser;
+    settings.authPasswordHash = await hashPassword(genPassword);
+    delete settings.basicAuthEnabled;
+    delete settings.basicAuthUser;
+    delete settings.basicAuthPassword;
+    delete settings.passwordHash;
     saveSettings(settings);
-    console.log('Basic auth enabled.');
+    console.log('Session auth enabled.');
     console.log(`  user: ${genUser}`);
-    if (!password) console.log(`  password: ${genPassword}`);
+    if (!password) console.log(`  generated password: ${genPassword}`);
     if (isServerRunning()) console.log('Run "deckide restart" to apply.');
     process.exit(0);
   }
@@ -345,7 +468,7 @@ if (command === 'status') {
   console.log('Deck IDE');
   console.log(`  data:   ${dataDir}`);
   console.log(`  port:   ${port}`);
-  console.log(`  auth:   ${settings.basicAuthEnabled ? 'enabled' : 'disabled'}`);
+  console.log(`  auth:   ${settings.authEnabled ? 'enabled' : 'disabled'}`);
 
   const pid = getRunningPid();
   if (isServerRunning()) {
@@ -442,7 +565,21 @@ for (let i = 0; i < startArgs.length; i++) {
 
 const settings = loadSettings();
 const port = startOptions.port || settings.port || 8787;
-const host = startOptions.host || settings.host || '0.0.0.0';
+const host = startOptions.host || settings.host || '127.0.0.1';
+
+// The server enforces this too (src/config.ts), but in background mode its
+// stderr only reaches the log file — check here so the user sees why.
+if (!isLoopbackHost(host) && !isAuthConfigured(settings) && process.env.DECKIDE_ALLOW_INSECURE_HOST !== 'true') {
+  console.error(`Refusing to bind ${host} without authentication.`);
+  console.error('Deck IDE\'s terminal API runs arbitrary commands as your user, so anyone');
+  console.error('who can reach this port would get a shell on this machine.');
+  console.error('');
+  console.error('Fix with one of:');
+  console.error('  deckide auth on <user> <password>   # require session auth, then retry');
+  console.error('  deckide config set host 127.0.0.1   # listen on loopback only (default)');
+  console.error('  DECKIDE_ALLOW_INSECURE_HOST=true    # only behind a trusted proxy/network');
+  process.exit(1);
+}
 
 // Check if already running on the target port
 if (isServerRunningOnPort(port)) {

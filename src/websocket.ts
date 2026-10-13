@@ -1,39 +1,41 @@
 import crypto from 'node:crypto';
+import net from 'node:net';
 import type { Server as HttpServer } from 'node:http';
 import type { Server as HttpsServer } from 'node:https';
 import type { IncomingMessage } from 'node:http';
-import type { Duplex } from 'node:stream';
 import { WebSocketServer, WebSocket, type RawData } from 'ws';
-import type { TerminalSession } from './types.js';
-import { PORT, TRUST_PROXY, CORS_ORIGIN, NODE_ENV } from './config.js';
+import type { TerminalClient, TerminalSession } from './types.js';
+import { PORT, TRUST_PROXY } from './config.js';
 import { logSecurityEvent } from './middleware/security.js';
-import { verifyWebSocketAuth } from './middleware/auth.js';
+import { checkRequestOrigin, resolveHostHeader } from './middleware/origin.js';
+import { isAuthEnabled, onSessionRevoked, validWebSocketOrigin, verifyWebSocketAuth } from './middleware/auth.js';
+import { isCliRequest } from './auth/cli-token.js';
 import { alignToUtf8Start, alignToUtf8End } from './utils/utf8.js';
+import {
+  assignResizeOwner,
+  canSendToSocket,
+  clampTerminalSize,
+  releaseTerminalClient,
+  resizeTerminal,
+  sendTerminalControl as sendControl,
+  type ClientControlMessage,
+} from './utils/terminal-control.js';
 import type { AgentBrowserService } from './utils/agent-browser.js';
-import type { CodeServerService } from './utils/code-server.js';
+import type { SharedDesktop } from './desktop/shared-desktop.js';
 
-const MIN_TERMINAL_SIZE = 1;
-const MAX_TERMINAL_SIZE = 500;
 const MAX_MESSAGE_SIZE = 64 * 1024; // 64KB max message size
-const MAX_SOCKET_BUFFERED_AMOUNT = 1024 * 1024;
 const HEARTBEAT_INTERVAL_MS = 30_000;
-
-type ClientControlMessage =
-  | { type: 'claim' }
-  | { type: 'resize'; cols: number; rows: number };
-
-type ServerControlMessage =
-  | { type: 'sync'; offsetBase: number; reset: boolean }
-  | { type: 'ready' }
-  // この接続が「主」クライアントか。端末クエリ（DSR/DA など）への応答は
-  // 主クライアントのみが返し、複数クライアント時の二重応答を防ぐ。
-  | { type: 'primary'; value: boolean };
+// A snapshot is retaken when output trimmed the replay buffer or the PTY was
+// resized while it was being rendered; give up on consistency after this many.
+const MAX_SNAPSHOT_ATTEMPTS = 3;
 
 // Configurable connection limit per IP (default: 1000)
 let maxConnectionsPerIP = 1000;
 
 // Track connections per IP
 const connectionsByIP = new Map<string, Set<WebSocket>>();
+const MAX_GLOBAL_CONNECTIONS = 256;
+let totalConnections = 0;
 
 // Export for API access
 export function getConnectionLimit(): number {
@@ -65,6 +67,7 @@ export function clearAllConnections(): number {
     }
   }
   connectionsByIP.clear();
+  totalConnections = 0;
   return closedCount;
 }
 
@@ -83,38 +86,66 @@ function getClientIP(req: IncomingMessage): string {
 }
 
 function trackConnection(ip: string, socket: WebSocket): boolean {
+  if (totalConnections >= MAX_GLOBAL_CONNECTIONS) return false;
   let connections = connectionsByIP.get(ip);
   if (!connections) {
     connections = new Set();
     connectionsByIP.set(ip, connections);
   }
   if (connections.size >= maxConnectionsPerIP) {
+    if (connections.size === 0) connectionsByIP.delete(ip);
     return false;
   }
   connections.add(socket);
+  totalConnections++;
   return true;
 }
 
 function untrackConnection(ip: string, socket: WebSocket): void {
   const connections = connectionsByIP.get(ip);
   if (connections) {
-    connections.delete(socket);
+    if (connections.delete(socket)) totalConnections--;
     if (connections.size === 0) {
       connectionsByIP.delete(ip);
     }
   }
 }
 
-function validateTerminalSize(value: number | undefined): number {
-  if (value == null) return MIN_TERMINAL_SIZE;
-  const intValue = Math.floor(value);
-  if (!Number.isFinite(intValue) || intValue < MIN_TERMINAL_SIZE) {
-    return MIN_TERMINAL_SIZE;
+/**
+ * Decide whether a WebSocket handshake may proceed.
+ *
+ * Browsers do not apply CORS to WebSocket upgrades, so this is the only thing
+ * between a page the user happens to visit and a live PTY on this machine. It
+ * is therefore never skipped — in particular `CORS_ORIGIN='*'` does not
+ * disable it, since widening who may read a response says nothing about who
+ * may open a socket.
+ *
+ * Delegates to the same Host+Origin decision the HTTP API uses, so the socket
+ * path cannot end up more permissive than the routes it mirrors: `Origin`
+ * rejects cross-site pages, and `Host` rejects DNS rebinding, which would
+ * otherwise let an attacker's domain resolve to loopback and appear
+ * same-origin.
+ *
+ * A handshake with no Origin is not a browser request; those are constrained
+ * by the bind address (loopback unless the operator opts out) and by
+ * verifyWebSocketAuth.
+ */
+function wsOriginRefusal(req: IncomingMessage): 'host' | 'origin' | null {
+  const hostHeader = resolveHostHeader(
+    req.headers.host,
+    req.headers['x-forwarded-host'] as string | undefined
+  );
+  const origin = typeof req.headers.origin === 'string' ? req.headers.origin : undefined;
+  return checkRequestOrigin(origin, hostHeader);
+}
+
+function parseRequestedSize(cols: unknown, rows: unknown): { cols: number; rows: number } | null {
+  const c = typeof cols === 'string' ? Number(cols) : cols;
+  const r = typeof rows === 'string' ? Number(rows) : rows;
+  if (typeof c !== 'number' || typeof r !== 'number' || !Number.isFinite(c) || !Number.isFinite(r) || c < 1 || r < 1) {
+    return null;
   }
-  if (intValue > MAX_TERMINAL_SIZE) {
-    return MAX_TERMINAL_SIZE;
-  }
-  return intValue;
+  return { cols: clampTerminalSize(c, 1), rows: clampTerminalSize(r, 1) };
 }
 
 function rawDataByteLength(data: RawData): number {
@@ -142,44 +173,6 @@ function rawDataToBuffer(data: RawData): Buffer {
   }
   // data is Buffer
   return Buffer.isBuffer(data) ? data : Buffer.from(data as Buffer);
-}
-
-function canSendToSocket(socket: WebSocket): boolean {
-  if (socket.readyState !== WebSocket.OPEN) {
-    return false;
-  }
-  if (socket.bufferedAmount > MAX_SOCKET_BUFFERED_AMOUNT) {
-    try { socket.close(1009, 'Terminal output overflow'); } catch { /* ignore */ }
-    return false;
-  }
-  return true;
-}
-
-function sendControl(socket: WebSocket, message: ServerControlMessage): boolean {
-  if (!canSendToSocket(socket)) {
-    return false;
-  }
-  try {
-    socket.send(JSON.stringify(message));
-    return true;
-  } catch {
-    try { socket.close(1011, 'Terminal control send failed'); } catch { /* ignore */ }
-    return false;
-  }
-}
-
-// 制御権（resizeOwner = 主クライアント）を付け替え、新旧クライアントへ
-// primary 状態を通知する。主クライアントだけが端末クエリへ応答する。
-function assignResizeOwner(session: TerminalSession, socket: WebSocket): void {
-  const previous = session.resizeOwner;
-  if (previous === socket) {
-    return;
-  }
-  session.resizeOwner = socket;
-  if (previous) {
-    sendControl(previous, { type: 'primary', value: false });
-  }
-  sendControl(socket, { type: 'primary', value: true });
 }
 
 function readBufferedRange(session: TerminalSession, startOffset: number, endOffset: number): Buffer {
@@ -231,50 +224,74 @@ function readBufferedRange(session: TerminalSession, startOffset: number, endOff
   return Buffer.from(raw.subarray(alignedStart, alignedEnd));
 }
 
+// Pause reading from VNC when the browser is this far behind.
+const VNC_HIGH_WATER = 8 * 1024 * 1024;
+
+/**
+ * Bridge a browser VNC viewer (noVNC) to the shared desktop's x11vnc, which
+ * listens on loopback only. Frames are already compressed by VNC, so they
+ * skip per-message deflate.
+ */
+function attachVncBridge(socket: WebSocket, desktop: SharedDesktop): void {
+  const pending: Buffer[] = [];
+  let upstream: net.Socket | null = null;
+  let closed = false;
+  socket.on('message', (data) => {
+    const chunk = rawDataToBuffer(data);
+    if (upstream) upstream.write(chunk);
+    else pending.push(chunk);
+  });
+  socket.on('close', () => {
+    closed = true;
+    upstream?.destroy();
+  });
+  desktop.vnc().then(({ port }) => {
+    if (closed) return;
+    const tcp = net.connect(port, '127.0.0.1');
+    upstream = tcp;
+    tcp.setNoDelay(true);
+    tcp.on('connect', () => {
+      for (const chunk of pending.splice(0)) tcp.write(chunk);
+    });
+    let resumeTimer: NodeJS.Timeout | null = null;
+    tcp.on('data', (chunk) => {
+      if (socket.readyState !== WebSocket.OPEN) return;
+      socket.send(chunk, { binary: true, compress: false });
+      if (socket.bufferedAmount > VNC_HIGH_WATER && !resumeTimer) {
+        tcp.pause();
+        resumeTimer = setInterval(() => {
+          if (socket.readyState !== WebSocket.OPEN || socket.bufferedAmount < VNC_HIGH_WATER / 4) {
+            clearInterval(resumeTimer!);
+            resumeTimer = null;
+            tcp.resume();
+          }
+        }, 50);
+      }
+    });
+    tcp.on('close', () => {
+      if (resumeTimer) clearInterval(resumeTimer);
+      try { socket.close(1000, 'Desktop VNC closed'); } catch { /* ignore */ }
+    });
+    tcp.on('error', () => { /* close follows */ });
+  }).catch(() => {
+    try { socket.close(1011, 'Desktop unavailable'); } catch { /* ignore */ }
+  });
+}
+
 export function setupWebSocketServer(
   server: HttpServer | HttpsServer,
   terminals: Map<string, TerminalSession>,
   browserService?: AgentBrowserService,
-  codeServerService?: CodeServerService
+  desktop?: SharedDesktop | null
 ): WebSocketServer {
-  // noServer mode: we own the HTTP 'upgrade' event so code-server's WebSocket can
-  // be reverse-proxied alongside the app's own sockets. Everything that isn't a
-  // /codeserver/ upgrade is handed to wss exactly as before.
-  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_MESSAGE_SIZE });
-
-  server.on('upgrade', (req, socket: Duplex, head) => {
-    let pathname: string;
-    try {
-      pathname = new URL(req.url || '', `http://localhost:${PORT}`).pathname;
-    } catch {
-      socket.destroy();
-      return;
-    }
-
-    if (codeServerService && pathname.startsWith('/codeserver/')) {
-      if (!verifyWebSocketAuth(req)) {
-        socket.destroy();
-        return;
-      }
-      const rest = pathname.slice('/codeserver/'.length);
-      const slash = rest.indexOf('/');
-      const wsId = slash === -1 ? rest : rest.slice(0, slash);
-      const prefix = `/codeserver/${wsId}`;
-      const original = req.url || '';
-      req.url = original.slice(prefix.length) || '/';
-      if (!req.url.startsWith('/')) {
-        req.url = `/${req.url}`;
-      }
-      codeServerService
-        .ensure(wsId)
-        .then(() => codeServerService.proxyUpgrade(wsId, req, socket, head))
-        .catch(() => {
-          try { socket.destroy(); } catch { /* ignore */ }
-        });
-      return;
-    }
-
-    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
+  const wss = new WebSocketServer({
+    server,
+    maxPayload: MAX_MESSAGE_SIZE,
+    perMessageDeflate: {
+      serverNoContextTakeover: true,
+      clientNoContextTakeover: true,
+      threshold: 1024,
+    },
   });
   const heartbeatState = new WeakMap<WebSocket, boolean>();
   const heartbeatInterval = setInterval(() => {
@@ -294,31 +311,26 @@ export function setupWebSocketServer(
   }, HEARTBEAT_INTERVAL_MS);
   heartbeatInterval.unref?.();
 
-  const WS_ALLOWED_ORIGINS = new Set([
-    `http://localhost:${PORT}`,
-  ]);
-  // Add dev origins only in development mode
-  if (NODE_ENV !== 'production') {
-    WS_ALLOWED_ORIGINS.add('http://localhost:5173');
-    WS_ALLOWED_ORIGINS.add('http://localhost:3000');
-  }
-  // Allow configured CORS origin for WebSocket too
-  if (CORS_ORIGIN && CORS_ORIGIN !== '*') {
-    WS_ALLOWED_ORIGINS.add(CORS_ORIGIN);
-  }
-
   wss.on('connection', (socket: WebSocket, req) => {
+    // wss.clients includes sockets in their close handshake, including after
+    // an administrative clear. Cap the actual live set as well as tracked IPs.
+    if (wss.clients.size > MAX_GLOBAL_CONNECTIONS) {
+      socket.terminate();
+      return;
+    }
     const socketId = crypto.randomUUID();
     const clientIP = getClientIP(req);
     heartbeatState.set(socket, true);
 
-    // Validate Origin header to prevent Cross-Site WebSocket Hijacking
-    // Skip check if CORS_ORIGIN is '*' or unset in development mode
-    const skipOriginCheck = CORS_ORIGIN === '*' || (!CORS_ORIGIN && NODE_ENV !== 'production');
-    const origin = req.headers['origin'];
-    if (origin && !skipOriginCheck && !WS_ALLOWED_ORIGINS.has(origin)) {
-      logSecurityEvent('WS_INVALID_ORIGIN', { ip: clientIP, origin });
-      socket.close(1008, 'Invalid origin');
+    // Validate Origin to prevent Cross-Site WebSocket Hijacking. Never skipped:
+    // these sockets carry PTY input/output and agent-browser control.
+    const originRefusal = wsOriginRefusal(req);
+    if (originRefusal || (isAuthEnabled() && !validWebSocketOrigin(req) && !isCliRequest(req))) {
+      logSecurityEvent(
+        originRefusal === 'host' ? 'WS_INVALID_HOST' : 'WS_INVALID_ORIGIN',
+        { ip: clientIP, origin: req.headers['origin'], host: req.headers.host }
+      );
+      socket.close(1008, originRefusal === 'host' ? 'Invalid host' : 'Invalid origin');
       return;
     }
 
@@ -342,12 +354,15 @@ export function setupWebSocketServer(
       return;
     }
 
-    if (!verifyWebSocketAuth(req)) {
+    const authSessionKey = verifyWebSocketAuth(req);
+    if (!authSessionKey) {
       logSecurityEvent('WS_AUTH_FAILED', { ip: clientIP });
       untrackConnection(clientIP, socket);
       socket.close(1008, 'Unauthorized');
       return;
     }
+    const unsubscribe = onSessionRevoked(authSessionKey, () => socket.terminate());
+    socket.on('close', unsubscribe);
 
     const url = new URL(req.url || '', `http://localhost:${PORT}`);
     if (url.pathname === '/api/browser/ws') {
@@ -395,6 +410,20 @@ export function setupWebSocketServer(
       return;
     }
 
+    if (url.pathname === '/api/desktop/vnc') {
+      if (!desktop) {
+        untrackConnection(clientIP, socket);
+        socket.close(1011, 'Desktop disabled');
+        return;
+      }
+      socket.on('close', () => {
+        heartbeatState.delete(socket);
+        untrackConnection(clientIP, socket);
+      });
+      attachVncBridge(socket, desktop);
+      return;
+    }
+
     const match = url.pathname.match(/\/api\/terminals\/(.+)/);
     if (!match) {
       untrackConnection(clientIP, socket);
@@ -410,59 +439,156 @@ export function setupWebSocketServer(
       return;
     }
 
-    const hadNoSockets = session.sockets.size === 0;
-    session.sockets.add(socket);
-    if (hadNoSockets && !session.resizeOwner) {
-      session.resizeOwner = socket;
+    const params = url.searchParams;
+    // proto=2 clients understand snapshots and server-driven sizes.
+    const proto = Number(params.get('proto') || '1');
+    const kindParam = params.get('client');
+    const wantsClaim = params.get('claim') === '1';
+    const clientIdParam = params.get('cid');
+    const client: TerminalClient = {
+      id: clientIdParam && /^[A-Za-z0-9_-]{8,64}$/.test(clientIdParam) ? clientIdParam : null,
+      desired: parseRequestedSize(params.get('cols'), params.get('rows')),
+      activeAt: wantsClaim ? Date.now() : 0,
+      kind: kindParam === 'cli' ? 'cli' : kindParam === 'web' ? 'web' : 'other',
+    };
+    // A client that reconnects before its old socket was detected as dead
+    // (phone woke from sleep, network switch) takes over that socket's role
+    // instead of being left as a viewer behind a ghost primary.
+    const stale = client.id
+      ? Array.from(session.clients.entries()).filter(([, other]) => other.id === client.id)
+      : [];
+    const inheritsControl = stale.some(([other]) => other === session.resizeOwner);
+    if (stale.length > 0) {
+      client.activeAt = Math.max(client.activeAt, ...stale.map(([, other]) => other.activeAt));
     }
+    session.clients.set(socket, client);
     session.lastActive = Date.now();
-
-    // Send buffer content if available
-    // bufferOffset: absolute byte count the client already processed
-    // bufferBase: absolute byte position of buffer[0] (bytes dropped from start)
-    const offsetParam = url.searchParams.get('bufferOffset');
-    const clientOffset = offsetParam ? Math.max(0, parseInt(offsetParam, 10) || 0) : 0;
-    const bufferStart = session.bufferBase;
-    const bufferEnd = session.bufferBase + session.bufferLength;
-    let replayStartOffset = clientOffset;
-    let resetTerminal = false;
-
-    if (clientOffset <= bufferStart) {
-      replayStartOffset = bufferStart;
-      resetTerminal = session.bufferLength > 0;
-    } else if (clientOffset >= bufferEnd) {
-      replayStartOffset = bufferEnd;
+    if (inheritsControl) {
+      assignResizeOwner(session, socket, false);
+    }
+    for (const [other] of stale) {
+      releaseTerminalClient(session, other);
+      try { other.terminate(); } catch { /* already gone */ }
     }
 
-    if (!sendControl(socket, { type: 'sync', offsetBase: replayStartOffset, reset: resetTerminal })) {
-      return;
+    // The PTY follows the most recently active client. A client that claims
+    // on connect (it is being used, or was primary before a reconnect), or the
+    // first client to attach, takes control now — before its replay — so the
+    // replay is already rendered at its size.
+    if (wantsClaim || !session.resizeOwner) {
+      assignResizeOwner(session, socket, wantsClaim);
     }
 
-    if (session.bufferLength > 0) {
-      try {
-        let bufferToSend: Buffer = Buffer.alloc(0);
+    const stillAttached = () =>
+      socket.readyState === WebSocket.OPEN && session.clients.has(socket) && terminals.get(id) === session;
 
-        if (clientOffset <= bufferStart) {
-          // Client's last position is before (or at) what we have — send everything
-          bufferToSend = readBufferedRange(session, bufferStart, bufferEnd);
-        } else if (clientOffset >= bufferEnd) {
-          // Client is fully up to date
-          bufferToSend = Buffer.alloc(0);
-        } else {
-          // Send only the delta
-          bufferToSend = readBufferedRange(session, clientOffset, bufferEnd);
-        }
-
-        if (bufferToSend.length > 0 && canSendToSocket(socket)) {
-          socket.send(bufferToSend, { binary: true });
-        }
-      } catch (error) {
-        console.error(`Failed to send buffer to socket ${socketId}:`, error);
+    // Start live output after the replay; nothing is broadcast to the socket
+    // until then, so replay and live bytes can never interleave.
+    const finishAttach = () => {
+      if (!stillAttached()) return;
+      session.sockets.add(socket);
+      // The primary may have left while this socket was still replaying
+      // (promotion skips pending sockets); never leave the terminal without one.
+      if (!session.resizeOwner) {
+        assignResizeOwner(session, socket, false);
       }
+      sendControl(socket, { type: 'ready' });
+      // この接続が現在の主クライアントかを通知する。
+      sendControl(socket, { type: 'primary', value: session.resizeOwner === socket });
+    };
+
+    const sendRawReplay = (clientOffset: number) => {
+      // bufferOffset: absolute byte count the client already processed
+      // bufferBase: absolute byte position of buffer[0] (bytes dropped from start)
+      const bufferStart = session.bufferBase;
+      const bufferEnd = session.bufferBase + session.bufferLength;
+      let replayStartOffset = clientOffset;
+      let resetTerminal = false;
+      if (clientOffset <= bufferStart) {
+        replayStartOffset = bufferStart;
+        resetTerminal = session.bufferLength > 0;
+      } else if (clientOffset >= bufferEnd) {
+        replayStartOffset = bufferEnd;
+      }
+      if (!sendControl(socket, {
+        type: 'sync', offsetBase: replayStartOffset, reset: resetTerminal, cols: session.cols, rows: session.rows,
+      })) {
+        return;
+      }
+      if (replayStartOffset < bufferEnd) {
+        try {
+          const bufferToSend = readBufferedRange(session, replayStartOffset, bufferEnd);
+          if (bufferToSend.length > 0 && canSendToSocket(socket)) {
+            socket.send(bufferToSend, { binary: true });
+          }
+        } catch (error) {
+          console.error(`Failed to send buffer to socket ${socketId}:`, error);
+        }
+      }
+      finishAttach();
+    };
+
+    // Hand the client the current screen rendered by the server-side mirror,
+    // then the bytes that arrived while it was being serialized.
+    const sendSnapshot = (attempt = 1): void => {
+      const mirror = session.mirror;
+      if (!mirror) {
+        sendRawReplay(0);
+        return;
+      }
+      const epoch = session.resizeEpoch;
+      mirror.snapshot().then((snap) => {
+        if (!stillAttached()) return;
+        // A resize after the snapshot was requested (even one undone by a
+        // second resize) means the tail bytes were drawn at another size.
+        const inconsistent = snap.offset < session.bufferBase || session.resizeEpoch !== epoch ||
+          snap.cols !== session.cols || snap.rows !== session.rows;
+        if (inconsistent && attempt < MAX_SNAPSHOT_ATTEMPTS) {
+          sendSnapshot(attempt + 1);
+          return;
+        }
+        if (!sendControl(socket, {
+          type: 'sync', offsetBase: snap.offset, reset: true, cols: snap.cols, rows: snap.rows, snapshot: true,
+        })) {
+          return;
+        }
+        try {
+          socket.send(Buffer.from(snap.data, 'utf8'), { binary: true });
+          // Still racing resizes after the retries: output since the
+          // snapshot is mostly post-resize, so switch size before it.
+          if (snap.cols !== session.cols || snap.rows !== session.rows) {
+            sendControl(socket, { type: 'size', cols: session.cols, rows: session.rows });
+          }
+          const tailStart = Math.max(snap.offset, session.bufferBase);
+          const tail = readBufferedRange(session, tailStart, session.bufferBase + session.bufferLength);
+          if (tail.length > 0 && canSendToSocket(socket)) {
+            socket.send(tail, { binary: true });
+          }
+        } catch (error) {
+          console.error(`Failed to send snapshot to socket ${socketId}:`, error);
+        }
+        finishAttach();
+      }).catch(() => {
+        if (stillAttached()) sendRawReplay(0);
+      });
+    };
+
+    const offsetParam = params.get('bufferOffset');
+    const clientOffset = offsetParam ? Math.max(0, parseInt(offsetParam, 10) || 0) : 0;
+    const bufferEnd = session.bufferBase + session.bufferLength;
+    // A reconnecting client whose screen is intact only needs the bytes it
+    // missed — unless the PTY was resized in that gap, in which case those
+    // bytes were drawn for a size it never rendered at.
+    const canSendDelta = clientOffset > 0 &&
+      clientOffset >= session.bufferBase &&
+      clientOffset <= bufferEnd &&
+      clientOffset >= session.lastResizeOffset;
+
+    if (proto < 2 || canSendDelta) {
+      sendRawReplay(clientOffset);
+    } else {
+      sendSnapshot();
     }
-    sendControl(socket, { type: 'ready' });
-    // この接続が現在の主クライアントかを通知（既定では先頭接続が主）。
-    sendControl(socket, { type: 'primary', value: session.resizeOwner === socket });
 
     socket.on('message', (data, isBinary) => {
       try {
@@ -475,7 +601,7 @@ export function setupWebSocketServer(
 
         session.lastActive = Date.now();
 
-        // Text frames carry JSON control messages (claim, resize).
+        // Text frames carry JSON control messages (claim, resize, resync).
         // Note: the ws library delivers text frames as Buffer by default,
         // so we use the isBinary flag rather than typeof === 'string'.
         if (!isBinary) {
@@ -493,23 +619,29 @@ export function setupWebSocketServer(
           }
 
           if (control?.type === 'claim') {
+            const requested = parseRequestedSize(control.cols, control.rows);
+            if (requested) client.desired = requested;
             assignResizeOwner(session, socket);
             return;
           }
 
           if (control?.type === 'resize') {
-            if (session.resizeOwner && session.resizeOwner !== socket) {
-              return;
+            const requested = parseRequestedSize(control.cols, control.rows);
+            if (!requested) return;
+            // Every client reports what it could show; only the primary's
+            // report moves the PTY. The rest render at the PTY size.
+            client.desired = requested;
+            if (!session.resizeOwner) {
+              assignResizeOwner(session, socket, false);
+            } else if (session.resizeOwner === socket) {
+              resizeTerminal(session, requested.cols, requested.rows);
             }
+            return;
+          }
 
-            assignResizeOwner(session, socket);
-            const cols = validateTerminalSize(control.cols);
-            const rows = validateTerminalSize(control.rows);
-
-            try {
-              session.resize(cols, rows);
-            } catch (resizeError) {
-              console.error(`Failed to resize terminal ${id}:`, resizeError);
+          if (control?.type === 'resync') {
+            if (session.sockets.delete(socket)) {
+              sendSnapshot();
             }
             return;
           }
@@ -524,6 +656,7 @@ export function setupWebSocketServer(
         }
 
         // Binary frames carry terminal input (keystrokes, paste, etc.)
+        client.activeAt = Date.now();
         try {
           session.write(rawDataToBuffer(data));
         } catch (writeError) {
@@ -535,16 +668,9 @@ export function setupWebSocketServer(
     });
 
     socket.on('close', () => {
-      session.sockets.delete(socket);
-      if (session.resizeOwner === socket) {
-        session.resizeOwner = null;
-        // 主クライアントが去ったら、残っている接続のいずれかを主に昇格させ、
-        // 端末クエリへ応答するクライアントが居なくならないようにする。
-        const next = session.sockets.values().next().value;
-        if (next) {
-          assignResizeOwner(session, next);
-        }
-      }
+      // 主クライアントが去ったら、最後に操作していた接続を主に昇格させ、
+      // その表示サイズへ PTY を合わせる。
+      releaseTerminalClient(session, socket);
       session.lastActive = Date.now();
       heartbeatState.delete(socket);
       untrackConnection(clientIP, socket);

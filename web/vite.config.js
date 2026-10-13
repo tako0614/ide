@@ -5,6 +5,9 @@ import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  // noVNC (desktop viewer) uses top-level await.
+  build: { target: 'es2022' },
+  optimizeDeps: { esbuildOptions: { target: 'es2022' } },
   resolve: {
     alias: {
       '@shared': path.resolve(__dirname, '../src/shared')
@@ -14,8 +17,10 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://localhost:8787',
-        changeOrigin: true,
+        target: process.env.DECKIDE_DEV_API_URL || 'http://localhost:8787',
+        // Preserve the browser-facing Host so strict session CSRF checks see
+        // the same origin through the development proxy, including WebSockets.
+        changeOrigin: false,
         ws: true
       }
     }

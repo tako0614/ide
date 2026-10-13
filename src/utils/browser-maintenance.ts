@@ -13,12 +13,15 @@ interface McpReaperOptions {
   intervalMs: number;
 }
 
-type ProcInfo = { ppid: number; cmdline: string; ageSec: number };
+type ProcInfo = { ppid: number; cmdline: string; ageSec: number; inUse?: boolean };
 
 // Minimal shape the reap planner needs (cmdline is irrelevant to selection).
 export interface ReapProc {
   ppid: number;
   ageSec: number;
+  // Holds an open socket to our CDP port, i.e. the agent is really talking through
+  // this server right now. Optional so callers/tests can omit it.
+  inUse?: boolean;
 }
 
 /**
@@ -28,8 +31,13 @@ export interface ReapProc {
  * A "stack top" is a proc whose parent is not itself in the set (its parent is
  * the agent). Stacks are grouped by agent; for any agent owning more than
  * `maxPerAgent` stacks, the oldest extras beyond the cap — and only those older
- * than `idleMs` — are selected along with their whole subtree. Healthy agents
- * (≤ maxPerAgent stacks) are never touched.
+ * than `idleMs` and holding no live CDP socket — are selected along with their
+ * whole subtree. Healthy agents (≤ maxPerAgent stacks) are never touched.
+ *
+ * "Newest wins" alone is not enough: a long-lived agent session keeps using the
+ * server it started with and the newer stacks are its failed retry-spawns, so the
+ * oldest stack is frequently the live one. `inUse` (an open socket to our CDP
+ * port) overrides age in that case.
  */
 export function planReap(procs: Map<number, ReapProc>, maxPerAgent: number, idleMs: number): number[] {
   const stacksByAgent = new Map<number, number[]>();
@@ -58,14 +66,19 @@ export function planReap(procs: Map<number, ReapProc>, maxPerAgent: number, idle
       if (procs.get(top)!.ageSec * 1000 < idleMs) {
         continue; // spare recent stacks (e.g. mid-restart)
       }
+      const subtree: number[] = [];
       const queue = [top];
       while (queue.length) {
         const pid = queue.shift()!;
-        kill.push(pid);
+        subtree.push(pid);
         for (const child of children.get(pid) ?? []) {
           if (procs.has(child)) queue.push(child);
         }
       }
+      if (subtree.some((pid) => procs.get(pid)!.inUse)) {
+        continue; // the agent is talking through this one — age says otherwise, it wins
+      }
+      kill.push(...subtree);
     }
   }
   return kill;
@@ -95,15 +108,38 @@ export function startMcpReaper(opts: McpReaperOptions): () => void {
   return () => clearInterval(timer);
 }
 
-// All chrome-devtools-mcp processes (node servers + npm/sh launcher wrappers)
-// whose cmdline targets our CDP port. Keyed by pid.
+/**
+ * Wall-clock epoch (seconds) of the boot that `/proc/<pid>/stat` starttime counts
+ * from, read from `/proc/stat` btime.
+ *
+ * Deliberately NOT derived from `/proc/uptime`: under LXC/lxcfs (this is how the
+ * IDE is deployed on the author's host) `/proc/uptime` is virtualised to the
+ * CONTAINER's uptime while starttime still counts from the HOST's boot. The old
+ * `uptime - starttime/HZ` therefore produced large NEGATIVE ages, every stack
+ * looked brand new, and the reaper spared all of them forever — 14 leaked stacks
+ * / 5.7 GB accumulated with the reaper enabled and running.
+ */
+async function readBootEpochSec(): Promise<number | null> {
+  try {
+    const stat = await fs.readFile('/proc/stat', 'utf8');
+    const match = /^btime\s+(\d+)$/m.exec(stat);
+    if (match) {
+      const btime = Number.parseInt(match[1], 10);
+      if (Number.isFinite(btime)) return btime;
+    }
+  } catch {
+    // not Linux / no procfs
+  }
+  return null;
+}
+
+// All chrome-devtools-mcp processes belonging to a stack aimed at our CDP port —
+// npm/sh launcher wrappers plus the node server underneath. Keyed by pid.
 async function readMcpProcs(cdpPort: number): Promise<Map<number, ProcInfo>> {
   const procs = new Map<number, ProcInfo>();
-  let uptime: number;
-  try {
-    uptime = parseFloat((await fs.readFile('/proc/uptime', 'utf8')).split(' ')[0]);
-  } catch {
-    return procs; // not Linux / no procfs
+  const bootEpochSec = await readBootEpochSec();
+  if (bootEpochSec === null) {
+    return procs; // cannot age processes safely — do nothing rather than guess
   }
   let pids: string[];
   try {
@@ -112,7 +148,15 @@ async function readMcpProcs(cdpPort: number): Promise<Map<number, ProcInfo>> {
     return procs;
   }
 
+  const nowSec = Date.now() / 1000;
   const portToken = `127.0.0.1:${cdpPort}`;
+  // Pass 1: every chrome-devtools-mcp process, whether or not its cmdline still
+  // names our port. The MCP server sets `process.title` to "chrome-devtools-mcp",
+  // which overwrites its argv — `--browserUrl http://127.0.0.1:9222` disappears
+  // from /proc/<pid>/cmdline. Requiring the port token therefore matched only the
+  // npm/sh wrappers, so a reap killed those and orphaned the 150 MB–1.4 GB node
+  // server they wrapped, which then leaked with no parent left to attribute it to.
+  const candidates = new Map<number, ProcInfo & { targetsPort: boolean }>();
   for (const pid of pids) {
     let cmdline: string;
     try {
@@ -120,8 +164,7 @@ async function readMcpProcs(cdpPort: number): Promise<Map<number, ProcInfo>> {
     } catch {
       continue;
     }
-    // Target only chrome-devtools-mcp aimed at OUR shared browser.
-    if (!cmdline.includes('chrome-devtools-mcp') || !cmdline.includes(portToken)) {
+    if (!cmdline.includes('chrome-devtools-mcp')) {
       continue;
     }
     let stat: string;
@@ -138,7 +181,28 @@ async function readMcpProcs(cdpPort: number): Promise<Map<number, ProcInfo>> {
     if (!Number.isFinite(ppid) || !Number.isFinite(starttime)) {
       continue;
     }
-    procs.set(Number.parseInt(pid, 10), { ppid, cmdline, ageSec: uptime - starttime / CLOCK_HZ });
+    candidates.set(Number.parseInt(pid, 10), {
+      ppid,
+      cmdline,
+      ageSec: nowSec - (bootEpochSec + starttime / CLOCK_HZ),
+      targetsPort: cmdline.includes(portToken),
+    });
+  }
+
+  // Pass 2: keep the stacks aimed at OUR browser, plus their descendants, so each
+  // stack is reaped whole. A title-clobbered server is claimed by lineage only —
+  // an MCP pointed at some other browser is never adopted.
+  for (const [pid, info] of candidates) {
+    if (info.targetsPort) procs.set(pid, info);
+  }
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const [pid, info] of candidates) {
+      if (!procs.has(pid) && procs.has(info.ppid)) {
+        procs.set(pid, info);
+        grew = true;
+      }
+    }
   }
   return procs;
 }

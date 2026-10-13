@@ -13,7 +13,9 @@ export const securityHeaders: MiddlewareHandler = async (c, next) => {
   c.header('Referrer-Policy', 'strict-origin-when-cross-origin');
   c.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   c.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
-  // Allow Monaco Editor from CDN, Google Fonts, and blob: for workers
-  c.header('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net https://static.cloudflareinsights.com blob:; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; font-src 'self' https://cdn.jsdelivr.net https://fonts.gstatic.com data:; img-src 'self' data: blob:; connect-src 'self' ws: wss:; worker-src 'self' blob:;");
+  // The shell UI loads scripts and fonts locally. Inline styles remain necessary
+  // for xterm's cell layout and the OAuth consent page; inline/evaluated scripts
+  // and the former editor/font CDNs are unnecessary.
+  c.header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob:; connect-src 'self' ws: wss:; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none';");
   await next();
 };

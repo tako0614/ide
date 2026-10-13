@@ -55,6 +55,12 @@ interface BrowserPaneProps {
 const AUDIO_MIME_TYPE = 'audio/webm; codecs="opus"';
 const AUDIO_QUEUE_LIMIT = 64;
 
+// ユーザー用途では縮尺を固定する：リモートブラウザは常にこの固定解像度で
+// レンダリングし、クライアント側は object-fit:contain でペインに収まるよう
+// レターボックス表示する。ペインのサイズに合わせてページをリフローさせない
+// ことで、レイアウトが安定し「ぺしゃんこ」な縦潰れも起きない。
+const FIXED_VIEWPORT = { width: 1280, height: 720 };
+
 function getKeyModifiers(event: KeyboardEvent | React.KeyboardEvent): number {
   let modifiers = 0;
   if (event.altKey) modifiers |= 1;
@@ -131,14 +137,18 @@ function waitIceGathering(pc: RTCPeerConnection, timeoutMs = 2000): Promise<void
   });
 }
 
-// M1 opt-in: WebRTC video path is only attempted when the page is loaded with
-// ?webrtc=1. Later milestones promote this to capability-driven auto-selection.
-function webrtcOptIn(): boolean {
+// Opt-in to the WebRTC video path with ?webrtc=1. Captured once at module load,
+// before useUrlSync can rewrite the query string away (later milestones promote
+// this to capability-driven auto-selection).
+const WEBRTC_OPT_IN = (() => {
   try {
-    return new URLSearchParams(window.location.search).get('webrtc') === '1';
+    return typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('webrtc') === '1';
   } catch {
     return false;
   }
+})();
+function webrtcOptIn(): boolean {
+  return WEBRTC_OPT_IN;
 }
 
 export function BrowserPane({ wsBase }: BrowserPaneProps) {
@@ -201,10 +211,8 @@ export function BrowserPane({ wsBase }: BrowserPaneProps) {
   }, []);
 
   const sendCurrentSize = useCallback(() => {
-    const { width, height } = lastSizeRef.current;
-    if (width > 0 && height > 0) {
-      send({ type: 'resize', width, height });
-    }
+    // 固定解像度を要求する（ペインサイズに追従しない）。
+    send({ type: 'resize', width: FIXED_VIEWPORT.width, height: FIXED_VIEWPORT.height });
   }, [send]);
 
   const clearFrame = useCallback(() => {
@@ -305,23 +313,13 @@ export function BrowserPane({ wsBase }: BrowserPaneProps) {
     };
   }, []);
 
+  // 縮尺固定：ペインのサイズ変化でリモートをリサイズしない。リモートは
+  // FIXED_VIEWPORT で描画し、表示側は object-fit:contain で収める。座標変換の
+  // フォールバック用に lastSizeRef だけ固定値で持っておく。
   useEffect(() => {
-    const element = viewportRef.current;
-    if (!element) return;
-
-    const observer = new ResizeObserver(([entry]) => {
-      const width = Math.floor(entry.contentRect.width);
-      const height = Math.floor(entry.contentRect.height);
-      if (width <= 0 || height <= 0) return;
-      if (lastSizeRef.current.width === width && lastSizeRef.current.height === height) {
-        return;
-      }
-      lastSizeRef.current = { width, height };
-      send({ type: 'resize', width, height });
-    });
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, [send]);
+    lastSizeRef.current = { ...FIXED_VIEWPORT };
+    sendCurrentSize();
+  }, [sendCurrentSize]);
 
   useEffect(() => {
     let cancelled = false;
@@ -812,18 +810,27 @@ export function BrowserPane({ wsBase }: BrowserPaneProps) {
   }, [send]);
 
   const getBrowserPointFromClient = useCallback((clientX: number, clientY: number) => {
-    const canvas = canvasRef.current;
-    if (!canvas) {
+    // In WebRTC mode the <video> is the visible surface (canvas is hidden); in
+    // JPEG mode it's the canvas. Map against whichever is showing, using that
+    // element's source pixel size.
+    const video = videoRef.current;
+    const usingVideo = !!(video && video.videoWidth > 0);
+    const el: HTMLElement | null = usingVideo ? video : canvasRef.current;
+    if (!el) {
       return null;
     }
-    const rect = canvas.getBoundingClientRect();
+    const rect = el.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0) {
       return null;
     }
 
-    const width = frameSizeRef.current.width || canvas.width || lastSizeRef.current.width || 1280;
-    const height = frameSizeRef.current.height || canvas.height || lastSizeRef.current.height || 720;
-    // The canvas fills the viewport but renders the frame with
+    const width = usingVideo
+      ? (video!.videoWidth || frameSizeRef.current.width || lastSizeRef.current.width || 1280)
+      : (frameSizeRef.current.width || canvasRef.current?.width || lastSizeRef.current.width || 1280);
+    const height = usingVideo
+      ? (video!.videoHeight || frameSizeRef.current.height || lastSizeRef.current.height || 720)
+      : (frameSizeRef.current.height || canvasRef.current?.height || lastSizeRef.current.height || 720);
+    // The surface fills the viewport but renders the frame with
     // `object-fit: contain`, so the visible image is letterboxed inside the
     // element box. Map against that contained rect, not the full element, or
     // clicks drift by the letterbox offset.
@@ -1174,6 +1181,11 @@ export function BrowserPane({ wsBase }: BrowserPaneProps) {
           autoPlay
           playsInline
           muted
+          onMouseMove={handleMouseMove}
+          onMouseDown={handleMouseDown}
+          onMouseUp={handleMouseUp}
+          onWheel={handleWheel}
+          onContextMenu={(event) => event.preventDefault()}
         />
         {viewportState === 'stopped' && (
           <div className="browser-state">

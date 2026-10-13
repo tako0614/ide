@@ -2,6 +2,9 @@ import type { Deck, FileSystemEntry, Workspace, GitStatus, GitDiff, GitRepoInfo,
 import { API_BASE } from './constants';
 
 const HTTP_STATUS_NO_CONTENT = 204;
+const CSRF_HEADER = 'X-DeckIDE-CSRF';
+export const AUTH_REQUIRED_EVENT = 'deckide:auth-required';
+export const AUTH_SESSION_REFRESH_EVENT = 'deckide:auth-session-refresh';
 
 /**
  * Makes an HTTP request to the API
@@ -10,19 +13,57 @@ const HTTP_STATUS_NO_CONTENT = 204;
  * @returns Parsed JSON response
  * @throws Error if request fails
  */
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+export async function apiRequest(
+  path: string,
+  options: RequestInit = {},
+  dispatchAuthFailure = true
+): Promise<Response> {
+  const method = (options.method || 'GET').toUpperCase();
+  const headers = new Headers(options.headers);
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+    headers.set(CSRF_HEADER, '1');
+  }
   const response = await fetch(`${API_BASE}${path}`, {
     ...options,
-    credentials: 'include'
+    headers,
+    credentials: 'same-origin'
   });
+  if (response.status === 401 && dispatchAuthFailure && typeof window !== 'undefined') {
+    window.dispatchEvent(new Event(AUTH_REQUIRED_EVENT));
+  }
+  return response;
+}
+
+export async function apiJson<T>(
+  path: string,
+  options: RequestInit = {},
+  dispatchAuthFailure = true
+): Promise<T> {
+  const response = await apiRequest(path, options, dispatchAuthFailure);
   if (!response.ok) {
-    const message = await response.text();
-    throw new Error(message || `Request failed (${response.status})`);
+    const body = await response.text();
+    let message = body;
+    try {
+      const payload: unknown = JSON.parse(body);
+      if (payload && typeof payload === 'object') {
+        const details = payload as { error?: unknown; message?: unknown };
+        if (typeof details.error === 'string') message = details.error;
+        else if (typeof details.message === 'string') message = details.message;
+        else message = '';
+      }
+    } catch {
+      // Keep plain-text server errors readable.
+    }
+    throw new Error((message.trim() || `Request failed (${response.status})`).slice(0, 300));
   }
   if (response.status === HTTP_STATUS_NO_CONTENT) {
     return null as T;
   }
   return response.json() as Promise<T>;
+}
+
+async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  return apiJson<T>(path, options);
 }
 
 const CONTENT_TYPE_JSON = 'application/json';
@@ -42,7 +83,38 @@ export function getWsBase(): string {
  * Fetches a one-time WebSocket authentication token
  */
 export function getWsToken(): Promise<{ token: string; authEnabled: boolean }> {
-  return request<{ token: string; authEnabled: boolean }>('/api/ws-token');
+  return request<{ token: string; authEnabled: boolean }>('/api/ws-token', {
+    method: HTTP_METHOD_POST,
+    headers: { 'Content-Type': CONTENT_TYPE_JSON },
+    body: JSON.stringify({})
+  });
+}
+
+export interface AuthSession {
+  authEnabled: boolean;
+  authenticated: boolean;
+  username?: string;
+}
+
+export function getAuthSession(): Promise<AuthSession> {
+  return request<AuthSession>('/api/auth/session');
+}
+
+export function login(username: string, password: string): Promise<AuthSession> {
+  return apiJson<AuthSession>('/api/auth/login', {
+    method: HTTP_METHOD_POST,
+    headers: { 'Content-Type': CONTENT_TYPE_JSON },
+    body: JSON.stringify({ username, password })
+  }, false);
+}
+
+export async function logout(): Promise<void> {
+  await request<void>('/api/auth/logout', {
+    method: HTTP_METHOD_POST,
+    headers: { 'Content-Type': CONTENT_TYPE_JSON },
+    body: JSON.stringify({})
+  });
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event(AUTH_REQUIRED_EVENT));
 }
 
 /**
@@ -255,10 +327,9 @@ export async function uploadFiles(
   for (const file of files) {
     form.append('file', file);
   }
-  const response = await fetch(`${API_BASE}/api/upload`, {
+  const response = await apiRequest('/api/upload', {
     method: HTTP_METHOD_POST,
     body: form,
-    credentials: 'include'
   });
   if (!response.ok) {
     const message = await response.text();
@@ -287,9 +358,9 @@ export function createTerminal(
  */
 export function listTerminals(
   deckId: string
-): Promise<{ id: string; title: string }[]> {
+): Promise<{ id: string; title: string; createdAt?: string }[]> {
   const query = new URLSearchParams({ deckId });
-  return request<{ id: string; title: string }[]>(
+  return request<{ id: string; title: string; createdAt?: string }[]>(
     `/api/terminals?${query.toString()}`
   );
 }

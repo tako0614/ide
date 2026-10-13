@@ -1,4 +1,3 @@
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+JP:wght@400;500;600&display=swap');
 @import "tailwindcss";
 
 /* Dark mode: data-theme="dark" attribute based */
@@ -36,7 +35,7 @@
   --color-git-conflicted:   #ff6b6b;
 
   /* Fonts */
-  --font-mono: "JetBrains Mono", monospace;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", "Noto Sans Mono CJK JP", "Source Han Mono", "MS Gothic", monospace;
   --font-ui:   "Noto Sans JP", sans-serif;
 }
 
@@ -216,7 +215,7 @@
 /* ── App Layout ── */
 .app {
   display: grid;
-  grid-template-columns: 48px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr) 22px;
   height: 100%;
   overflow: hidden;
@@ -444,6 +443,9 @@
   background: var(--color-sidebar); border-bottom: 1px solid var(--color-border);
   flex-shrink: 0; min-width: 0; overflow: hidden;
 }
+.shell-toolbar-actions {
+  display: flex; align-items: center; gap: 6px; padding: 0 8px; flex-shrink: 0;
+}
 .topbar-left { display: flex; align-items: stretch; min-width: 0; flex: 1; overflow: hidden; }
 .deck-tabs {
   display: flex; align-items: stretch; overflow-x: auto; flex: 1; min-width: 0; scrollbar-width: none;
@@ -493,20 +495,7 @@
   font-size: 11px; font-weight: 600; cursor: pointer; transition: all 0.15s;
 }
 .topbar-btn-sm:hover { background: var(--color-list-hover); color: var(--color-ink); border-color: var(--color-accent); }
-.topbar-btn-sm.topbar-btn-claude { color: #d97757; }
-.topbar-btn-sm.topbar-btn-claude:hover { background: rgba(217,119,87,0.15); border-color: #d97757; }
-.topbar-btn-sm.topbar-btn-codex { color: #00a86b; }
-.topbar-btn-sm.topbar-btn-codex:hover { background: rgba(0,168,107,0.15); border-color: #00a86b; }
-
-/* Deck Drive shell */
-.drive-mini-btn {
-  padding: 1px 5px; background: transparent; border: 0; border-radius: 3px;
-  color: var(--color-muted); font-size: 11px; cursor: pointer; line-height: 1.4;
-}
-.drive-mini-btn:hover { background: var(--color-list-hover); color: var(--color-ink); }
-.drive-body.drive-drag-active { outline: 2px dashed var(--color-accent); outline-offset: -6px; background: var(--color-list-hover); }
-.drive-tab { background: transparent; border: 0; cursor: pointer; border-bottom: 2px solid transparent; }
-.code-server-frame { width: 100%; height: 100%; border: 0; display: block; background: #1e1e1e; }
+.topbar-btn-sm.topbar-btn-danger:hover { background: rgba(229,83,75,0.15); border-color: #e5534b; }
 
 /* ── Terminal Pane ── */
 .terminal-pane { flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; padding: 4px; overflow-anchor: none; }
@@ -514,16 +503,56 @@
 .terminal-tile-slot { display: contents; }
 /* 端末切替ドロップダウンはモバイル専用。デスクトップはグリッドで全表示するため隠す。 */
 .terminal-switcher { display: none; }
+
+/* Single-terminal view — used on mobile and by the desktop "maximize" toggle.
+   Not media-gated so it works at any viewport. */
+.terminal-grid-single {
+  display: flex !important; flex-direction: column !important;
+  flex: 1 !important; min-height: 0 !important;
+  overflow: hidden !important; gap: 0 !important; padding: 0 !important;
+}
+.terminal-tile-slot-single-active {
+  display: flex !important; flex-direction: column; flex: 1; min-height: 0; overflow: hidden;
+}
+.terminal-tile-slot-single-active .terminal-tile {
+  flex: 1; height: auto !important; min-height: 0 !important; border-radius: 0; border: none;
+}
+.terminal-tile-slot-single-hidden { display: none !important; }
+/* When a deck is maximized, surface the switcher so the user can choose which
+   terminal fills the pane (the switcher is hidden by default on desktop). */
+.deck-terminals-single .terminal-switcher {
+  display: block; flex: 0 1 auto; min-width: 120px; max-width: 50%;
+  background: var(--color-bg-soft); color: var(--color-ink);
+  border: 1px solid var(--color-border); border-radius: 3px;
+  font-size: 11px; padding: 2px 6px;
+}
 .terminal-empty {
   flex: 1; display: flex; align-items: center; justify-content: center;
   background: var(--color-bg-soft); border: 1px dashed var(--color-border);
   border-radius: 4px; color: var(--color-muted); font-size: 12px;
 }
+.terminal-empty-btn {
+  padding: 10px 18px; border-radius: 6px; border: 1px solid var(--color-accent);
+  background: var(--color-accent); color: #fff; font-size: 13px; font-weight: 600;
+  cursor: pointer; transition: opacity 0.12s;
+}
+.terminal-empty-btn:hover { opacity: 0.9; }
+
+@media (pointer: coarse) {
+  /* Touch-size the terminal tile header buttons (maximize/close). */
+  .terminal-tile-icon-btn { width: 32px; height: 32px; }
+}
 .terminal-tile {
   border: 1px solid var(--color-border); border-radius: 4px;
-  background: #1e1e1e; color: #d4d4d4;
+  background: #181818; color: #e5e5e5;
   min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden;
   transition: background 0.15s ease-out, box-shadow 0.15s ease-out;
+}
+/* グリッドのどのターミナルが「アクティブ（最後にクリック/フォーカスした）」かを
+   明示する。最大化やモバイル単一表示が指す端末でもある。 */
+.terminal-tile.active {
+  box-shadow: inset 0 0 0 2px var(--color-accent);
+  border-color: var(--color-accent);
 }
 /* Visual bell: ベル受信時に一瞬だけ点滅させる（onBell で付与/解除）。 */
 .terminal-tile.bell-flash {
@@ -540,14 +569,66 @@
   flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font-family: var(--font-mono);
 }
-.terminal-close-btn {
+.terminal-close-btn,
+.terminal-tile-icon-btn {
   display: flex; align-items: center; justify-content: center;
   width: 20px; height: 20px; border: none; border-radius: 3px;
   background: transparent; color: #858585; cursor: pointer;
   transition: background 0.1s, color 0.1s; flex-shrink: 0;
+  font-size: 12px; line-height: 1;
 }
-.terminal-close-btn:hover { background: #404040; color: #fff; }
+.terminal-close-btn:hover,
+.terminal-tile-icon-btn:hover { background: #404040; color: #fff; }
+.terminal-close-btn:disabled,
+.terminal-tile-icon-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.terminal-close-btn:focus-visible,
+.terminal-tile-icon-btn:focus-visible {
+  outline: 2px solid #8ab4f8; outline-offset: 1px;
+}
+.terminal-font-controls {
+  display: flex; align-items: center; gap: 4px; flex-shrink: 0;
+}
+.terminal-font-controls output {
+  min-width: 2ch; color: #d6d6d6; text-align: center;
+  font: 11px/1 var(--font-mono); font-variant-numeric: tabular-nums;
+}
+.terminal-viewer-badge {
+  display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
+  padding: 2px 8px; border-radius: 10px; cursor: pointer;
+  border: 1px solid #6b5b2a; background: #3a3218; color: #f0d68a;
+  font: 11px/1.4 var(--font-mono); white-space: nowrap;
+}
+.terminal-viewer-badge:hover { background: #4a3f1c; }
+.terminal-viewer-badge-action { color: #fff; font-weight: 600; }
+@media (max-width: 720px) {
+  .terminal-viewer-badge { padding: 4px 10px; min-height: 32px; }
+}
+/* On-screen keys for touch devices (Esc/Tab/Ctrl/arrows the soft keyboard lacks). */
+.terminal-keybar { display: none; }
+@media (pointer: coarse) {
+  .terminal-keybar {
+    display: flex; flex-shrink: 0; gap: 4px; padding: 4px;
+    overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none;
+    background: var(--color-sidebar); border-top: 1px solid var(--color-border);
+    -webkit-user-select: none; user-select: none;
+    padding-bottom: calc(4px + env(safe-area-inset-bottom, 0px));
+  }
+  html.keyboard-open .terminal-keybar { padding-bottom: 4px; }
+  .terminal-keybar::-webkit-scrollbar { display: none; }
+  .terminal-keybar-key {
+    flex: 0 0 auto; min-width: 44px; height: 38px; padding: 0 10px;
+    border: 1px solid var(--color-border); border-radius: 6px;
+    background: var(--color-bg-soft); color: var(--color-ink);
+    font: 600 13px/1 var(--font-mono); touch-action: manipulation;
+  }
+  .terminal-keybar-key:active { background: var(--color-list-active); }
+  .terminal-keybar-key.is-latched { background: var(--color-accent); border-color: var(--color-accent); color: #fff; }
+  .terminal-keybar-key:disabled { opacity: 0.4; }
+}
 .terminal-tile-body { flex: 1; min-height: 0; overflow: hidden; overflow-anchor: none; overscroll-behavior: contain; touch-action: pan-y; }
+.terminal-tile-body > .xterm {
+  box-sizing: border-box; height: 100%; padding: 10px; background: #181818;
+}
 .terminal-tile-body .xterm,
 .terminal-tile-body .xterm-viewport,
 .terminal-tile-body .xterm-screen {
@@ -929,20 +1010,10 @@
 @media (max-width: 720px) {
   .app {
     grid-template-columns: 1fr;
-    grid-template-rows: minmax(0, 1fr) 48px 22px;
+    grid-template-rows: minmax(0, 1fr) 22px;
     padding-bottom: env(safe-area-inset-bottom);
   }
-  .app > nav.activity-bar {
-    grid-row: 2; flex-direction: row; width: auto; height: 48px;
-    justify-content: space-between;
-    padding: 0 max(8px, env(safe-area-inset-right, 0px)) 0 max(8px, env(safe-area-inset-left, 0px));
-    gap: 8px; border-top: 1px solid var(--color-border);
-  }
-  .activity-bar-top, .activity-bar-bottom { flex-direction: row; align-items: center; gap: 4px; }
-  .activity-bar-bottom { margin-top: 0; margin-left: 0; }
   .main { grid-row: 1; min-width: 0; overflow: hidden; }
-  .sidebar-toggle-btn { display: flex; align-items: center; justify-content: center; }
-  .activity-bar-item { min-height: 44px; min-width: 44px; }
   .deck-tab { min-height: 40px; padding: 0 8px 0 14px; font-size: 13px; }
   .topbar-btn-sm { min-height: 40px; min-width: 44px; padding: 0 10px; }
   .tree-row { min-height: 36px; }
@@ -972,21 +1043,9 @@
     padding: 0 !important; width: 100%; max-width: 100%;
   }
   /* Mobile: 単一端末をフルサイズ表示（プレビューのグリッドは廃止）。
-     非アクティブ端末は display:none でマウント維持し、極小 resize を防ぐ。
-     切り替えはデッキヘッダ行のドロップダウン (.terminal-switcher) で行う。 */
-  .terminal-grid-mobile {
-    display: flex !important; flex-direction: column !important;
-    flex: 1 !important; min-height: 0 !important;
-    overflow: hidden !important; gap: 0 !important; padding: 0 !important;
-  }
-  .terminal-tile-slot-mobile-active {
-    display: flex !important; flex-direction: column; flex: 1; min-height: 0; overflow: hidden;
-  }
-  .terminal-tile-slot-mobile-active .terminal-tile {
-    flex: 1; height: auto !important; min-height: 0 !important;
-    border-radius: 0; border: none;
-  }
-  .terminal-tile-slot-mobile-hidden { display: none !important; }
+     実際のスタイルは media 非依存の .terminal-grid-single / -single-active /
+     -single-hidden（上部参照）が担う。TerminalPane はモバイルでも -single
+     クラスを使うため、ここに専用ルールは不要。 */
   /* 端末切替ドロップダウン（デッキヘッダ行に同居）。モバイルのみ表示。 */
   .terminal-switcher {
     display: block; flex: 1 1 auto; min-width: 0; max-width: 60%;
@@ -997,7 +1056,7 @@
   }
   .status-float {
     right: 12px;
-    bottom: calc(48px + 22px + env(safe-area-inset-bottom, 0px) + 8px);
+    bottom: calc(22px + env(safe-area-inset-bottom, 0px) + 8px);
     max-width: calc(100vw - 24px);
   }
   /* キーボード表示中はターミナル(など)を最大化するため下部ナビバーを畳む。
@@ -1008,12 +1067,13 @@
     grid-template-rows: minmax(0, 1fr);
     padding-bottom: 0;
   }
-  html.keyboard-open .app > nav.activity-bar {
-    display: none;
-  }
   html.keyboard-open .status-float {
     bottom: calc(env(safe-area-inset-bottom, 0px) + 8px);
   }
+  /* While typing, give the rows to the terminal: the deck tab strip and the
+     tile title bar come back when the keyboard closes. */
+  html.keyboard-open .terminal-topbar,
+  html.keyboard-open .terminal-tile-header { display: none; }
   /* Workspace editor: drawer layout */
   .workspace-editor-grid {
     grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr); position: relative;

@@ -2,6 +2,7 @@ import type { Terminal } from '@xterm/xterm';
 import {
   TERMINAL_FOREGROUND_COLOR,
   TERMINAL_BACKGROUND_COLOR,
+  TERMINAL_CURSOR_COLOR,
   TERMINAL_ANSI_PALETTE
 } from '../constants';
 
@@ -81,7 +82,7 @@ export function registerTerminalQueryHandlers(
     else if (mode === 1006) response = modes.mouseTrackingMode !== 'none' ? 1 : 2;
     else if (mode === 1049) response = term.buffer.active.type === 'alternate' ? 1 : 2;
     else if (mode === 2004) response = modes.bracketedPasteMode ? 1 : 2;
-    else if (mode === 2026) response = 2;
+    else if (mode === 2026) response = modes.synchronizedOutputMode ? 1 : 2;
 
     sendResponse(`\x1b[?${mode};${response}$y`);
     return true;
@@ -108,7 +109,7 @@ export function registerTerminalQueryHandlers(
   // OSC 12 - Cursor color query
   term.parser.registerOscHandler(12, (data) => {
     if (data === '?') {
-      sendResponse(`\x1b]12;rgb:ffff/ffff/ffff\x07`);
+      sendResponse(`\x1b]12;rgb:${hexToRgb16(TERMINAL_CURSOR_COLOR)}\x07`);
       return true;
     }
     return false;
@@ -142,7 +143,7 @@ export function registerTerminalQueryHandlers(
 
   // XTVERSION - Terminal version query (CSI > q or CSI > 0 q)
   term.parser.registerCsiHandler({ prefix: '>', final: 'q' }, () => {
-    sendResponse('\x1bP>|xterm.js(5.5.0)\x1b\\');
+    sendResponse('\x1bP>|xterm.js(6.0.0)\x1b\\');
     return true;
   });
 
@@ -163,12 +164,34 @@ export function registerTerminalQueryHandlers(
   });
 
   // XTWINOPS - Window operations (CSI Ps t)
-  // Note: CSI 14t, 16t, 18t are handled automatically by xterm.js with windowOptions enabled
   term.parser.registerCsiHandler({ final: 't' }, (params) => {
     const operation = params[0] as number;
 
-    // Only handle operations NOT covered by windowOptions
-    if (operation === 19) {
+    if (operation === 14 || operation === 16) {
+      // xterm.js answers CSI 14t/16t through onData when windowOptions are
+      // enabled. Consume them here so replies always pass through sendResponse.
+      // Its CSI 14;2 variant is consumed without a reply.
+      const qualifier = params.length > 1 ? params[1] as number : 0;
+      if (operation === 14 && qualifier === 2) return true;
+
+      const screen = term.element?.querySelector('.xterm-screen');
+      if (!screen) return true;
+
+      const { width, height } = screen.getBoundingClientRect();
+      if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+        return true;
+      }
+
+      if (operation === 14) {
+        sendResponse(`\x1b[4;${Math.round(height)};${Math.round(width)}t`);
+      } else if (term.rows > 0 && term.cols > 0) {
+        sendResponse(`\x1b[6;${Math.round(height / term.rows)};${Math.round(width / term.cols)}t`);
+      }
+      return true;
+    } else if (operation === 18) {
+      sendResponse(`\x1b[8;${term.rows};${term.cols}t`);
+      return true;
+    } else if (operation === 19) {
       // Report screen size (same as window for web terminal)
       sendResponse(`\x1b[9;${term.rows};${term.cols}t`);
       return true;
@@ -180,9 +203,6 @@ export function registerTerminalQueryHandlers(
       // Report window title
       sendResponse('\x1b]lTerminal\x1b\\');
       return true;
-    } else if (operation === 14 || operation === 16 || operation === 18) {
-      // These are handled by xterm.js windowOptions
-      return false;
     }
     return false;
   });

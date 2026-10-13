@@ -1,4 +1,4 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import os from 'node:os';
@@ -7,6 +7,7 @@ import { WebSocket, type RawData } from 'ws';
 import type { BrowserStatus, BrowserTab } from '../shared/types.js';
 import { BrowserAudioRelay } from './browser-audio.js';
 import { BrowserWebRtcRelay } from './browser-webrtc.js';
+import type { DesktopEnv } from '../desktop/shared-desktop.js';
 
 const DEFAULT_PROFILE_DIR = path.join(os.homedir(), '.local', 'share', 'agent-browser', 'profile');
 const DEFAULT_OUTPUT_DIR = path.join(os.homedir(), '.local', 'share', 'agent-browser', 'output');
@@ -280,6 +281,17 @@ async function fetchJson<T>(url: string, options: RequestInit = {}, timeoutMs = 
   return response.json() as Promise<T>;
 }
 
+// Quick liveness probe: does a Chrome already serve CDP on this port? Used to
+// decide between attaching to an existing shared browser and launching our own.
+async function probeCdp(port: number, timeoutMs = 1500): Promise<boolean> {
+  try {
+    await fetchJson<unknown>(`http://127.0.0.1:${port}/json/version`, {}, timeoutMs);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 class CdpConnection {
   private nextId = 1;
   private readonly pending = new Map<number, CdpPending>();
@@ -371,16 +383,30 @@ class CdpConnection {
 }
 
 export class AgentBrowserService {
-  private chromeProcess: ChildProcessWithoutNullStreams | null = null;
-  private logStream: fsSync.WriteStream | null = null;
+  private chromeProcess: ChildProcess | null = null;
+  private logFd: number | null = null;
   private launching: Promise<void> | null = null;
   private port: number | null = null;
   private executablePath: string | null = null;
+
+  // True when we connected to an externally-launched Chrome that was already
+  // serving CDP on our port (another agent's chrome-devtools-mcp launcher, or a
+  // prior Deck run). We did NOT spawn it, so `chromeProcess` is null and we must
+  // never kill it on stop(). Liveness is then tracked via the browser-CDP socket
+  // instead of a child 'exit' event.
+  private attached = false;
 
   // 共有ブラウザを常駐させるための状態。keepAlive が true の間はクラッシュ時に
   // 自動再起動し、9222 を常時稼働させる（BrowserPane を開いていなくても
   // chrome MCP が使えるようにするため）。明示的な stop() で false にする。
   private keepAlive = false;
+  // The shared GUI desktop Chrome runs on, so it sits next to the user's other
+  // GUI apps instead of on a private xvfb-run display that dies with Chrome.
+  private sharedDesktop: { ensure(): Promise<DesktopEnv> } | null = null;
+
+  useSharedDesktop(desktop: { ensure(): Promise<DesktopEnv> } | null): void {
+    this.sharedDesktop = desktop;
+  }
   private restartTimer: ReturnType<typeof setTimeout> | null = null;
   private restartAttempts = 0;
   private lastStartTime = 0;
@@ -432,6 +458,7 @@ export class AgentBrowserService {
     const active = this.activeTargetId ? this.tabs.get(this.activeTargetId) : null;
     return {
       running: this.isRunning(),
+      attached: this.attached,
       launching: Boolean(this.launching),
       profileDir: this.profileDir,
       outputDir: this.outputDir,
@@ -493,6 +520,9 @@ export class AgentBrowserService {
     this.closeBrowserCdp();
     const proc = this.chromeProcess;
     this.chromeProcess = null;
+    // Attached browsers are owned by another process — drop the attachment but
+    // never kill them (proc is null here, so the SIGTERM block below is skipped).
+    this.attached = false;
     this.port = null;
     this.tabs.clear();
     this.activeTargetId = null;
@@ -530,7 +560,7 @@ export class AgentBrowserService {
       });
     }
 
-    this.closeLogStream();
+    this.closeLogFile();
     await this.audioRelay.stop();
     await this.webrtcRelay.stop();
     await this.broadcastStatus();
@@ -589,6 +619,26 @@ export class AgentBrowserService {
       .send('Browser.setWindowBounds', {
         windowId: win.windowId,
         bounds: { left, top, width, height, windowState: 'normal' },
+      })
+      .catch(() => undefined);
+  }
+
+  // Pin the active tab's render viewport to a fixed size (the WebRTC framebuffer)
+  // so captured pixels equal page coordinates. Does not mutate this.viewport, so
+  // the JPEG path's client-driven resize is unaffected when WebRTC isn't active.
+  async pinViewport(width: number, height: number): Promise<void> {
+    await this.ensureActiveCdp();
+    if (!this.activeCdp) {
+      return;
+    }
+    await this.activeCdp
+      .send('Emulation.setDeviceMetricsOverride', {
+        width,
+        height,
+        deviceScaleFactor: 1,
+        mobile: false,
+        screenWidth: width,
+        screenHeight: height,
       })
       .catch(() => undefined);
   }
@@ -688,6 +738,25 @@ export class AgentBrowserService {
 
   private async launch(): Promise<void> {
     this.lastError = undefined;
+    this.port = resolveCdpPort();
+
+    // The shared browser uses a fixed CDP port and a single-instance-locked
+    // profile. If another process already owns it (an agent's chrome-devtools-mcp
+    // launcher, or a previous Deck run), spawning our own Chrome would collide on
+    // both the port and the profile's SingletonLock and fail — leaving the UI
+    // unable to use a browser that is, in fact, running. So if a live CDP endpoint
+    // is already there, attach to it and share the one browser instead.
+    if (await probeCdp(this.port)) {
+      this.attached = true;
+      this.chromeProcess = null;
+      this.executablePath = (await findChromeExecutable().catch(() => null)) ?? this.executablePath;
+      await this.connectBrowserCdp();
+      await this.ensureActiveTab();
+      await this.broadcastStatus();
+      return;
+    }
+
+    this.attached = false;
     await fs.mkdir(this.profileDir, { recursive: true });
     await fs.mkdir(this.outputDir, { recursive: true });
 
@@ -697,9 +766,6 @@ export class AgentBrowserService {
     }
 
     this.executablePath = executable;
-    this.port = resolveCdpPort();
-    this.openLogStream();
-
     // headless フラグは付けない（headful を既定にする）。ディスプレイ無し環境では
     // resolveLaunchCommand が xvfb-run で仮想ディスプレイを用意する。
     const chromeArgs = [
@@ -734,25 +800,50 @@ export class AgentBrowserService {
     }
     chromeArgs.push('about:blank');
 
-    const { command, args } = resolveLaunchCommand(executable, chromeArgs);
-    const child = spawn(command, args, {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: process.env,
-    });
+    let desktopEnv: DesktopEnv | null = null;
+    if (this.sharedDesktop && process.platform === 'linux' && !process.env.DISPLAY) {
+      try {
+        desktopEnv = await this.sharedDesktop.ensure();
+      } catch (error) {
+        console.warn('[browser] Shared desktop unavailable, using xvfb-run:', error instanceof Error ? error.message : error);
+      }
+    }
+    const { command, args } = desktopEnv
+      ? { command: executable, args: chromeArgs }
+      : resolveLaunchCommand(executable, chromeArgs);
+    const launchEnv: NodeJS.ProcessEnv = desktopEnv
+      ? { ...process.env, DISPLAY: desktopEnv.display, ...(desktopEnv.xauthority ? { XAUTHORITY: desktopEnv.xauthority } : {}) }
+      : process.env;
+    const logFd = this.openLogFile();
+    let child: ChildProcess;
+    try {
+      // Write Chrome output straight to disk. Keeping Node-owned stdout/stderr
+      // pipes here can deadlock an orphaned Chrome after the xvfb-run wrapper
+      // exits: once the JS stream closes, Chrome's forwarding processes fill
+      // the unread socket and the browser gets stuck in anon_pipe_write.
+      child = spawn(command, args, {
+        stdio: ['ignore', logFd, logFd],
+        env: launchEnv,
+      });
+    } catch (error) {
+      this.closeLogFile();
+      throw error;
+    }
     this.chromeProcess = child;
 
-    child.stdout.pipe(this.logStream ?? process.stdout, { end: false });
-    child.stderr.pipe(this.logStream ?? process.stderr, { end: false });
     child.once('exit', (code, signal) => {
       if (this.chromeProcess === child) {
         this.chromeProcess = null;
         this.port = null;
         this.disconnectActiveCdp();
         this.closeBrowserCdp();
+        // Tear down the WebRTC relay too, so a Chrome crash never leaves an
+        // orphaned x11grab/ffmpeg encoder pointed at a dead display.
+        void this.webrtcRelay.stop();
         this.tabs.clear();
         this.activeTargetId = null;
         this.ready = false;
-        this.closeLogStream();
+        this.closeLogFile();
         this.lastError = code === 0 ? undefined : `Browser exited (${signal ?? code ?? 'unknown'})`;
         void this.broadcastStatus();
         // 明示停止でなく落ちた（クラッシュ）なら、常駐維持のため自動再起動。
@@ -822,7 +913,14 @@ export class AgentBrowserService {
 
   private isRunning(): boolean {
     const proc = this.chromeProcess;
-    return Boolean(proc && proc.exitCode == null && proc.signalCode == null);
+    if (proc && proc.exitCode == null && proc.signalCode == null) {
+      return true;
+    }
+    // Attached to an externally-owned browser: there is no child process to
+    // inspect, so we are "running" as long as we hold a port. Death is detected
+    // via the browser-CDP socket closing (handleAttachedBrowserGone), which
+    // clears `attached`/`port`.
+    return this.attached && this.port != null;
   }
 
   // Make sure the browser-level connection and an active tab (+ its CDP) exist.
@@ -870,12 +968,44 @@ export class AgentBrowserService {
       if (this.browserCdpSocket === socket) {
         this.browserCdp = null;
         this.browserCdpSocket = null;
+        // An *unexpected* close (closeBrowserCdp() nulls the socket first, so its
+        // own teardown never reaches here). When attached, this dropped socket is
+        // our only signal that the shared browser went away.
+        if (this.attached) {
+          void this.handleAttachedBrowserGone();
+        }
       }
     });
 
     // Emits Target.targetCreated for every existing target, then keeps us posted
     // on creation/url/title changes and destruction.
     await cdp.send('Target.setDiscoverTargets', { discover: true });
+  }
+
+  // In attached mode the shared browser dropping its CDP socket is the only death
+  // signal (there is no child 'exit'). Confirm it is really gone before tearing
+  // down — a transient socket drop while the browser lives must not detach us —
+  // then let keep-alive re-probe (re-attach if it returns, else launch our own).
+  private async handleAttachedBrowserGone(): Promise<void> {
+    if (!this.attached || this.port == null) {
+      return;
+    }
+    if (await probeCdp(this.port)) {
+      await this.connectBrowserCdp().catch(() => undefined);
+      return;
+    }
+    this.attached = false;
+    this.port = null;
+    this.disconnectActiveCdp();
+    this.tabs.clear();
+    this.activeTargetId = null;
+    this.ready = false;
+    this.screencastStarted = false;
+    this.lastError = 'Shared browser exited';
+    await this.broadcastStatus();
+    if (this.keepAlive) {
+      this.scheduleAutoRestart();
+    }
   }
 
   private async ensureActiveTab(): Promise<void> {
@@ -1551,17 +1681,22 @@ export class AgentBrowserService {
     }
   }
 
-  private openLogStream(): void {
-    this.closeLogStream();
+  private openLogFile(): number {
+    this.closeLogFile();
     const logPath = path.join(this.outputDir, 'deckide-browser.log');
-    this.logStream = fsSync.createWriteStream(logPath, { flags: 'a' });
+    this.logFd = fsSync.openSync(logPath, 'a');
+    return this.logFd;
   }
 
-  private closeLogStream(): void {
-    const stream = this.logStream;
-    this.logStream = null;
-    if (stream) {
-      stream.end();
+  private closeLogFile(): void {
+    const fd = this.logFd;
+    this.logFd = null;
+    if (fd != null) {
+      try {
+        fsSync.closeSync(fd);
+      } catch {
+        // ignore
+      }
     }
   }
 }

@@ -4,7 +4,7 @@ import { Hono } from 'hono';
 import type { Workspace } from '../types.js';
 import { MAX_FILE_SIZE, DEFAULT_ROOT } from '../config.js';
 import { createHttpError, handleError, readJson } from '../utils/error.js';
-import { resolveSafePath, normalizeWorkspacePath } from '../utils/path.js';
+import { resolveSafePath, normalizeWorkspacePath, isWorkspaceRoot } from '../utils/path.js';
 import { requireWorkspace } from './workspaces.js';
 import { sortFileEntries } from '../shared/utils-node.js';
 
@@ -305,6 +305,12 @@ export function createFileRouter(workspaces: Map<string, Workspace>) {
       }
       const workspace = requireWorkspace(workspaces, workspaceId);
       const target = await resolveSafePath(workspace.path, dirPath);
+
+      // '.', 'sub/..' and friends all resolve to the workspace root; a
+      // recursive rm there would take the whole workspace with it.
+      if (await isWorkspaceRoot(workspace.path, target)) {
+        throw createHttpError('Cannot delete the workspace root', 400);
+      }
 
       const stats = await fs.stat(target);
       if (!stats.isDirectory()) {

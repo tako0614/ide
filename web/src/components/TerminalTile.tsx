@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
+import clsx from 'clsx';
 import { Terminal, type IDisposable } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { WebLinksAddon } from '@xterm/addon-web-links';
-import { WebglAddon } from '@xterm/addon-webgl';
 import '@xterm/xterm/css/xterm.css';
 import type { TerminalSession } from '../types';
 import { getWsToken } from '../api';
@@ -18,6 +18,9 @@ import {
 } from '../constants';
 import { registerTerminalQueryHandlers } from './terminalQueries';
 import { attachTerminalKeymap } from './terminalKeymap';
+import { createTerminalReconnect } from './terminalReconnect';
+import { applyStickyModifiers, registerTerminalInput } from './terminalInput';
+import { buildTerminalSocketUrl, computeViewportScale, isTerminalReport } from './terminalViewport';
 
 interface TerminalTileProps {
   session: TerminalSession;
@@ -26,11 +29,18 @@ interface TerminalTileProps {
   onExit: () => void;
   // OSC 0/2 で受け取った動的タイトルを親へ通知（端末セレクタの表示用）。
   onTitle?: (title: string | null) => void;
+  // この端末がデッキのアクティブ端末か（グリッドでの強調表示用）。
+  isActive?: boolean;
+  // クリック/フォーカスでこの端末をアクティブにする（activeTerminalId を同期）。
+  onSetActive?: () => void;
+  // 最大化トグル。渡された場合のみタイルヘッダに最大化ボタンを表示する。
+  onToggleMaximize?: () => void;
+  // 現在この端末が単一表示（最大化/モバイル）で前面かどうか。ボタンの図柄に使う。
+  maximized?: boolean;
+  // 単一表示で前面になった瞬間にこの端末へフォーカスを移す。
+  autoFocus?: boolean;
 }
 
-const TEXT_CLOSED = '接続が終了しました。';
-const MAX_RECONNECT_ATTEMPTS = 5;
-const RECONNECT_BASE_DELAY_MS = 1000;
 const TERMINAL_REMOVED_REASONS = new Set([
   'Deck deleted',
   'Terminal deleted',
@@ -38,15 +48,31 @@ const TERMINAL_REMOVED_REASONS = new Set([
   'Terminal not found'
 ]);
 
+// Protocol (see src/utils/terminal-control.ts). The server owns the PTY size:
+// every client renders at exactly cols×rows, and the "primary" client — the
+// one most recently used — is the one whose viewport the PTY follows.
 type ServerControlMessage =
-  | { type: 'sync'; offsetBase: number; reset: boolean }
+  | { type: 'sync'; offsetBase: number; reset: boolean; cols?: number; rows?: number; snapshot?: boolean }
   | { type: 'ready' }
-  // この接続が「主」クライアントか（端末クエリ応答を送るのは主のみ）。
-  | { type: 'primary'; value: boolean };
+  // この接続が「主」クライアントか（PTY サイズを決め、端末クエリに応答する）。
+  | { type: 'primary'; value: boolean }
+  | { type: 'size'; cols: number; rows: number };
 
 type ClientControlMessage =
-  | { type: 'claim' }
+  | { type: 'claim'; cols?: number; rows?: number }
   | { type: 'resize'; cols: number; rows: number };
+
+// Width FitAddon reserves for xterm's scrollbar (options.overviewRuler absent).
+const SCROLLBAR_WIDTH = 14;
+// Movement (px) under which a touch counts as a tap rather than a scroll.
+const TAP_SLOP = 10;
+
+interface TerminalViewState {
+  primary: boolean;
+  cols: number;
+  rows: number;
+  scale: number;
+}
 
 const textEncoder = new TextEncoder();
 
@@ -54,6 +80,20 @@ const textEncoder = new TextEncoder();
 // paste is split across frames instead of tripping the 1009 "message too
 // large" close, which would drop the terminal mid-paste.
 const MAX_INPUT_CHUNK = 48 * 1024;
+const FONT_SIZE_STORAGE_KEY = 'deckide-terminal-font';
+const MIN_FONT_SIZE = 11;
+const MAX_FONT_SIZE = 22;
+
+function readFontSize(): number {
+  try {
+    const saved = Number(localStorage.getItem(FONT_SIZE_STORAGE_KEY));
+    return saved > 0 && Number.isFinite(saved)
+      ? Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, saved))
+      : TERMINAL_FONT_SIZE;
+  } catch {
+    return TERMINAL_FONT_SIZE;
+  }
+}
 
 function encodeBinaryInput(data: string): Uint8Array {
   const bytes = new Uint8Array(data.length);
@@ -68,18 +108,48 @@ export function TerminalTile({
   wsUrl,
   onDelete,
   onExit,
-  onTitle
+  onTitle,
+  isActive,
+  onSetActive,
+  onToggleMaximize,
+  maximized,
+  autoFocus
 }: TerminalTileProps) {
   const tileRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const terminalRef = useRef<Terminal | null>(null);
+  const fitNowRef = useRef<(() => void) | null>(null);
+  const claimRef = useRef<(() => void) | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const processedOffsetRef = useRef<number>(0);
   const onExitRef = useRef(onExit);
   const onTitleRef = useRef(onTitle);
+  // フォーカス時にアクティブ端末を同期するためのコールバック参照（再接続 effect の
+  // 再実行を避けるため ref 経由で最新値を参照する）。
+  const onSetActiveRef = useRef(onSetActive);
+  const isActiveRef = useRef(isActive);
 
   // OSC 0/2 で受け取った動的なウィンドウタイトル。null の間は session.title を表示。
   const [liveTitle, setLiveTitle] = useState<string | null>(null);
+  const [fontSize, setFontSize] = useState(readFontSize);
+  const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'reconnecting'>('connecting');
+  const [view, setView] = useState<TerminalViewState>({ primary: true, cols: 0, rows: 0, scale: 1 });
+
+  useEffect(() => {
+    const term = terminalRef.current;
+    if (term) {
+      term.options.fontSize = fontSize;
+      // Cell metrics are re-measured asynchronously; refit on the next frame.
+      window.requestAnimationFrame(() => fitNowRef.current?.());
+    }
+  }, [fontSize]);
+
+  const changeFontSize = (delta: number) => {
+    const next = Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, fontSize + delta));
+    try { localStorage.setItem(FONT_SIZE_STORAGE_KEY, String(next)); } catch { /* Storage can be unavailable. */ }
+    setFontSize(next);
+  };
 
   useEffect(() => {
     onExitRef.current = onExit;
@@ -88,6 +158,28 @@ export function TerminalTile({
   useEffect(() => {
     onTitleRef.current = onTitle;
   }, [onTitle]);
+
+  useEffect(() => {
+    onSetActiveRef.current = onSetActive;
+  }, [onSetActive]);
+
+  useEffect(() => {
+    isActiveRef.current = isActive;
+  }, [isActive]);
+
+  // 単一表示で前面に来たらこの端末へフォーカスを移す（スイッチャで切り替えた
+  // 直後にクリックなしで入力できるように）。
+  useEffect(() => {
+    if (!autoFocus) return;
+    const helper = containerRef.current?.querySelector('.xterm-helper-textarea');
+    if (helper instanceof HTMLTextAreaElement) {
+      try {
+        helper.focus({ preventScroll: true });
+      } catch {
+        helper.focus();
+      }
+    }
+  }, [autoFocus]);
 
   // セッションが切り替わったら動的タイトルをリセット（effect も再実行される）。
   useEffect(() => {
@@ -107,17 +199,14 @@ export function TerminalTile({
       // フォーカスされているかを視認しやすくする。
       cursorInactiveStyle: 'outline',
       fontFamily: TERMINAL_FONT_FAMILY,
-      fontSize: TERMINAL_FONT_SIZE,
+      fontSize,
       allowProposedApi: true,
       // ネイティブターミナル相当のスクロールバックと慣性スクロール感度。
       scrollback: 10000,
       scrollSensitivity: 3,
-      fastScrollModifier: 'alt',
       // macOS で Option/Alt を Meta として送り、readline の単語移動を有効化。
       macOptionIsMeta: true,
       convertEol: false,
-      // Don't use windowsMode with ConPTY - it handles line discipline itself
-      windowsMode: false,
       // Move textarea to mouse position on right-click so the browser's
       // context menu shows "Paste" over an editable element.
       rightClickSelectsWord: true,
@@ -144,12 +233,9 @@ export function TerminalTile({
         brightCyan: TERMINAL_ANSI_PALETTE[14],
         brightWhite: TERMINAL_ANSI_PALETTE[15]
       },
-      // CRITICAL: Enable window operations for rich TUI mode
-      windowOptions: {
-        getWinSizePixels: true,    // CSI 14t - pixel dimensions
-        getCellSizePixels: true,   // CSI 16t - cell size for box drawing
-        getWinSizeChars: true,     // CSI 18t - character grid size
-      }
+      // Query replies go through our primary-client/replay gate, rather than
+      // xterm's onData path (which also carries keyboard input).
+      windowOptions: {}
     });
 
     // Load addons for better TUI support
@@ -165,53 +251,22 @@ export function TerminalTile({
     term.unicode.activeVersion = '11';
 
     fitAddonRef.current = fitAddon;
+    terminalRef.current = term;
     term.open(containerRef.current);
 
-    // WebGL レンダラ。モバイルの端末切替では非アクティブタイルが
-    // display:none でマウントされるため、0 サイズ/非表示の canvas で WebGL を
-    // 初期化すると初回表示時に黒画面になりやすい。そこで「初めて可視になった
-    // タイミング」まで初期化を遅延する（IntersectionObserver）。失敗時は
-    // デフォルトの DOM レンダラにフォールバックし、onContextLoss でも戻す。
-    let webglAddon: WebglAddon | null = null;
-    let webglTried = false;
+    const container = containerRef.current;
+    // Stable across reconnects of this tile, so the server can hand a
+    // reconnecting socket the role its not-yet-dead predecessor held.
+    const clientId = typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? crypto.randomUUID()
+      : `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
 
-    const tryLoadWebgl = () => {
-      if (webglTried || cancelled || webglAddon) return;
-      webglTried = true;
-      try {
-        const addon = new WebglAddon();
-        addon.onContextLoss(() => {
-          addon.dispose();
-          if (webglAddon === addon) {
-            webglAddon = null;
-          }
-        });
-        term.loadAddon(addon);
-        webglAddon = addon;
-      } catch (err) {
-        console.warn('[Terminal] WebGL renderer unavailable, falling back to DOM:', err);
-        if (webglAddon) {
-          try {
-            webglAddon.dispose();
-          } catch {
-            // ignore
-          }
-          webglAddon = null;
-        }
-      }
-    };
-
-    // タイルが可視になったら WebGL を初期化し、サイズ追従の fit も走らせる。
+    // Refitting a newly visible tile keeps hidden/mobile terminals correctly
+    // sized without a GPU context lifecycle.
     const visibilityObserver = new IntersectionObserver((entries) => {
-      for (const entry of entries) {
-        if (entry.isIntersecting && entry.intersectionRatio > 0) {
-          tryLoadWebgl();
-          // 非表示→表示の遷移で正しいサイズに再フィットさせる。
-          scheduleFit(true);
-        }
-      }
+      if (entries.some((entry) => entry.isIntersecting)) scheduleSync(true);
     });
-    visibilityObserver.observe(containerRef.current);
+    visibilityObserver.observe(container);
 
     // キーボードインターセプト + クリップボード（コピー/ペースト）を設定（#1 / #3）。
     // 非同期ペースト後の二重実行を防ぐため、cancelled を遅延参照で渡す。
@@ -245,16 +300,19 @@ export function TerminalTile({
     let replayingBuffer = true;
     let replayReady = false;
     let pendingWrites = 0;
-    // この接続が「主」クライアントか。複数クライアントが同じ端末を開いたとき、
-    // 端末クエリ（DSR/DA/DECRQM/OSC など）へ応答するのは主のみにして、
-    // PTY へ重複した応答が二重入力されるのを防ぐ。サーバが primary 制御
-    // メッセージで通知する。単独クライアントは既定で主（true）。
-    let isPrimary = true;
-    // Lock out resizes during replay so xterm.js processes the entire buffer
-    // at a consistent terminal size.  Without this, async write batching can
-    // interleave with ResizeObserver / font-load events, causing part of the
-    // content to be rendered at one column width and the rest at another.
-    let replayResizeLock = false;
+    // The next binary frame is a server-rendered snapshot of the screen; it is
+    // not part of the PTY byte stream, so it must not advance the offset.
+    // Its offset is only committed once it has been drawn: a connection lost
+    // before that must reconnect for a full snapshot, not a delta onto the
+    // screen that sync just cleared.
+    let expectSnapshotFrame = false;
+    let snapshotOffset = 0;
+    // この接続が「主」クライアントか。主クライアントのビューポートに PTY サイズが
+    // 追従し、端末クエリ（DSR/DA/DECRQM/OSC など）へ応答するのも主のみ
+    // （複数クライアント時の二重応答を防ぐ）。サーバが primary 制御メッセージで通知する。
+    let isPrimary = false;
+    // Whether this tile was primary when its last connection dropped.
+    let wasPrimary = false;
 
     // Whether finishReplay should snap the viewport to the bottom.  Captured
     // at sync time from the user's current scroll position so a background
@@ -262,17 +320,20 @@ export function TerminalTile({
     // Defaults to true so the very first connect lands at the bottom.
     let shouldScrollAfterReplay = true;
 
+    const publishView = (patch: Partial<TerminalViewState>) => {
+      setView((prev) => {
+        const next = { ...prev, ...patch };
+        return next.primary === prev.primary && next.cols === prev.cols &&
+          next.rows === prev.rows && next.scale === prev.scale ? prev : next;
+      });
+    };
+
     const finishReplay = () => {
       replayingBuffer = false;
-      if (replayResizeLock) {
-        replayResizeLock = false;
-        // Catch up on any resize that was suppressed during replay
-        scheduleFit(true);
-      }
+      updateScale();
       // Only scroll to the bottom when the user was already at the bottom
       // (or the buffer was fully reset).  Otherwise preserve their scroll
-      // position across reconnects.  term.reset() resets scroll to 0; the
-      // catch-up fit may reflow content.  scrollToBottom puts xterm.js into
+      // position across reconnects.  scrollToBottom puts xterm.js into
       // auto-scroll mode so subsequent resizes also stay at the bottom.
       if (shouldScrollAfterReplay) {
         window.requestAnimationFrame(() => {
@@ -282,11 +343,13 @@ export function TerminalTile({
     };
 
     // Register terminal query handlers to prevent TUI apps from hanging
-    const sendControlMessage = (message: ClientControlMessage) => {
+    const sendControlMessage = (message: ClientControlMessage): boolean => {
       const socket = socketRef.current;
       if (socket && socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify(message));
+        return true;
       }
+      return false;
     };
 
     const sendResponse = (response: string) => {
@@ -302,27 +365,10 @@ export function TerminalTile({
     // 応答送出は sendResponse 経由（リプレイ中の抑制・主クライアント判定込み）。
     registerTerminalQueryHandlers(term, sendResponse);
 
-    // Track the last measured container size as well as the last PTY size so
-    // repeated redraws from TUI apps don't feed a fit/resize loop.
-    let lastMeasuredWidth = 0;
-    let lastMeasuredHeight = 0;
-    let fitFrame: number | null = null;
-    let lastCols = term.cols;
-    let lastRows = term.rows;
-    let estimatedCellWidth = 0;
-    let estimatedCellHeight = 0;
-    let lastViewportScale = window.visualViewport?.scale ?? 1;
+    let fitTimer: ReturnType<typeof setTimeout> | null = null;
+    let lastReportedDesired: string | null = null;
 
-    const updateCellEstimate = (width: number, height: number) => {
-      if (term.cols > 0) {
-        estimatedCellWidth = width / term.cols;
-      }
-      if (term.rows > 0) {
-        estimatedCellHeight = height / term.rows;
-      }
-    };
-
-    const helperTextarea = containerRef.current.querySelector('.xterm-helper-textarea');
+    const helperTextarea = container.querySelector('.xterm-helper-textarea');
     if (helperTextarea instanceof HTMLTextAreaElement) {
       helperTextarea.setAttribute('spellcheck', 'false');
       helperTextarea.setAttribute('autocapitalize', 'off');
@@ -330,19 +376,88 @@ export function TerminalTile({
       helperTextarea.setAttribute('autocorrect', 'off');
     }
 
-    const sendResizeIfChanged = () => {
-      const cols = term.cols;
-      const rows = term.rows;
-      if (!cols || !rows) return;
-      if (cols === lastCols && rows === lastRows) return;
-      lastCols = cols;
-      lastRows = rows;
-      sendControlMessage({ type: 'resize', cols, rows });
+    // ── Size ──────────────────────────────────────────────────────────
+    // The local xterm is never fitted to the container directly: it always
+    // has the PTY's cols×rows (from `sync`/`size`). What this client *could*
+    // show is reported to the server as its desired size, and the server
+    // resizes the PTY to it while this client is primary.
+
+    /** cols×rows that would fill this tile, or null while it is hidden. */
+    const measureDesired = (): { cols: number; rows: number } | null => {
+      const dims = fitAddon.proposeDimensions();
+      if (!dims || !Number.isFinite(dims.cols) || !Number.isFinite(dims.rows) || dims.cols < 1 || dims.rows < 1) {
+        return null;
+      }
+      return { cols: dims.cols, rows: dims.rows };
     };
 
-    const claimTerminalControl = () => {
-      sendControlMessage({ type: 'claim' });
+    /** Scale the grid down when it is larger than the tile (viewer of a bigger client). */
+    const updateScale = () => {
+      const element = term.element;
+      const screen = element?.querySelector('.xterm-screen');
+      if (!element || !(screen instanceof HTMLElement)) return;
+      const style = window.getComputedStyle(element);
+      const padX = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+      const padY = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      const available = { width: container.clientWidth - padX, height: container.clientHeight - padY };
+      if (available.width <= 0 || available.height <= 0) return; // hidden
+      const natural = { width: screen.offsetWidth + SCROLLBAR_WIDTH, height: screen.offsetHeight };
+      const scale = computeViewportScale(natural, available);
+      if (scale === 1) {
+        element.style.removeProperty('transform');
+        element.style.removeProperty('transform-origin');
+        element.style.removeProperty('width');
+        element.style.removeProperty('height');
+      } else {
+        // Lay the grid out at its natural size, then shrink the whole thing.
+        element.style.width = `${natural.width + padX}px`;
+        element.style.height = `${natural.height + padY}px`;
+        element.style.transformOrigin = '0 0';
+        element.style.transform = `scale(${scale})`;
+      }
+      publishView({ scale });
     };
+
+    const applyPtySize = (cols: number, rows: number) => {
+      if (term.cols !== cols || term.rows !== rows) {
+        // Same as FitAddon.fit(): drop the stale frame before reflowing.
+        (term as unknown as { _core?: { _renderService?: { clear?: () => void } } })._core?._renderService?.clear?.();
+        term.resize(cols, rows);
+      }
+      publishView({ cols, rows });
+      updateScale();
+    };
+
+    // Apply a mid-stream resize after the bytes received before it have been
+    // parsed: they were produced for the old size.
+    const queuePtySize = (cols: number, rows: number) => {
+      term.write('', () => {
+        if (!cancelled) applyPtySize(cols, rows);
+      });
+    };
+
+    const reportDesired = (force = false) => {
+      const desired = measureDesired();
+      if (!desired) return;
+      const key = `${desired.cols}x${desired.rows}`;
+      if (!force && key === lastReportedDesired) return;
+      if (sendControlMessage({ type: 'resize', cols: desired.cols, rows: desired.rows })) {
+        lastReportedDesired = key;
+      }
+    };
+
+    const syncViewport = (force = false) => {
+      updateScale();
+      reportDesired(force);
+    };
+
+    // Take control: the PTY is resized to this tile and other clients follow.
+    const claimTerminalControl = () => {
+      const desired = measureDesired();
+      if (desired) lastReportedDesired = `${desired.cols}x${desired.rows}`;
+      sendControlMessage(desired ? { type: 'claim', cols: desired.cols, rows: desired.rows } : { type: 'claim' });
+    };
+    claimRef.current = claimTerminalControl;
 
     // Send terminal input, splitting oversized payloads (e.g. a multi-megabyte
     // paste) into chunks the server will accept.  The PTY reassembles the byte
@@ -360,77 +475,49 @@ export function TerminalTile({
       }
     };
 
-    const runFit = (force = false) => {
-      // During replay, block all resizes except the initial forced fit
-      // from the sync handler.  This prevents xterm.js async write batching
-      // from interleaving with resize events.
-      if (replayResizeLock) return;
+    /**
+     * Typing into a viewer takes control (the user is now using this client).
+     * Replies xterm generates itself (cursor position, mode reports, focus,
+     * mouse movement) are not typing: the primary answers those, so a viewer
+     * drops them instead of duplicating them or grabbing control.
+     */
+    const forwardInput = (data: string, encode: (value: string) => Uint8Array) => {
+      if (!isPrimary) {
+        if (isTerminalReport(data)) return;
+        claimTerminalControl();
+      }
+      sendInput(encode(data));
+    };
 
-      const container = containerRef.current;
-      if (!container) return;
-
-      const width = container.clientWidth;
-      const height = container.clientHeight;
-      if (!width || !height) return;
-
-      if (!force && width === lastMeasuredWidth && height === lastMeasuredHeight) {
+    // Coalesce split dragging: report the final content box rather than
+    // reflowing the PTY and redrawing the TUI on every animation frame.
+    const scheduleSync = (immediate = false) => {
+      if (fitTimer !== null) clearTimeout(fitTimer);
+      fitTimer = null;
+      if (immediate) {
+        syncViewport();
         return;
       }
-
-      const currentViewportScale = window.visualViewport?.scale ?? 1;
-      if (!force && estimatedCellWidth > 0 && estimatedCellHeight > 0) {
-        const predictedCols = Math.max(2, Math.floor(width / estimatedCellWidth));
-        const predictedRows = Math.max(1, Math.floor(height / estimatedCellHeight));
-        const deltaWidth = Math.abs(width - lastMeasuredWidth);
-        const deltaHeight = Math.abs(height - lastMeasuredHeight);
-        const widthThreshold = Math.max(estimatedCellWidth * 0.75, 2);
-        const heightThreshold = Math.max(estimatedCellHeight * 0.75, 2);
-        const scaleChanged = Math.abs(currentViewportScale - lastViewportScale) > 0.001;
-
-        if (predictedCols === lastCols && predictedRows === lastRows) {
-          lastMeasuredWidth = width;
-          lastMeasuredHeight = height;
-          lastViewportScale = currentViewportScale;
-          return;
-        }
-
-        if (scaleChanged && deltaWidth < widthThreshold && deltaHeight < heightThreshold) {
-          lastMeasuredWidth = width;
-          lastMeasuredHeight = height;
-          lastViewportScale = currentViewportScale;
-          return;
-        }
-      }
-
-      lastMeasuredWidth = width;
-      lastMeasuredHeight = height;
-      fitAddon.fit();
-      updateCellEstimate(width, height);
-      lastViewportScale = currentViewportScale;
-      sendResizeIfChanged();
+      fitTimer = setTimeout(() => {
+        fitTimer = null;
+        syncViewport();
+      }, 100);
     };
-
-    const scheduleFit = (force = false) => {
-      if (fitFrame !== null) {
-        if (!force) return;
-        cancelAnimationFrame(fitFrame);
-      }
-
-      fitFrame = window.requestAnimationFrame(() => {
-        fitFrame = null;
-        runFit(force);
-      });
-    };
+    fitNowRef.current = () => syncViewport();
 
     const resizeObserver = new ResizeObserver(() => {
-      scheduleFit();
+      // Rescale right away (cheap, no PTY traffic); report the size debounced.
+      updateScale();
+      scheduleSync();
     });
-    resizeObserver.observe(containerRef.current);
-    scheduleFit();
+    resizeObserver.observe(container);
+    const resizeDisposable = term.onResize(() => {
+      window.requestAnimationFrame(() => { if (!cancelled) updateScale(); });
+    });
     const fontSet = typeof document !== 'undefined' ? document.fonts : null;
     const handleFontsReady = () => {
       if (!cancelled) {
-        scheduleFit(true);
+        window.requestAnimationFrame(() => { if (!cancelled) syncViewport(); });
       }
     };
     fontSet?.ready.then(handleFontsReady).catch(() => undefined);
@@ -439,11 +526,10 @@ export function TerminalTile({
     let socket: WebSocket | null = null;
     let dataDisposable: IDisposable | null = null;
     let binaryDisposable: IDisposable | null = null;
-    let focusCleanup: (() => void) | null = null;
     let pointerFocusCleanup: (() => void) | null = null;
     let cancelled = false;
-    let reconnectAttempts = 0;
-    let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+    let connecting = false;
+    const reconnect = createTerminalReconnect(() => { void connect(true); });
     let isIntentionalClose = false;
 
     const focusTerminalWithoutScroll = () => {
@@ -458,75 +544,121 @@ export function TerminalTile({
       }
     };
 
-    const handlePointerFocus = () => {
-      if (!cancelled) {
+    const unregisterInput = registerTerminalInput(session.id, {
+      input: (data) => term.input(data, true),
+      applicationCursorKeys: () => term.modes.applicationCursorKeysMode,
+      paste: (text) => term.paste(text),
+      focus: focusTerminalWithoutScroll,
+      hasFocus: () => Boolean(term.textarea) && document.activeElement === term.textarea,
+    });
+
+    // クリック/フォーカスでこの端末を「アクティブ」に昇格させる。これにより
+    // グリッドの強調表示・最大化・モバイル単一表示が「実際に使った端末」を指す。
+    const promoteActive = () => {
+      if (!isActiveRef.current) {
+        onSetActiveRef.current?.();
+      }
+    };
+
+    // Mouse: focus on press. Touch: focus only on a tap, so a scroll gesture
+    // neither pops the soft keyboard nor takes control from another client.
+    let touchStart: { x: number; y: number; id: number } | null = null;
+    const handlePointerDown = (event: PointerEvent) => {
+      if (cancelled) return;
+      if (event.pointerType === 'mouse') {
+        promoteActive();
+        if (!isPrimary) claimTerminalControl();
+        focusTerminalWithoutScroll();
+        return;
+      }
+      touchStart = { x: event.clientX, y: event.clientY, id: event.pointerId };
+    };
+    const handlePointerUp = (event: PointerEvent) => {
+      if (cancelled || event.pointerType === 'mouse' || !touchStart || touchStart.id !== event.pointerId) return;
+      const moved = Math.hypot(event.clientX - touchStart.x, event.clientY - touchStart.y);
+      touchStart = null;
+      if (moved <= TAP_SLOP) {
+        promoteActive();
+        if (!isPrimary) claimTerminalControl();
         focusTerminalWithoutScroll();
       }
     };
+    const handlePointerCancel = () => { touchStart = null; };
 
     const handleFocusIn = () => {
       if (!cancelled) {
-        focusTerminalWithoutScroll();
+        promoteActive();
       }
     };
 
-    containerRef.current.addEventListener('pointerdown', handlePointerFocus, { passive: true, capture: true });
-    containerRef.current.addEventListener('mousedown', handlePointerFocus, { passive: true, capture: true });
-    containerRef.current.addEventListener('touchstart', handlePointerFocus, { passive: true, capture: true });
-    containerRef.current.addEventListener('focusin', handleFocusIn, true);
+    container.addEventListener('pointerdown', handlePointerDown, { passive: true, capture: true });
+    container.addEventListener('pointerup', handlePointerUp, { passive: true, capture: true });
+    container.addEventListener('pointercancel', handlePointerCancel, { passive: true, capture: true });
+    container.addEventListener('focusin', handleFocusIn, true);
     pointerFocusCleanup = () => {
-      containerRef.current?.removeEventListener('pointerdown', handlePointerFocus, true);
-      containerRef.current?.removeEventListener('mousedown', handlePointerFocus, true);
-      containerRef.current?.removeEventListener('touchstart', handlePointerFocus, true);
-      containerRef.current?.removeEventListener('focusin', handleFocusIn, true);
+      container.removeEventListener('pointerdown', handlePointerDown, true);
+      container.removeEventListener('pointerup', handlePointerUp, true);
+      container.removeEventListener('pointercancel', handlePointerCancel, true);
+      container.removeEventListener('focusin', handleFocusIn, true);
     };
 
     // Fetch WebSocket token and connect
     const connect = async (isReconnect = false) => {
-      if (cancelled) return;
+      if (cancelled || connecting) return;
+      connecting = true;
+      setConnectionStatus(isReconnect ? 'reconnecting' : 'connecting');
       replayingBuffer = true;
       replayReady = false;
-      pendingWrites = 0;
 
       try {
+        // Finish queued drawing before selecting the replay offset.
+        // Otherwise the reconnect can replay bytes still being painted.
+        await new Promise<void>((resolve) => term.write('', resolve));
+        if (cancelled) return;
+        pendingWrites = 0;
         // Get a one-time token for WebSocket authentication
         const { token, authEnabled } = await getWsToken();
         if (cancelled) return;
 
-        // Append token to URL if auth is enabled
-        const baseUrl = authEnabled ? `${wsUrl}?token=${token}` : wsUrl;
-        // On reconnect, pass received byte offset so server sends only new data
-        let finalUrl = baseUrl;
-        if (isReconnect && processedOffsetRef.current > 0) {
-          const sep = baseUrl.includes('?') ? '&' : '?';
-          finalUrl = `${baseUrl}${sep}bufferOffset=${processedOffsetRef.current}`;
+        // Tell the server what this tile can show up front, so if it becomes
+        // primary the replay is already rendered at that size (instead of
+        // drawn at the old size and then redrawn). Cell metrics need the web
+        // font, so give it a moment on the first connect.
+        if (!isReconnect && !measureDesired()) {
+          await Promise.race([
+            fontSet?.ready.then(() => new Promise((resolve) => window.requestAnimationFrame(resolve))),
+            new Promise((resolve) => setTimeout(resolve, 800)),
+          ]);
+          if (cancelled) return;
         }
-        if (isReconnect) {
-          const sep = finalUrl.includes('?') ? '&' : '?';
-          finalUrl = `${finalUrl}${sep}reconnect=1`;
-        }
-        socket = new WebSocket(finalUrl);
-        socket.binaryType = 'arraybuffer';
-        socketRef.current = socket;
+        const desired = measureDesired();
+        // Take control back only if this tile had it when the connection
+        // dropped and the user is on this page right now. A viewer waking
+        // from sleep or reconnecting after being dropped must not shrink the
+        // PTY under whoever is actually typing elsewhere.
+        const reclaim = isReconnect && wasPrimary && document.hasFocus();
+        isPrimary = false;
+        lastReportedDesired = desired ? `${desired.cols}x${desired.rows}` : null;
+        const connection = new WebSocket(buildTerminalSocketUrl(wsUrl, {
+          token: authEnabled ? token : undefined,
+          // On reconnect, pass received byte offset so server sends only new data
+          bufferOffset: isReconnect ? processedOffsetRef.current : 0,
+          cols: desired?.cols,
+          rows: desired?.rows,
+          claim: reclaim,
+          reconnect: isReconnect,
+        }) + `&cid=${encodeURIComponent(clientId)}`);
+        socket = connection;
+        connection.binaryType = 'arraybuffer';
+        socketRef.current = connection;
 
-        socket.addEventListener('open', () => {
-          reconnectAttempts = 0;
-          // Force send on connect (server needs initial size)
-          lastMeasuredWidth = 0;
-          lastMeasuredHeight = 0;
-          estimatedCellWidth = 0;
-          estimatedCellHeight = 0;
-          lastCols = -1;
-          lastRows = -1;
-          lastViewportScale = window.visualViewport?.scale ?? 1;
-          scheduleFit();
-          // 接続時にこの端末がフォーカス中なら制御権を主張する。再接続では
-          // focus イベントが再発火しないため、ここで明示的に claim しておく。
-          if (term.textarea && document.activeElement === term.textarea) {
-            claimTerminalControl();
-          }
+        connection.addEventListener('open', () => {
+          if (cancelled || socketRef.current !== connection) return;
+          // The tile may have been resized while connecting.
+          reportDesired();
         });
-        socket.addEventListener('message', (event) => {
+        connection.addEventListener('message', (event) => {
+          if (cancelled || socketRef.current !== connection) return;
           if (typeof event.data === 'string') {
             let message: ServerControlMessage | null = null;
             try {
@@ -545,26 +677,22 @@ export function TerminalTile({
               replayingBuffer = true;
               replayReady = false;
               pendingWrites = 0;
-              replayResizeLock = false; // temporarily unlock for the initial fit
-              processedOffsetRef.current = message.offsetBase;
+              expectSnapshotFrame = Boolean(message.snapshot);
+              snapshotOffset = message.offsetBase;
+              processedOffsetRef.current = expectSnapshotFrame ? 0 : message.offsetBase;
               if (message.reset) {
                 term.reset();
               }
-              // Synchronous fit so the terminal has the correct dimensions
-              // before replay data arrives in the next message event.
-              runFit(true);
-              // Lock resizes for the duration of the replay.  xterm.js
-              // processes large writes asynchronously across multiple
-              // animation frames; without this lock a ResizeObserver or
-              // font-load callback can change the column count mid-replay,
-              // corrupting cursor-positioned content like ASCII art.
-              // This applies to both reset and delta replays — the
-              // scheduleFit() queued from the socket open handler could
-              // otherwise fire mid-write.
-              replayResizeLock = true;
+              // Render the replay at the size it was produced at.
+              if (message.cols && message.rows) {
+                applyPtySize(message.cols, message.rows);
+              }
               return;
             }
             if (message?.type === 'ready') {
+              reconnect.cancel();
+              reconnect.reset();
+              setConnectionStatus('connected');
               replayReady = true;
               if (pendingWrites === 0) {
                 finishReplay();
@@ -573,50 +701,54 @@ export function TerminalTile({
             }
             if (message?.type === 'primary') {
               isPrimary = message.value;
+              publishView({ primary: message.value });
+              return;
+            }
+            if (message?.type === 'size') {
+              queuePtySize(message.cols, message.rows);
               return;
             }
             // Unknown control message type — ignore
             return;
           }
 
+          const writeFrame = (bytes: Uint8Array) => {
+            // A snapshot is a rendering of the screen, not PTY output.
+            const isSnapshot = expectSnapshotFrame;
+            expectSnapshotFrame = false;
+            pendingWrites++;
+            term.write(bytes, () => {
+              if (isSnapshot) processedOffsetRef.current = snapshotOffset;
+              else processedOffsetRef.current += bytes.byteLength;
+              pendingWrites = Math.max(0, pendingWrites - 1);
+              if (replayReady && pendingWrites === 0 && replayingBuffer) {
+                finishReplay();
+              }
+            });
+          };
+
           if (event.data instanceof Blob) {
             // binaryType is 'arraybuffer', so Blob shouldn't occur.
             // Handle defensively by reading it as ArrayBuffer.
-            const blob = event.data;
-            blob.arrayBuffer().then((ab) => {
-              if (cancelled) return;
-              const blobBytes = new Uint8Array(ab);
-              pendingWrites++;
-              term.write(blobBytes, () => {
-                processedOffsetRef.current += blobBytes.byteLength;
-                pendingWrites = Math.max(0, pendingWrites - 1);
-                if (replayReady && pendingWrites === 0) {
-                  finishReplay();
-                }
-              });
+            event.data.arrayBuffer().then((ab) => {
+              if (cancelled || socketRef.current !== connection) return;
+              writeFrame(new Uint8Array(ab));
             });
             return;
           }
 
-          const bytes = new Uint8Array(event.data as ArrayBuffer);
-          pendingWrites++;
-          term.write(bytes, () => {
-            processedOffsetRef.current += bytes.byteLength;
-            pendingWrites = Math.max(0, pendingWrites - 1);
-            if (replayReady && pendingWrites === 0) {
-              finishReplay();
-            }
-          });
+          writeFrame(new Uint8Array(event.data as ArrayBuffer));
         });
-        socket.addEventListener('close', (event) => {
+        connection.addEventListener('close', (event) => {
           if (cancelled || isIntentionalClose) {
             return;
           }
           // 既に新しいソケットへ差し替わっている場合、この古いソケットの
           // close では再接続しない（二重コネクションを防ぐ）。
-          if (socketRef.current !== socket) {
+          if (socketRef.current !== connection) {
             return;
           }
+          wasPrimary = isPrimary;
 
           if (event.code === 1000) {
             if (TERMINAL_REMOVED_REASONS.has(event.reason)) {
@@ -625,16 +757,11 @@ export function TerminalTile({
             }
           }
 
-          if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-            reconnectAttempts++;
-            const delay = RECONNECT_BASE_DELAY_MS * Math.pow(2, reconnectAttempts - 1);
-            reconnectTimeout = setTimeout(() => connect(true), delay);
-          } else {
-            term.write(`\r\n\x1b[31m${TEXT_CLOSED}\x1b[0m\r\n`);
-          }
+          setConnectionStatus('reconnecting');
+          reconnect.schedule();
         });
 
-        socket.addEventListener('error', () => {
+        connection.addEventListener('error', () => {
           // Error event is usually followed by close event, so we don't need to handle it separately
         });
 
@@ -647,7 +774,8 @@ export function TerminalTile({
           // keyboard input by the PTY.
           if (replayingBuffer) return;
           if (socket && socket.readyState === WebSocket.OPEN) {
-            sendInput(textEncoder.encode(data));
+            // Ctrl/Alt latched on the on-screen key bar modify the next key.
+            forwardInput(applyStickyModifiers(data), (value) => textEncoder.encode(value));
           }
         });
 
@@ -657,54 +785,41 @@ export function TerminalTile({
         binaryDisposable = term.onBinary((data) => {
           if (replayingBuffer) return;
           if (socket && socket.readyState === WebSocket.OPEN) {
-            sendInput(encodeBinaryInput(data));
+            forwardInput(data, encodeBinaryInput);
           }
         });
 
-        if (!focusCleanup && term.textarea) {
-          const onFocus = () => { claimTerminalControl(); };
-          term.textarea.addEventListener('focus', onFocus);
-          focusCleanup = () => { term.textarea?.removeEventListener('focus', onFocus); };
-        }
+        // Focus alone never takes control (it also happens programmatically:
+        // switching terminals, window refocus). Clicking, tapping or typing does.
       } catch (err) {
         console.error('[Terminal] Failed to connect:', err);
-        // Retry even on the very first attempt — the server may simply not be
-        // up yet when the page is opened right after a restart.
-        if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-          reconnectAttempts++;
-          const delay = RECONNECT_BASE_DELAY_MS * Math.pow(2, reconnectAttempts - 1);
-          reconnectTimeout = setTimeout(() => connect(true), delay);
-        } else {
-          term.write(`\r\n\x1b[31m接続エラー: ${err instanceof Error ? err.message : 'Unknown error'}\x1b[0m\r\n`);
-        }
+        setConnectionStatus('reconnecting');
+        reconnect.schedule();
+      } finally {
+        connecting = false;
       }
     };
 
     connect();
 
     // When the device wakes from sleep / the tab is refocused / the network
-    // comes back, the socket may be closed and the backoff may have already
-    // given up.  Force an immediate reconnect instead of leaving a dead
-    // terminal showing "接続が終了しました。".
+    // comes back, retry immediately rather than waiting for the backoff timer.
     const forceReconnect = () => {
-      if (cancelled || isIntentionalClose) return;
+      if (cancelled || isIntentionalClose || connecting) return;
       const current = socketRef.current;
       // 既に接続済み / 接続中なら何もしない。
       if (current && (current.readyState === WebSocket.OPEN || current.readyState === WebSocket.CONNECTING)) {
         return;
       }
       // 復帰時は必ず再試行できるようバックオフをリセット。
-      reconnectAttempts = 0;
+      reconnect.reset();
       // まだ閉じ切っていない（CLOSING）場合は、このソケット自身の close
       // ハンドラが（リセット済みの回数で）再接続する。ここで新しいソケットを
       // 張ると二重コネクションになるため待つ。
       if (current && current.readyState === WebSocket.CLOSING) {
         return;
       }
-      if (reconnectTimeout) {
-        clearTimeout(reconnectTimeout);
-        reconnectTimeout = null;
-      }
+      reconnect.cancel();
       connect(true);
     };
     const handleOnline = () => forceReconnect();
@@ -721,23 +836,18 @@ export function TerminalTile({
       isIntentionalClose = true;
       window.removeEventListener('online', handleOnline);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
-      if (reconnectTimeout) {
-        clearTimeout(reconnectTimeout);
-      }
-      if (fitFrame !== null) {
-        cancelAnimationFrame(fitFrame);
-      }
+      reconnect.dispose();
+      unregisterInput();
+      if (fitTimer !== null) clearTimeout(fitTimer);
       resizeObserver.disconnect();
       visibilityObserver.disconnect();
+      resizeDisposable.dispose();
       fontSet?.removeEventListener?.('loadingdone', handleFontsReady);
       if (dataDisposable) {
         dataDisposable.dispose();
       }
       if (binaryDisposable) {
         binaryDisposable.dispose();
-      }
-      if (focusCleanup) {
-        focusCleanup();
       }
       if (pointerFocusCleanup) {
         pointerFocusCleanup();
@@ -753,26 +863,74 @@ export function TerminalTile({
       }
       socketRef.current = null;
 
-      if (webglAddon) {
-        try {
-          webglAddon.dispose();
-        } catch {
-          // ignore
-        }
-        webglAddon = null;
-      }
       fitAddonRef.current = null;
+      fitNowRef.current = null;
+      claimRef.current = null;
+      terminalRef.current = null;
       term.dispose();
     };
   }, [session.id, wsUrl]);
 
   return (
-    <div className="terminal-tile" ref={tileRef}>
+    <div className={clsx('terminal-tile', isActive && 'active')} ref={tileRef}>
       <div className="terminal-tile-header">
         <span>{liveTitle || session.title}</span>
+        {connectionStatus !== 'connected' && (
+          <small role="status" aria-live="polite">
+            {connectionStatus === 'reconnecting' ? '再接続中…' : '接続中…'}
+          </small>
+        )}
+        {connectionStatus === 'connected' && !view.primary && (
+          // Another client (another device, or `deckide attach`) drives the
+          // size; this one mirrors it at the same cols×rows, scaled to fit.
+          <button
+            type="button"
+            className="terminal-viewer-badge"
+            onPointerDown={(event) => event.preventDefault()}
+            onClick={() => claimRef.current?.()}
+            title="別のクライアントが操作中です。押すとこの画面のサイズで操作を引き継ぎます"
+          >
+            閲覧中 {view.cols}×{view.rows}
+            {view.scale < 1 && ` ${Math.round(view.scale * 100)}%`}
+            <span className="terminal-viewer-badge-action">ここで操作</span>
+          </button>
+        )}
+        <div className="terminal-font-controls" aria-label="文字サイズ">
+          <button
+            type="button"
+            className="terminal-tile-icon-btn"
+            aria-label="文字を小さく"
+            title="文字を小さく"
+            disabled={fontSize <= MIN_FONT_SIZE}
+            onPointerDown={(event) => event.preventDefault()}
+            onClick={() => changeFontSize(-1)}
+          >−</button>
+          <output aria-live="polite">{fontSize}</output>
+          <button
+            type="button"
+            className="terminal-tile-icon-btn"
+            aria-label="文字を大きく"
+            title="文字を大きく"
+            disabled={fontSize >= MAX_FONT_SIZE}
+            onPointerDown={(event) => event.preventDefault()}
+            onClick={() => changeFontSize(1)}
+          >+</button>
+        </div>
+        {onToggleMaximize && (
+          <button
+            type="button"
+            className="terminal-tile-icon-btn"
+            onClick={onToggleMaximize}
+            title={maximized ? 'グリッド表示に戻す' : 'このターミナルを最大表示'}
+            aria-label={maximized ? 'グリッド表示に戻す' : 'このターミナルを最大表示'}
+            aria-pressed={maximized}
+          >
+            {maximized ? '⊟' : '⛶'}
+          </button>
+        )}
         <button
           type="button"
-          className="terminal-close-btn"
+          className="terminal-tile-icon-btn"
           onClick={() => { if (window.confirm('このターミナルを閉じますか？')) onDelete(); }}
           aria-label="ターミナルを閉じる"
         >

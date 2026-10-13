@@ -5,6 +5,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { Workspace } from '../types.js';
 import { DEFAULT_ROOT } from '../config.js';
 import { createHttpError, handleError, readJson } from '../utils/error.js';
+import { emitDeckIdeEvent } from '../utils/events.js';
 import { normalizeWorkspacePath, getWorkspaceKey, getWorkspaceName } from '../utils/path.js';
 
 const MAX_NAME_LENGTH = 100;
@@ -63,6 +64,7 @@ export function createWorkspaceRouter(
     );
     workspaces.set(workspace.id, workspace);
     workspacePathIndex.set(key, workspace.id);
+    emitDeckIdeEvent({ type: 'workspace.created', workspace });
     return workspace;
   }
 
@@ -96,6 +98,7 @@ export function createWorkspaceRouter(
       deleteWorkspace.run(id);
       workspaces.delete(id);
       workspacePathIndex.delete(key);
+      emitDeckIdeEvent({ type: 'workspace.deleted', workspaceId: id });
       return c.json({ deleted: true });
     } catch (error) {
       return handleError(c, error);

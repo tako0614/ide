@@ -1,9 +1,10 @@
 import crypto from 'node:crypto';
 import { Hono } from 'hono';
 import type { DatabaseSync } from 'node:sqlite';
-import type { WebSocket } from 'ws';
 import type { Workspace, Deck } from '../types.js';
 import { createHttpError, handleError, readJson } from '../utils/error.js';
+import { closeTerminalClients } from '../utils/terminal-control.js';
+import { emitDeckIdeEvent } from '../utils/events.js';
 import { requireWorkspace } from './workspaces.js';
 
 export function createDeckRouter(
@@ -35,6 +36,7 @@ export function createDeckRouter(
       deck.createdAt
     );
     decks.set(deck.id, deck);
+    emitDeckIdeEvent({ type: 'deck.created', deck });
     return deck;
   }
 
@@ -89,6 +91,7 @@ export function createDeckRouter(
       for (const [id, deck] of entries) {
         decks.set(id, deck);
       }
+      emitDeckIdeEvent({ type: 'decks.reordered', deckIds: Array.from(decks.keys()) });
       return c.json({ success: true });
     } catch (error) {
       return handleError(c, error);
@@ -96,13 +99,6 @@ export function createDeckRouter(
   });
 
   const deleteDeckStmt = db.prepare('DELETE FROM decks WHERE id = ?');
-
-  function closeDeckTerminalSockets(sockets: Set<WebSocket>, reason: string): void {
-    sockets.forEach((socket) => {
-      try { socket.close(1000, reason); } catch { /* ignore */ }
-    });
-    sockets.clear();
-  }
 
   router.delete('/:id', (c) => {
     try {
@@ -119,13 +115,13 @@ export function createDeckRouter(
         const session = terminals.get(terminalId);
         if (!session) return;
         terminals.delete(terminalId);
-        session.resizeOwner = null;
-        closeDeckTerminalSockets(session.sockets, 'Deck deleted');
+        closeTerminalClients(session, 'Deck deleted');
         session.kill();
       });
 
       deleteDeckStmt.run(deckId);
       decks.delete(deckId);
+      emitDeckIdeEvent({ type: 'deck.deleted', deckId });
       return c.json({ deleted: true });
     } catch (error) {
       return handleError(c, error);
