@@ -88,6 +88,9 @@ export const useDecks = ({
           setDecks((prev) => (prev.some((d) => d.id === event.deck.id) ? prev : [...prev, event.deck]));
           initializeDeckStates([event.deck.id]);
           return;
+        case 'deck.updated':
+          setDecks((prev) => prev.map((deck) => deck.id === event.deck.id ? event.deck : deck));
+          return;
         case 'deck.deleted':
           setDecks((prev) => prev.filter((d) => d.id !== event.deckId));
           setActiveDeckIds((prev) => prev.filter((id) => id !== event.deckId));

@@ -192,7 +192,7 @@ export async function createServer() {
   app.route('/api/workspaces', createWorkspaceRouter(db, workspaces, workspacePathIndex));
   const terminalRouter = createTerminalRouter(decks, terminals, db);
   terminalRouter.restoreSessions();
-  app.route('/api/decks', createDeckRouter(db, workspaces, decks, terminals, terminalRouter.deleteUnattachedDeckTerminals));
+  app.route('/api/decks', createDeckRouter(db, workspaces, decks, terminals));
   app.route('/api/terminals', terminalRouter);
   app.route('/api/git', createGitRouter(workspaces));
   app.route('/api/browser', createBrowserRouter(browserService));

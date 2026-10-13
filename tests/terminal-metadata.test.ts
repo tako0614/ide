@@ -103,15 +103,3 @@ test('missing persisted row cannot create a memory-only update', async (t) => {
   assert.equal(f.session.title, 'original');
   assert.equal(f.events.length, 0);
 });
-
-test('deck cleanup includes unattached metadata and preserves another socket owner', (t) => {
-  const f = fixture(t);
-  f.db.prepare('INSERT INTO terminals (id, deck_id, title, created_at, cols, rows, tmux_socket) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    .run('unattached', 'source', 'orphan', '2026-10-13', 80, 24, null);
-  f.db.prepare('INSERT INTO terminals (id, deck_id, title, created_at, cols, rows, tmux_socket) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    .run('foreign', 'source', 'foreign', '2026-10-13', 80, 24, '/other-instance/tmux.sock');
-  f.router.deleteUnattachedDeckTerminals('source');
-  assert.equal(f.db.prepare('SELECT id FROM terminals WHERE id = ?').get('unattached'), undefined);
-  assert.equal(f.db.prepare('SELECT id FROM terminals WHERE id = ?').get('foreign')!.id, 'foreign');
-  assert.equal(f.persisted().title, 'original');
-});
