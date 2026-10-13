@@ -25,7 +25,10 @@ live title remains independent.
 
 The `release/v3.5.49-snapshot` sources use direct PTYs and did not previously
 persist terminals. Terminal metadata is now saved in the `terminals` table of
-the instance's database. Direct PTYs retain their original lifetime behavior.
+the instance's database. Existing terminal tables are migrated by adding size
+and socket columns; saved commands, titles and buffer history are retained.
+Existing rows have a null socket and are not attached by a new test instance.
+Direct PTYs retain their original lifetime behavior.
 
 To preserve terminal processes across server restarts, install tmux and set
 `DECKIDE_TMUX_RUNTIME_DIR` to a dedicated, private directory owned by the server

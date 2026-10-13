@@ -64,6 +64,19 @@ export function initializeDatabase(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_terminals_deck_id ON terminals(deck_id);
   `);
 
+  // Existing combined-release databases also have a terminals table, with
+  // buffer but no size/socket columns. Preserve every row and its history.
+  const terminalColumns = new Set(db.prepare('PRAGMA table_info(terminals)').all().map((row) => String(row.name)));
+  for (const [column, definition] of [
+    ['cols', 'INTEGER NOT NULL DEFAULT 120'],
+    ['rows', 'INTEGER NOT NULL DEFAULT 32'],
+    ['tmux_socket', 'TEXT'],
+  ]) {
+    if (!terminalColumns.has(column)) {
+      db.exec(`ALTER TABLE terminals ADD COLUMN ${column} ${definition}`);
+    }
+  }
+
   // Migration: add sort_order column to decks
   try {
     db.exec('ALTER TABLE decks ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0');
