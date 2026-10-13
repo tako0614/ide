@@ -9,7 +9,7 @@ deckide deck delete <deck-id>
 
 Mutation commands accept exact IDs or unambiguous prefixes of at least four
 characters. Names are not mutation selectors. These commands use the same local
-administrator CLI credential in `<data-dir>/cli.json` as `deckide session`, and
+CLI credential in `<data-dir>/cli.json` as `deckide session`, and
 do not change authentication settings. For an independent instance, set both
 `DECKIDE_DATA_DIR` and `DECKIDE_URL` to that instance before invoking the CLI.
 
