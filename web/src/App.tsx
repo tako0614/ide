@@ -5,7 +5,8 @@ import { StatusMessage } from './components/StatusMessage';
 import { WorkspaceModal } from './components/WorkspaceModal';
 import { DeckTerminals } from './components/DeckTerminals';
 import { SettingsModal } from './components/SettingsModal';
-import { ComputerPane } from './components/ComputerPane';
+import { DesktopPane } from './components/DesktopPane';
+import { AgentSessionsPane } from './components/AgentSessionsPane';
 import { apiJson, AUTH_SESSION_REFRESH_EVENT, getConfig, getWsBase, saveDeckOrder } from './api';
 import { AuthGate } from './components/AuthGate';
 import { useWorkspaceState } from './hooks/useWorkspaceState';
@@ -48,6 +49,7 @@ function AuthenticatedApp() {
   const [isSplitDropTargetActive, setIsSplitDropTargetActive] = useState(false);
   const [isDesktopDragEnabled, setIsDesktopDragEnabled] = useState(false);
   const [isComputerPaneOpen, setIsComputerPaneOpen] = useState(false);
+  const [isAgentSessionsOpen, setIsAgentSessionsOpen] = useState(false);
   const [deckContextMenu, setDeckContextMenu] = useState<{ deckId: string; x: number; y: number } | null>(null);
 
   const { handleToggleTheme } = useTheme();
@@ -412,7 +414,10 @@ function AuthenticatedApp() {
                 key={deck.id}
                 type="button"
                 className={clsx('deck-tab', activeDeckIds.includes(deck.id) && 'active', draggingDeckId === deck.id && 'is-dragging', dragOverDeckId === deck.id && 'is-drag-over')}
-                onClick={() => handleSelectDeck(deck.id)}
+                onClick={() => {
+                  setIsAgentSessionsOpen(false);
+                  handleSelectDeck(deck.id);
+                }}
                 onContextMenu={(e) => handleDeckContextMenu(e, deck.id)}
                 draggable={isDesktopDragEnabled}
                 onDragStart={(event) => handleDeckTabDragStart(event, deck.id)}
@@ -447,14 +452,22 @@ function AuthenticatedApp() {
           </div>
         </div>
         <div className="shell-toolbar-actions">
+          <button
+            type="button"
+            className={clsx('topbar-btn-sm', isAgentSessionsOpen && 'codex-toolbar-active')}
+            onClick={() => setIsAgentSessionsOpen((open) => !open)}
+            aria-expanded={isAgentSessionsOpen}
+          >
+            AIセッション
+          </button>
           <button type="button" className="topbar-btn-sm" onClick={openWorkspaceModal} title="作業ディレクトリを登録" aria-label="作業ディレクトリを登録">⌂＋</button>
           <button type="button" className="topbar-btn-sm" onClick={handleToggleTheme} title="テーマ切替" aria-label="テーマ切替">◐</button>
           <button
             type="button"
             className={clsx('topbar-btn-sm', isComputerPaneOpen && 'computer-toolbar-button-active')}
             onClick={() => setIsComputerPaneOpen((open) => !open)}
-            title="コンピューター画面"
-            aria-label="コンピューター画面"
+            title="デスクトップ"
+            aria-label="デスクトップ"
             aria-expanded={isComputerPaneOpen}
           >
             ▣
@@ -464,6 +477,7 @@ function AuthenticatedApp() {
       </div>
       <div
         className={clsx('terminal-split-container', isSplitDropTargetActive && 'is-drop-target')}
+        hidden={isAgentSessionsOpen}
         ref={splitContainerRef}
         style={{ gridTemplateColumns: `repeat(${activeDeckIds.length}, minmax(0, 1fr))` }}
         onDragOver={handleSplitContainerDragOver}
@@ -507,6 +521,30 @@ function AuthenticatedApp() {
           })
         )}
       </div>
+      {isAgentSessionsOpen && (
+        <AgentSessionsPane
+          decks={decks}
+          activeDeckId={activeDeckIds[0]}
+          onClose={() => setIsAgentSessionsOpen(false)}
+          onTerminal={({ id, deckId }) => {
+            setActiveDeckIds([deckId]);
+            updateDeckState(deckId, (state) => ({ ...state, activeTerminalId: id }));
+            setIsAgentSessionsOpen(false);
+          }}
+          onResume={async (task, deckId) => {
+            if (!task.resumeCommand) throw new Error('このタスクはCLIで再開できません。');
+            const created = await handleCreateTerminal(
+              deckId,
+              (deckStates[deckId] || defaultDeckState).terminals.length,
+              task.resumeCommand,
+              `${task.tool} · ${task.title}`
+            );
+            if (!created) throw new Error('ターミナルで再開できませんでした。');
+            setActiveDeckIds([deckId]);
+            setIsAgentSessionsOpen(false);
+          }}
+        />
+      )}
     </div>
   );
 
@@ -515,7 +553,7 @@ function AuthenticatedApp() {
       <main className="main">
         <div className="computer-shell-layout">
           <div className="computer-shell-main">{terminalView}</div>
-          {isComputerPaneOpen && <ComputerPane onClose={() => setIsComputerPaneOpen(false)} />}
+          {isComputerPaneOpen && <DesktopPane onClose={() => setIsComputerPaneOpen(false)} />}
         </div>
       </main>
       <StatusMessage message={statusMessage} />

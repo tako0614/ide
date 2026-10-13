@@ -198,6 +198,44 @@ function stopServer() {
 const args = process.argv.slice(2);
 const command = args[0];
 
+// `deckide ui`, or plain `deckide` in a terminal while the backend is running:
+// the web UI's decks and terminals, in this terminal.
+if (command === 'ui' || (!command && process.stdin.isTTY && process.stdout.isTTY)) {
+  const { sessionRpc } = await import('./deckide-session.js');
+  let backendUp = false;
+  try { await sessionRpc('status'); backendUp = true; } catch { /* not running: fall through to start */ }
+  if (backendUp) {
+    const { runUi } = await import('./deckide-ui.js');
+    try { await runUi(); }
+    catch (error) {
+      console.error(error?.message === 'terminal_required' ? 'deckide ui needs an interactive terminal.' : 'deckide ui failed: ' + (error?.message || error));
+      process.exitCode = 1;
+    }
+    process.exit(process.exitCode || 0);
+  } else if (command === 'ui') {
+    console.error('Deck IDE is not running. Start it with "deckide start".');
+    process.exit(1);
+  }
+}
+
+// `deckide desktop mcp`: stdio MCP server for the shared XFCE desktop (ops/desktop).
+if (command === 'desktop') {
+  if (args[1] !== 'mcp') {
+    console.error('Usage: deckide desktop mcp   (stdio MCP server: screenshots and input on the shared desktop)');
+    process.exit(1);
+  }
+  const { runDesktopMcp } = await import('./deckide-desktop-mcp.js');
+  await runDesktopMcp();
+  process.exit(0);
+}
+
+if (command === 'session') {
+  const { runSessionClient } = await import('./deckide-session.js');
+  try { await runSessionClient(args.slice(1)); }
+  catch { console.error('Session operation failed. Check the backend, socket, terminal ID and CLI installation.'); process.exitCode = 1; }
+  process.exit(process.exitCode || 0);
+}
+
 if (args.includes('--chatgpt-desktop') && (command !== 'start' || !args.includes('--fg'))) {
   console.error('--chatgpt-desktop is supported only with `deckide start --fg`.');
   process.exit(1);
@@ -220,6 +258,10 @@ Usage:
   deckide stop                   Stop server
   deckide restart                Restart server
   deckide status                 Show server status
+  deckide ui                     Decks and terminals in this terminal (also plain
+                                 "deckide" while the server runs; Ctrl+] for menu)
+  deckide session <subcommand>   Share persistent terminals with Web/MCP
+  deckide desktop mcp            Let an agent (Grok Bot, Claude…) use the shared desktop
   deckide logs                   Show server logs
   deckide computer <subcommand>  Use an inherited, temporary host session grant
 

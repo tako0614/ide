@@ -21,6 +21,7 @@ import {
   hasStatic,
   distDir,
   dbPath,
+  dataDir,
   AGENT_BROWSER_REAP_MCP,
   AGENT_BROWSER_CDP_PORT,
   AGENT_BROWSER_MAX_MCP_PER_AGENT,
@@ -29,7 +30,7 @@ import {
 import { securityHeaders } from './middleware/security.js';
 import { corsMiddleware } from './middleware/cors.js';
 import { originGuard } from './middleware/origin.js';
-import { currentSession, generateWsToken, isAuthEnabled, login, logout, onSessionRevoked, sessionGuard, sessionStatus, validBrowserMutation, verifiedInternalActor } from './middleware/auth.js';
+import { currentSession, generateWsToken, internalBridgeHeader, isAuthEnabled, login, logout, onSessionRevoked, sessionGuard, sessionStatus, validBrowserMutation, verifiedInternalActor } from './middleware/auth.js';
 import { initializeCredentials } from './auth/credentials.js';
 import {
   checkDatabaseIntegrity,
@@ -54,6 +55,16 @@ import type { VncSandboxPolicy } from './computer/desktop.js';
 import { ChatgptOwner } from './computer/chatgpt-owner.js';
 import { ChatgptController } from './computer/chatgpt-controller.js';
 import { createComputerRouter } from './routes/computer.js';
+import { createDesktopRouter } from './routes/desktop.js';
+import { SharedDesktop } from './desktop/shared-desktop.js';
+import { CodexLibrary, defaultCodexSources, liveCodexRollouts } from './codex/library.js';
+import { createCodexRouter } from './routes/codex.js';
+import { AgentLibrary } from './agents/library.js';
+import { liveAgentRollouts } from './agents/processes.js';
+import { createAgentRouter } from './routes/agents.js';
+import { createLocalControl } from './agents/localControl.js';
+import { startLocalSessionBridge } from './terminal/localBridge.js';
+import { createEventsRouter } from './utils/events.js';
 import { startMcpReaper } from './utils/browser-maintenance.js';
 import {
   setupWebSocketServer,
@@ -253,8 +264,18 @@ export async function createServer(options: CreateServerOptions = {}) {
   const terminalRouter = createTerminalRouter(decks, terminals, { hostSessions, workspaces });
   await terminalRouter.restoreSessions();
   app.route('/api/terminals', terminalRouter);
+  // Live state for every open UI/CLI: terminals and decks created anywhere appear everywhere.
+  app.route('/api/events', createEventsRouter((c, close) => {
+    const session = currentSession(c);
+    return session ? onSessionRevoked(session.key, close) : () => {};
+  }));
+  app.route('/api/codex', createCodexRouter(new CodexLibrary(defaultCodexSources(), () => liveCodexRollouts(terminals))));
+  const agents = new AgentLibrary(() => liveAgentRollouts(terminals));
+  app.route('/api/agents', createAgentRouter(agents));
   app.route('/api/git', createGitRouter(workspaces));
   app.route('/api/browser', createBrowserRouter(browserService));
+  const sharedDesktop = new SharedDesktop();
+  app.route('/api/desktop', createDesktopRouter(sharedDesktop));
   app.route('/api/computer', createComputerRouter(computer, (c) => {
     const session = currentSession(c);
     return session ? 'browser:' + session.key : verifiedInternalActor(c);
@@ -305,9 +326,22 @@ export async function createServer(options: CreateServerOptions = {}) {
     });
   }
 
+  const localControl = createLocalControl({ agents, attachment: terminalRouter.nativeAttachment,
+    api: async (route: string, method = 'GET', body?: unknown) => {
+      const response = await app.fetch(new Request('http://localhost:' + PORT + route, { method,
+        headers: { Host: 'localhost:' + PORT, 'X-DeckIDE-Internal': internalBridgeHeader(), 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) }));
+      if (!response.ok) throw Error('local_api_failed');
+      return response.status === 204 ? null : response.json();
+    } });
+  let localBridge: { close(): Promise<void> } | null = null;
+  try {
+    localBridge = await startLocalSessionBridge(path.join(dataDir, 'cli'), localControl);
+  } catch {
+    console.error('[CLI] Local session bridge unavailable; Web/MCP terminals are retained.');
+  }
   const server = serve({ fetch: app.fetch, port: PORT, hostname: HOST }) as Server;
   setupWebSocketServer(server, terminals, browserService,
-    async () => terminalRouter.restoreSessions(), { computer, tickets: computerTickets });
+    async () => terminalRouter.restoreSessions(), { computer, tickets: computerTickets }, sharedDesktop);
 
   server.on('listening', () => {
     const baseUrl = `http://localhost:${PORT}`;
@@ -333,6 +367,7 @@ export async function createServer(options: CreateServerOptions = {}) {
     if (shutdownPromise) return shutdownPromise;
 
     shutdownPromise = (async () => {
+      await localBridge?.close();
       // Detach our tmux display clients; the shells belong to tmux.
       terminals.forEach((session) => {
         session.sockets.forEach((socket) => {

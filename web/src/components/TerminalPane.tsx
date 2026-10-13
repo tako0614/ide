@@ -117,7 +117,7 @@ export function TerminalPane({
                 onSetActive={onSetActiveTerminal ? () => onSetActiveTerminal(terminal.id) : undefined}
                 onToggleMaximize={canMaximize ? () => handleTileMaximize(terminal.id) : undefined}
                 maximized={Boolean(singleView)}
-                autoFocus={single && terminal.id === resolvedActiveId}
+                autoFocus={(single || terminals.length === 1) && terminal.id === resolvedActiveId}
                 onDelete={() => onDeleteTerminal(terminal.id)}
                 onExit={() => onExitTerminal(terminal.id)}
                 onTitle={(title) => onTerminalTitle?.(terminal.id, title)}

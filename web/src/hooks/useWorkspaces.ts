@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import type { Workspace } from '../types';
 import { listWorkspaces, createWorkspace as apiCreateWorkspace, deleteWorkspace as apiDeleteWorkspace } from '../api';
 import { getErrorMessage, normalizeWorkspacePath, createEmptyWorkspaceState } from '../utils';
+import { subscribeServerEvents } from '../serverEvents';
 
 interface UseWorkspacesProps {
   setStatusMessage: (message: string) => void;
@@ -40,8 +41,21 @@ export const useWorkspaces = ({
         );
       });
 
+    const unsubscribe = subscribeServerEvents((event) => {
+      if (!alive) return;
+      if (event.type === 'workspace.created') {
+        setWorkspaces((prev) => (prev.some((w) => w.id === event.workspace.id) ? prev : [...prev, event.workspace]));
+        initializeWorkspaceStates([event.workspace.id]);
+      } else if (event.type === 'workspace.deleted') {
+        setWorkspaces((prev) => prev.filter((w) => w.id !== event.workspaceId));
+      } else if (event.type === 'resync') {
+        listWorkspaces().then((data) => { if (alive) setWorkspaces(data); }).catch(() => undefined);
+      }
+    });
+
     return () => {
       alive = false;
+      unsubscribe();
     };
   }, [setStatusMessage, initializeWorkspaceStates]);
 
@@ -67,7 +81,7 @@ export const useWorkspaces = ({
       }
       try {
         const workspace = await apiCreateWorkspace(resolvedPath);
-        setWorkspaces((prev) => [...prev, workspace]);
+        setWorkspaces((prev) => (prev.some((w) => w.id === workspace.id) ? prev : [...prev, workspace]));
         setEditorWorkspaceId(workspace.id);
         setWorkspaceStates((prev) => ({
           ...prev,

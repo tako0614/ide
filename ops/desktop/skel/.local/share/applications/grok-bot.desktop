@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Grok Bot
+Exec=grok-bot --no-sandbox %U
+Icon=grok-bot
+StartupNotify=true
+Categories=Utility;Development;
+MimeType=x-scheme-handler/grokbot;x-scheme-handler/sand;

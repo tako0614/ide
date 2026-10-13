@@ -5,6 +5,7 @@ import type { WebSocket } from 'ws';
 import type { Workspace, Deck } from '../types.js';
 import { createHttpError, handleError, readJson } from '../utils/error.js';
 import { requireWorkspace } from './workspaces.js';
+import { emitDeckIdeEvent } from '../utils/events.js';
 
 export function createDeckRouter(
   db: DatabaseSync,
@@ -35,6 +36,7 @@ export function createDeckRouter(
       deck.createdAt
     );
     decks.set(deck.id, deck);
+    emitDeckIdeEvent({ type: 'deck.created', deck });
     return deck;
   }
 
@@ -89,6 +91,7 @@ export function createDeckRouter(
       for (const [id, deck] of entries) {
         decks.set(id, deck);
       }
+      emitDeckIdeEvent({ type: 'decks.reordered', deckIds: Array.from(decks.keys()) });
       return c.json({ success: true });
     } catch (error) {
       return handleError(c, error);
@@ -125,6 +128,7 @@ export function createDeckRouter(
 
       deleteDeckStmt.run(deckId);
       decks.delete(deckId);
+      emitDeckIdeEvent({ type: 'deck.deleted', deckId });
       return c.json({ deleted: true });
     } catch (error) {
       return handleError(c, error);

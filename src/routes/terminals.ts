@@ -12,6 +12,7 @@ import { PORT, TERMINAL_BUFFER_LIMIT, dataDir } from '../config.js';
 import { createHttpError, handleError, readJson } from '../utils/error.js';
 import { getDefaultShell, getAvailableLocales, getShellBasename } from '../utils/shell.js';
 import { alignToUtf8Start, skipPartialEscapeSequence } from '../utils/utf8.js';
+import { emitDeckIdeEvent } from '../utils/events.js';
 
 const DEFAULT_TERMINAL_TITLE = 'ターミナル';
 const MAX_SOCKET_BUFFERED_AMOUNT = 1024 * 1024;
@@ -19,6 +20,7 @@ const MAX_SOCKET_BUFFERED_AMOUNT = 1024 * 1024;
 // 初期端末サイズ（リクエストで指定がない場合のデフォルト）。
 const DEFAULT_TERMINAL_COLS = 120;
 const DEFAULT_TERMINAL_ROWS = 32;
+const LIST_RESTORE_FRESH_MS = 3000;
 // WebSocket の resize と同じ範囲でバリデーションする。
 const MIN_TERMINAL_SIZE = 1;
 const MAX_TERMINAL_SIZE = 500;
@@ -135,6 +137,21 @@ export function createTerminalRouter(
       try { await restoreSession(meta); }
       catch { console.warn(`[TERMINAL] ${meta.id} display unavailable; shell retained`); }
     }
+  }
+
+  // Listing is hot (every web UI, CLI and agent polls it) and restoreSessions()
+  // verifies every registry entry with synchronous tmux calls, blocking the event
+  // loop. Lists share one recent verification instead of each running their own.
+  let listRestore: Promise<void> | null = null;
+  let listRestoredAt = 0;
+  function restoreSessionsForList(): Promise<void> {
+    if (listRestore) return listRestore;
+    if (Date.now() - listRestoredAt < LIST_RESTORE_FRESH_MS) return Promise.resolve();
+    listRestore = restoreSessions().finally(() => {
+      listRestoredAt = Date.now();
+      listRestore = null;
+    });
+    return listRestore;
   }
 
   function toBuffer(data: Buffer | string): Buffer {
@@ -271,6 +288,7 @@ export function createTerminalRouter(
 
     console.log(`[TERMINAL] Terminal ${id} exited`);
     terminals.delete(id);
+    emitDeckIdeEvent({ type: 'terminal.removed', deckId: session.deckId, terminalId: id, reason: 'exited' });
 
     session.sockets.forEach((socket) => {
       try { socket.close(1000, 'Terminal exited'); } catch { /* ignore */ }
@@ -400,6 +418,9 @@ export function createTerminalRouter(
       },
       resize: (nextCols, nextRows) => {
         if (!session.available) throw createHttpError('Terminal transport unavailable', 503);
+        // Clients re-assert their size whenever they are used; only real
+        // changes resize tmux and notify viewers.
+        if (nextCols === session.cols && nextRows === session.rows) return;
         term.resize(nextCols, nextRows);
         screen.resize(nextCols, nextRows, () => {
           if (!session.available) return;
@@ -450,6 +471,7 @@ export function createTerminalRouter(
     term.on('disconnect', disconnectBridge);
 
     terminals.set(id, session);
+    emitDeckIdeEvent({ type: 'terminal.created', deckId: deck.id, terminal: { id, title: session.title, createdAt: session.createdAt } });
     if (capability && options.hostSessions) {
       let attempts = 0;
       const activate = () => {
@@ -467,16 +489,14 @@ export function createTerminalRouter(
     return session;
   }
 
+  // GET /api/terminals?deckId=ID lists one deck; without deckId, every terminal.
   router.get('/', async (c) => {
     const deckId = c.req.query('deckId');
-    if (!deckId) {
-      return c.json({ error: 'deckId is required' }, 400);
-    }
-    try { await restoreSessions(); } catch (error) { return handleError(c, error); }
+    try { await restoreSessionsForList(); } catch (error) { return handleError(c, error); }
     const sessions: Array<Record<string, unknown>> = [];
     terminals.forEach((session) => {
-      if (session.deckId === deckId) {
-        sessions.push({ id: session.id, title: session.title, createdAt: session.createdAt, cols: session.cols, rows: session.rows, pid: session.pid, tmux: session.tmux, available: session.available });
+      if (!deckId || session.deckId === deckId) {
+        sessions.push({ id: session.id, deckId: session.deckId, title: session.title, createdAt: session.createdAt, cols: session.cols, rows: session.rows, pid: session.pid, tmux: session.tmux, available: session.available });
       }
     });
     sessions.sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
@@ -526,6 +546,7 @@ export function createTerminalRouter(
       await session.kill();
       terminals.delete(terminalId);
       options.hostSessions?.revokeTerminal(terminalId);
+      emitDeckIdeEvent({ type: 'terminal.removed', deckId: session.deckId, terminalId, reason: 'deleted' });
 
       session.sockets.forEach((socket) => {
         try { socket.close(1000, 'Terminal deleted'); } catch { /* ignore */ }
@@ -536,6 +557,29 @@ export function createTerminalRouter(
     } catch (error) {
       return handleError(c, error);
     }
+  });
+
+  // Bring a terminal to the front in every open web UI (CLI `deckide session show`).
+  router.post('/:id/focus', (c) => {
+    const session = terminals.get(c.req.param('id'));
+    if (!session) return c.json({ error: 'Terminal not found' }, 404);
+    emitDeckIdeEvent({ type: 'ui.focus', deckId: session.deckId, terminalId: session.id });
+    return c.json({ ok: true });
+  });
+
+  // Type into a terminal without attaching (CLI `deckide session send`).
+  router.post('/:id/input', async (c) => {
+    try {
+      const session = terminals.get(c.req.param('id'));
+      if (!session) throw createHttpError('Terminal not found', 404);
+      const body = await readJson<{ data?: unknown }>(c);
+      if (typeof body?.data !== 'string' || Buffer.byteLength(body.data) > 1024 * 1024) {
+        throw createHttpError('data must be a string of at most 1 MiB', 400);
+      }
+      session.write(body.data);
+      session.lastActive = Date.now();
+      return c.json({ id: session.id, bytes: Buffer.byteLength(body.data) });
+    } catch (error) { return handleError(c, error); }
   });
 
   router.put('/:id/size', async (c) => {
@@ -551,5 +595,9 @@ export function createTerminalRouter(
     } catch (error) { return handleError(c, error); }
   });
 
-  return Object.assign(router, { restoreSessions });
+  return Object.assign(router, { restoreSessions, nativeAttachment: (id: string, readOnly = false) => {
+    const session = terminals.get(id);
+    if (!session?.available) throw Error('Terminal unavailable');
+    return backend.nativeAttachment(id, readOnly);
+  } });
 }

@@ -1,0 +1,21 @@
+[Unit]
+Description=DeckIDE shared desktop (TigerVNC + XFCE)
+After=local-fs.target network.target
+Before=deckide.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+RuntimeDirectory=deckide-desktop
+RuntimeDirectoryMode=0700
+Environment=DECKIDE_DESKTOP_DISPLAY=:99
+Environment=DECKIDE_DESKTOP_GEOMETRY=1600x900
+Environment=LANG=C.UTF-8
+ExecStart=/usr/local/lib/deckide-desktop/session.sh
+KillMode=control-group
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

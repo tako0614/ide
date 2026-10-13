@@ -280,6 +280,8 @@ async function fetchJson<T>(url: string, options: RequestInit = {}, timeoutMs = 
   return response.json() as Promise<T>;
 }
 
+const ATTACH_ONLY_WAIT_MS = 30_000;
+
 // Quick liveness probe: does a Chrome already serve CDP on this port? Used to
 // decide between attaching to an existing shared browser and launching our own.
 async function probeCdp(port: number, timeoutMs = 1500): Promise<boolean> {
@@ -738,7 +740,18 @@ export class AgentBrowserService {
     // both the port and the profile's SingletonLock and fail — leaving the UI
     // unable to use a browser that is, in fact, running. So if a live CDP endpoint
     // is already there, attach to it and share the one browser instead.
-    if (await probeCdp(this.port)) {
+    // AGENT_BROWSER_ATTACH_ONLY=true: the shared Chrome is its own service
+    // (ops/desktop deckide-browser.service, which outlives Deck IDE restarts), so
+    // wait for it instead of launching a second Chrome on the same profile.
+    let live = await probeCdp(this.port);
+    if (!live && process.env.AGENT_BROWSER_ATTACH_ONLY === 'true') {
+      for (let waited = 0; !live && waited < ATTACH_ONLY_WAIT_MS; waited += 500) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        live = await probeCdp(this.port);
+      }
+      if (!live) throw new Error(`The shared browser is not running (no CDP on port ${this.port}).`);
+    }
+    if (live) {
       this.attached = true;
       this.chromeProcess = null;
       this.executablePath = (await findChromeExecutable().catch(() => null)) ?? this.executablePath;

@@ -19,6 +19,20 @@ export interface TerminalScreenOrigin {
   top: number;
 }
 
+/** Largest grid that fits the viewport at the current cell size (native display mode). */
+export function fitTerminalGrid(
+  cellWidth: number,
+  cellHeight: number,
+  viewport: TerminalFrameSize,
+  padding = 10,
+  scrollbar = 15
+): { cols: number; rows: number } | null {
+  if (![cellWidth, cellHeight, viewport.width, viewport.height].every((value) => Number.isFinite(value) && value > 0)) return null;
+  const cols = Math.floor((viewport.width - padding * 2 - scrollbar) / cellWidth);
+  const rows = Math.floor((viewport.height - padding * 2) / cellHeight);
+  return cols < 2 || rows < 2 ? null : { cols: Math.min(500, cols), rows: Math.min(500, rows) };
+}
+
 /** Convert transformed screen coordinates to xterm's unscaled CSS-pixel space. */
 export function normalizeTerminalPointerPoint(
   clientX: number,

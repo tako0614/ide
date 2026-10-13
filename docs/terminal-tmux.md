@@ -35,30 +35,74 @@ objects; broker creation validates the same strict pending schema before exec.
 The existing DeckIDE UTF-8 fallback and terminal metadata variables remain.
 tmux's own copy mode provides terminal history to native clients.
 
-## Canonical grid and external clients
+## Shared size: the client used last decides
 
 Creation explicitly selects cols/rows (UI default 120 by 32). Every window uses
 `window-size manual`, `aggressive-resize off`, `status off`, and an explicit
 `resize-window -x ... -y ...`. The internal display client additionally has
-`ignore-size`. Even an ordinary external client with a smaller screen does not
-select the smallest client's grid. A small native screen displays a portion of
-the canonical window; it does not use the browser's scaling.
+`ignore-size`. tmux itself never picks a client's size; DeckIDE resizes the
+window explicitly (registry, browsers and the server-side screen follow), and
+a request for the size the window already has is ignored.
+
+Who asks for a resize:
+
+- **Web, "フィット" (native) mode**: a tile that the user clicked or typed into
+  asks for the grid that fits it, and keeps doing so on viewport/font changes
+  while it stays in use. Focus alone (page load, switching terminals) does not
+  take the size, and a size this tile did not ask for (another client in use)
+  stops it from re-asserting until it is used again.
+- **CLI, `deckide session attach`**: relays a native tmux client through a local
+  pty and asks for the local tty size on attach, when the user types (at most
+  once a second; terminal-generated replies do not count) and when the local
+  window is resized. `--read-only` attaches without ever changing the size.
+- Explicit API: `PUT /api/terminals/<UUID>/size`, the MCP resize tool, or a
+  WebSocket resize with `explicit: true`.
+
+Every other view shows the same grid: browser tiles not in use scale the whole
+grid down to fit (never up); a native tmux client smaller than the window shows
+a part of it. Nothing is ever drawn at another width, so full-screen programs
+do not tear. "全体" (overview) mode always scales the grid and never resizes.
 
 tmux 3.6 was observed to exit unexpectedly when `window-size manual` appeared in
 the startup config. The adapter deliberately applies global and window manual
 policy immediately after detached creation, before display attach; pending
 creation recovery repeats this step. The generated `.conf` omits that directive.
+Use DeckIDE's resize API rather than native `resize-window`, which would leave
+registry/browser metadata stale. Do not change `window-size` to
+smallest/largest/latest or turn on automatic resizing. Native splitting,
+renaming, respawning, and moving the managed pane are outside this adapter's
+single-pane lifecycle contract.
 
-Browser viewport and font-size controls uniformly scale the entire local frame.
-They do not send shared resizes. Headers, splits, terminal order and layout
-controls retain the isolated source baseline. There is no additional zoom or
-size-lock UI. Explicit shared changes use the authenticated existing MCP resize
-tool, `PUT /api/terminals/<UUID>/size` with integer `cols`/`rows` (1..500), or a
-WebSocket resize with `explicit: true`. Use DeckIDE's explicit resize API rather
-than native `resize-window`, which would leave registry/browser metadata stale.
-Do not change `window-size` to smallest/largest/latest or turn on automatic
-resizing. Native splitting, renaming, respawning, and moving the managed pane
-are outside this adapter's single-pane lifecycle contract.
+## Terminal UI: `deckide`
+
+`deckide ui` — or plain `deckide` in a terminal while the backend runs — shows
+the web UI's decks and terminal grid inside the terminal: deck tabs on top, one
+pane per terminal (the same shared tmux terminals the web UI shows), a hint
+line at the bottom. Each pane is a native tmux client on a local pty whose
+output a headless xterm parses; only changed rows are redrawn. Keys go to the
+focused terminal; Ctrl+] then a key drives the UI: `n` new terminal, `c` new
+deck (directory), `x` close, `z` zoom, arrows/Tab/1-9 move focus, `[` `]`
+switch deck, `a` AI sessions (Codex / Claude Code / OpenCode; Enter opens the
+running terminal or resumes in a new one, `v` reads the conversation), `s` bring
+the terminal to the front in open web UIs, `q` leave (everything keeps
+running), `?` help. Mouse: deck tabs switch, clicking a pane focuses it.
+A terminal cannot scale text like the browser, so opening the grid or changing
+its layout fits every visible terminal to its pane; afterwards the usual rule
+applies (typing re-asserts the focused pane). The deck/terminal list is
+refreshed every 1.5 s, so terminals created elsewhere appear.
+
+## Session CLI and live state
+
+`deckide session` talks to the running backend over its owner-only Unix socket
+(`$DECKIDE_DATA_DIR/cli/control.sock`): `list`, `new`, `run`, `attach`, `send`,
+`show`, `focus`, `kill`, `history`, `read`. TERMINAL arguments accept an ID, a
+unique ID prefix, the number from `list`, or a title. Ctrl-b d detaches and
+leaves the shell running. `show [--lines N]` prints the screen as text and
+changes nothing (agents use it to read other terminals); `focus` brings the
+terminal to the front of every open web UI, so only use it when a person asks.
+Creation, deletion and `focus` are broadcast on `GET /api/events`
+(Server-Sent Events, tied to the browser login session), so every open web UI
+updates without a reload.
 
 ## Exact native list, attach, and detach commands
 

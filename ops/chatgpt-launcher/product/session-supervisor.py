@@ -22,20 +22,22 @@ STATE_ROOT_ENV = "CHATGPT_LAUNCHER_STATE_ROOT"
 WORKSPACE = Path(os.environ.get(STATE_ROOT_ENV, str(DEFAULT_STATE_ROOT)))
 CONTROL = WORKSPACE / ".app-session-control"
 DESCRIPTOR = WORKSPACE / "app-session.json"
-RUNTIME = Path("/run/chatgpt-app")
+RUNTIME = Path("/run/deckide-chatgpt-root")
 PUBLIC_PARENT = Path("/run")
 PUBLIC_PREFIX = "deckide-chatgpt-public-"
-HOME = Path("/var/lib/chatgpt-app")
-APP_WORK = DEFAULT_STATE_ROOT / "app-work"
-ACCOUNT = "chatgpt-app"
+HOME = Path("/root")
+APP_WORK = HOME / ".cache/deckide-chatgpt-root/app-work"
+APP_TEMP = HOME / ".cache/deckide-chatgpt-root/tmp"
+ROOT_PROFILE = HOME / ".config/chatgpt-root-deckide"
+ACCOUNT = "root"
 STOPPING = False
 HEARTBEAT_SECONDS = 2
 HEARTBEAT_VALID_SECONDS = 10
 SCHEMA = "chatgpt-private-desktop/v1"
 DECKIDE_SCHEMA = "chatgpt-private-desktop/v2"
 PUBLIC_HELPERS = {
-    "desktop-session.py": (969, "388664cd9740251d0b5808e7c7aab139d29b32f16454611ce7ef03eb0709e7af"),
-    "session-bus.conf": (455, "4a39a9fd1ada39a52ff6a3e13222a84e5edfb5f8dcee41c8752ed40d3ab6a145"),
+    "desktop-session.py": (1299, "9c479f68e48f8b1506a575ee64bc36b461a9e3a0326abbd6319a6691de3e0232"),
+    "session-bus.conf": (464, "04db9d190be2a4827492a7d4c320c4c66730fd62788d524bd448ae8f025a5c3d"),
 }
 
 class PublicHelperCleanupRefused(RuntimeError):
@@ -128,8 +130,10 @@ def lifecycle_stop_reason(owner, deadline, desktop_alive, xvfb_alive, now=None):
     return None
 
 def session_anchors(snapshot, saved, app_uid, app_gid):
-    root = [r for r in saved.values() if r and (r["owner_uid"], r["owner_gid"]) == (0, 0)]
-    runners = [r for r in saved.values() if r and (r["owner_uid"], r["owner_gid"]) == (app_uid, app_gid)]
+    root = [r for r in saved.values() if r and r["comm"] == "Xvfb"
+        and (r["owner_uid"], r["owner_gid"]) == (0, 0)]
+    runners = [r for r in saved.values() if r and r["comm"] == "dbus-run-sessio"
+        and (r["owner_uid"], r["owner_gid"]) == (app_uid, app_gid)]
     if len(root) != 1 or len(runners) != 1:
         return None
     anchors = {"xvfb": root[0], "desktop_runner": runners[0]}
@@ -146,9 +150,15 @@ def session_anchors(snapshot, saved, app_uid, app_gid):
     anchors["chatgpt"] = apps[0]
     return anchors
 
-def cleanup_permitted(record, saved, app_uid, app_gid):
+def cleanup_permitted(record, saved, app_uid, app_gid, owned=None):
     if not valid_identity(record):
         return False
+    if app_uid == 0:
+        # Root ownership alone cannot authorize signalling another root session.
+        pinned = (owned or saved).get(record["pid"])
+        return valid_identity(pinned) and all(record[k] == pinned[k] for k in
+            ("pid", "starttime_ticks", "owner_uid", "owner_gid")) and \
+            (record["owner_uid"], record["owner_gid"]) == (0, 0)
     if (record["owner_uid"], record["owner_gid"]) == (app_uid, app_gid):
         return True
     return any(r and r["owner_uid"] == 0 and r["owner_gid"] == 0 and all(record[k] == r[k]
@@ -178,6 +188,12 @@ def directory(path, uid, mode):
     s = path.lstat()
     if not stat.S_ISDIR(s.st_mode) or s.st_uid != uid or stat.S_IMODE(s.st_mode) != mode:
         raise RuntimeError("Unexpected directory ownership or permissions: " + str(path))
+
+def root_home():
+    info = HOME.lstat()
+    if not stat.S_ISDIR(info.st_mode) or (info.st_uid, info.st_gid) != (0, 0) \
+            or stat.S_IMODE(info.st_mode) & 0o022:
+        raise RuntimeError("Root HOME must be a real root:root directory without public write access.")
 
 def validate_state_root_override():
     raw = os.environ.get(STATE_ROOT_ENV)
@@ -432,11 +448,12 @@ def user_environment(user, display, authority):
     return {"HOME": str(HOME), "USER": ACCOUNT, "LOGNAME": ACCOUNT,
             "PATH": "/usr/bin:/bin", "LANG": "C.UTF-8",
             "CODEX_HOME": str(HOME / ".codex"),
+            "CODEX_ELECTRON_USER_DATA_PATH": str(ROOT_PROFILE),
             "XDG_CONFIG_HOME": str(HOME / ".config"),
             "XDG_DATA_HOME": str(HOME / ".local/share"),
             "XDG_CACHE_HOME": str(HOME / ".cache"),
             "XDG_RUNTIME_DIR": str(RUNTIME), "XDG_SESSION_TYPE": "x11",
-            "TMPDIR": str(HOME / ".cache/tmp"), "BROWSER": "/usr/bin/google-chrome",
+            "TMPDIR": str(APP_TEMP), "BROWSER": "/usr/bin/google-chrome",
             "DISPLAY": display, "XAUTHORITY": str(authority)}
 
 def as_user(user):
@@ -463,12 +480,13 @@ def mark_stop(_signal, _frame):
 
 def serve(lifetime, owner=None, ready_callback=None, child_log=None):
     if os.geteuid() != 0:
-        raise RuntimeError("The supervisor requires an authorized root caller solely to manage Xvfb in /tmp.")
+        raise RuntimeError("The explicitly selected root desktop requires an authorized root caller.")
     user = pwd.getpwnam(ACCOUNT)
-    if user.pw_uid == 0 or os.getgrouplist(ACCOUNT, user.pw_gid) != [user.pw_gid]:
-        raise RuntimeError("App account must be non-root with no supplementary groups.")
+    if (user.pw_uid, user.pw_gid) != (0, 0):
+        raise RuntimeError("This explicitly selected root desktop requires the root:root account.")
+    root_home()
     directory(CONTROL, 0, 0o700)
-    for path in (RUNTIME, HOME, APP_WORK, HOME / ".cache/tmp"):
+    for path in (RUNTIME, APP_WORK, APP_TEMP, ROOT_PROFILE):
         directory(path, user.pw_uid, 0o700)
     public_parent_saved = validate_public_parent()
     lockfd = os.open(CONTROL / "supervisor.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
@@ -489,11 +507,12 @@ def serve(lifetime, owner=None, ready_callback=None, child_log=None):
         **lifecycle_fields(lifetime, owner), "app_user": ACCOUNT, "uid": user.pw_uid,
         "gid": user.pw_gid, "runtime_dir": str(RUNTIME), "XAUTHORITY": str(authority),
         "working_directory": str(APP_WORK), "supervisor": identity(os.getpid()),
-        "xvfb_owner_differs_from_app": True, "xvfb_owner_uid": 0,
+        "root_desktop_mode": True,
+        "xvfb_owner_differs_from_app": False, "xvfb_owner_uid": 0,
         "x11_tcp_listening": False, "x11_authentication": "MIT-MAGIC-COOKIE-1",
         "desktop_owner_uid": user.pw_uid, "dbus_owner_uid": user.pw_uid,
         "chatgpt_owner_uid": user.pw_uid,
-        "root_credentials_inherited": False, "sandbox_disabled": False,
+        "root_credentials_inherited": True, "sandbox_disabled": True,
         "cleanup_contract": "Owner exit (DeckIDE mode), bounded expiry, desktop exit, or stop terminates only identity-checked owned processes and removes this authority. HOME/login state is retained. No boot service.",
         "cleanup_command": str(product_file("launch-chatgpt.sh")) + " stop --session-id <session_id>",
         "processes": []}
@@ -544,7 +563,7 @@ def serve(lifetime, owner=None, ready_callback=None, child_log=None):
                 break
             time.sleep(0.25)
         if not good:
-            raise RuntimeError("Authenticated non-root X11 connection failed.")
+            raise RuntimeError("Authenticated X11 connection failed.")
         badenv = dict(env, XAUTHORITY="/dev/null")
         rejected = subprocess.run(["/usr/bin/xdpyinfo"], env=badenv, timeout=5,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **as_user(user))
@@ -611,13 +630,13 @@ def serve(lifetime, owner=None, ready_callback=None, child_log=None):
         for record in descendant_snapshot(roots):
             known[record["pid"]] = record
         for record in reversed(list(known.values())):
-            if cleanup_permitted(record, saved, user.pw_uid, user.pw_gid):
+            if cleanup_permitted(record, saved, user.pw_uid, user.pw_gid, known):
                 signal_identity(record, signal.SIGTERM)
         end = time.monotonic() + 5
         while time.monotonic() < end and any(c.poll() is None for c in children):
             time.sleep(0.1)
         for record in reversed(list(known.values())):
-            if cleanup_permitted(record, saved, user.pw_uid, user.pw_gid):
+            if cleanup_permitted(record, saved, user.pw_uid, user.pw_gid, known):
                 signal_identity(record, signal.SIGKILL)
         for child in children:
             try:
@@ -648,7 +667,10 @@ def serve(lifetime, owner=None, ready_callback=None, child_log=None):
 
 def dry_run(owner):
     user = pwd.getpwnam(ACCOUNT)
-    for path in (RUNTIME, HOME, APP_WORK, HOME / ".cache/tmp"):
+    if (user.pw_uid, user.pw_gid) != (0, 0):
+        raise RuntimeError("This explicitly selected root desktop requires the root:root account.")
+    root_home()
+    for path in (RUNTIME, APP_WORK, APP_TEMP, ROOT_PROFILE):
         directory(path, user.pw_uid, 0o700)
     directory(CONTROL, 0, 0o700)
     for path in (product_file("launch-chatgpt.sh"), product_file("session-supervisor.py"),

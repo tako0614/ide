@@ -13,6 +13,8 @@ import type { AgentBrowserService } from './utils/agent-browser.js';
 import type { DesktopComputer } from './computer/desktop.js';
 import type { ComputerStreamTickets } from './computer/stream-tickets.js';
 import { RfbServerProtocolError } from './computer/rfb.js';
+import type { Socket } from 'node:net';
+import type { SharedDesktop } from './desktop/shared-desktop.js';
 
 const MIN_TERMINAL_SIZE = 1;
 const MAX_TERMINAL_SIZE = 500;
@@ -255,12 +257,38 @@ function readBufferedRange(session: TerminalSession, startOffset: number, endOff
   return Buffer.from(raw.subarray(alignedStart, alignedEnd));
 }
 
+/**
+ * Relay the shared desktop's RFB byte stream to a signed-in browser (noVNC).
+ * Order matters, so a slow viewer pauses the VNC socket instead of losing data.
+ */
+function bridgeDesktopVnc(socket: WebSocket, upstream: Socket): void {
+  const closeViewer = (code: number, reason: string) => {
+    if (socket.readyState === WebSocket.OPEN) socket.close(code, reason);
+  };
+  upstream.on('data', (data: Buffer) => {
+    if (socket.readyState !== WebSocket.OPEN) { upstream.destroy(); return; }
+    // VNC encodings are already compressed.
+    socket.send(data, { binary: true, compress: false }, (error) => {
+      if (error) { upstream.destroy(); return; }
+      if (upstream.isPaused() && socket.bufferedAmount < MAX_SOCKET_BUFFERED_AMOUNT / 4) upstream.resume();
+    });
+    if (socket.bufferedAmount > MAX_SOCKET_BUFFERED_AMOUNT) upstream.pause();
+  });
+  upstream.once('error', () => closeViewer(1011, 'Desktop unavailable'));
+  upstream.once('close', () => closeViewer(1000, 'Desktop stream ended'));
+  socket.on('message', (raw: RawData) => {
+    if (!upstream.destroyed) upstream.write(rawDataToBuffer(raw));
+  });
+  socket.once('close', () => upstream.destroy());
+}
+
 export function setupWebSocketServer(
   server: HttpServer | HttpsServer,
   terminals: Map<string, TerminalSession>,
   browserService?: AgentBrowserService,
   ensureAttached?: (id: string) => Promise<void>,
-  computerStream?: { computer: DesktopComputer; tickets: ComputerStreamTickets }
+  computerStream?: { computer: DesktopComputer; tickets: ComputerStreamTickets },
+  desktop?: SharedDesktop
 ): WebSocketServer {
   const wss = new WebSocketServer({
     server,
@@ -407,6 +435,14 @@ export function setupWebSocketServer(
         });
         upstream.resume();
       }).catch(() => { if (socket.readyState === WebSocket.OPEN) socket.close(1011, 'Desktop stream unavailable'); });
+      return;
+    }
+    if (url.pathname === '/api/desktop/vnc') {
+      if (!desktop) {
+        socket.close(1011, 'Desktop unavailable');
+        return;
+      }
+      bridgeDesktopVnc(socket, desktop.connect());
       return;
     }
     if (url.pathname === '/api/browser/ws') {

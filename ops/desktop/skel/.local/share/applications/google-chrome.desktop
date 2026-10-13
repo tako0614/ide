@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=Google Chrome
+GenericName=Web Browser
+Exec=/usr/local/lib/deckide-desktop/chrome.sh %U
+Icon=google-chrome
+StartupNotify=true
+StartupWMClass=Google-chrome
+Categories=Network;WebBrowser;
+MimeType=text/html;x-scheme-handler/http;x-scheme-handler/https;
+Actions=new-window;
+
+[Desktop Action new-window]
+Name=New Window
+Exec=/usr/local/lib/deckide-desktop/chrome.sh

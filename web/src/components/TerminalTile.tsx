@@ -18,9 +18,11 @@ import {
 import { registerTerminalQueryHandlers } from './terminalQueries';
 import { attachTerminalKeymap } from './terminalKeymap';
 import { createTerminalReconnect } from './terminalReconnect';
+import { applyStickyModifiers, registerTerminalInput } from './terminalInput';
 import {
   createCanonicalTerminalFrame,
   createTerminalReplayAccounting,
+  fitTerminalGrid,
   normalizeTerminalPointerPoint
 } from './terminalFrame';
 
@@ -57,7 +59,12 @@ type ServerControlMessage =
   // この接続が「主」クライアントか（端末クエリ応答を送るのは主のみ）。
   | { type: 'primary'; value: boolean };
 
-type ClientControlMessage = { type: 'claim' };
+type ClientControlMessage =
+  | { type: 'claim' }
+  // An explicit resize of the shared tmux window (native display mode).
+  | { type: 'resize'; cols: number; rows: number; explicit: true };
+
+type TerminalDisplayMode = 'native' | 'overview';
 
 const DEFAULT_TERMINAL_COLS = 120;
 const DEFAULT_TERMINAL_ROWS = 32;
@@ -119,11 +126,29 @@ export function TerminalTile({
   // 再実行を避けるため ref 経由で最新値を参照する）。
   const onSetActiveRef = useRef(onSetActive);
   const isActiveRef = useRef(isActive);
+  const autoFocusRef = useRef(autoFocus);
+  autoFocusRef.current = autoFocus;
+
+  // native: the tile shows the grid 1:1 and, while it is the terminal in use,
+  // fits the shared window to itself. overview: the fixed grid scaled to fit.
+  const [displayMode, setDisplayMode] = useState<TerminalDisplayMode>(() => {
+    try {
+      return localStorage.getItem('deckide-terminal-display') === 'overview' ? 'overview' : 'native';
+    } catch {
+      return 'native';
+    }
+  });
+  const displayModeRef = useRef(displayMode);
+  displayModeRef.current = displayMode;
 
   // OSC 0/2 で受け取った動的なウィンドウタイトル。null の間は session.title を表示。
   const [liveTitle, setLiveTitle] = useState<string | null>(null);
   const [fontSize, setFontSize] = useState(readFontSize);
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'reconnecting'>('connecting');
+
+  useEffect(() => {
+    fitNowRef.current?.();
+  }, [displayMode, isActive]);
 
   useEffect(() => {
     const term = terminalRef.current;
@@ -292,9 +317,13 @@ export function TerminalTile({
     // reconnect / delta replay doesn't yank them down while reading scrollback.
     // Defaults to true so the very first connect lands at the bottom.
     let shouldScrollAfterReplay = true;
+    // Focus a newly opened terminal once its first replay is on screen.
+    let focusAfterFirstReplay = true;
 
     const finishReplay = () => {
       replayingBuffer = false;
+      if (focusAfterFirstReplay && autoFocusRef.current) focusTerminalWithoutScroll();
+      focusAfterFirstReplay = false;
       scheduleFit(true);
       // Only scroll to the bottom when the user was already at the bottom
       // (or the buffer was fully reset).  Otherwise preserve their scroll
@@ -332,6 +361,17 @@ export function TerminalTile({
     let fitTimer: ReturnType<typeof setTimeout> | null = null;
     const canonicalFrame = createCanonicalTerminalFrame(term.cols, term.rows);
     const replayAccounting = createTerminalReplayAccounting();
+    // Last explicit fit requested from the server (cleared when it answers).
+    let requestedFit = '';
+    // Whether this tile is the client the shared size follows: set when the
+    // user clicks or types here, cleared when another client resizes. Focus
+    // alone (page load, switching terminals) does not take the size.
+    let holdsSize = false;
+    const takeSize = () => {
+      if (holdsSize) return;
+      holdsSize = true;
+      scheduleFit(true);
+    };
 
     const helperTextarea = containerRef.current.querySelector('.xterm-helper-textarea');
     if (helperTextarea instanceof HTMLTextAreaElement) {
@@ -374,6 +414,36 @@ export function TerminalTile({
       const cellHeight = screen && term.rows > 0
         ? screen.offsetHeight / term.rows
         : fontSize * 1.2;
+      // Only the terminal actually being used resizes the shared window; any
+      // other view of it shows the whole grid, scaled down if it is larger.
+      const focused = document.activeElement;
+      const inUse = holdsSize && isActiveRef.current && tileRef.current?.contains(focused) && document.hasFocus();
+      if (displayModeRef.current === 'native' && inUse) {
+        wrapper.style.width = '100%';
+        wrapper.style.height = '100%';
+        content.style.width = '100%';
+        content.style.height = '100%';
+        content.style.transform = 'none';
+        frameScaleRef.current = 1;
+        const fit = fitTerminalGrid(
+          cellWidth,
+          cellHeight,
+          { width: viewport.clientWidth, height: viewport.clientHeight },
+          TERMINAL_FRAME_PADDING
+        );
+        if (!fit || replayingBuffer || document.visibilityState !== 'visible') return;
+        const current = canonicalFrame.getSize();
+        const key = `${fit.cols}:${fit.rows}`;
+        if (fit.cols === current.cols && fit.rows === current.rows) {
+          requestedFit = '';
+          return;
+        }
+        if (requestedFit !== key && socketRef.current?.readyState === WebSocket.OPEN) {
+          requestedFit = key;
+          sendControlMessage({ type: 'resize', ...fit, explicit: true });
+        }
+        return;
+      }
       const layout = canonicalFrame.layout(
         cellWidth,
         cellHeight,
@@ -401,7 +471,12 @@ export function TerminalTile({
         runFit();
       }, 100);
     };
-    fitNowRef.current = () => scheduleFit(true);
+    fitNowRef.current = () => {
+      scheduleFit(true);
+      window.requestAnimationFrame(() => {
+        if (!cancelled) scheduleFit(true);
+      });
+    };
 
     const resizeObserver = new ResizeObserver(() => {
       scheduleFit();
@@ -439,6 +514,15 @@ export function TerminalTile({
       }
     };
 
+    // The on-screen key bar (phones) sends Esc/Tab/arrows/Ctrl… through here.
+    const unregisterInput = registerTerminalInput(session.id, {
+      input: (data) => term.input(data, true),
+      applicationCursorKeys: () => term.modes.applicationCursorKeysMode,
+      paste: (text) => term.paste(text),
+      focus: focusTerminalWithoutScroll,
+      hasFocus: () => Boolean(term.textarea) && document.activeElement === term.textarea,
+    });
+
     // クリック/フォーカスでこの端末を「アクティブ」に昇格させる。これにより
     // グリッドの強調表示・最大化・モバイル単一表示が「実際に使った端末」を指す。
     const promoteActive = () => {
@@ -447,10 +531,16 @@ export function TerminalTile({
       }
     };
 
-    const handlePointerFocus = () => {
+    // Mouse: act on press. Touch: only a tap counts (the browser follows a tap
+    // with a mousedown), so scrolling neither opens the soft keyboard nor
+    // takes the shared size.
+    const handlePointerFocus = (event?: Event) => {
+      if (typeof PointerEvent !== 'undefined' && event instanceof PointerEvent && event.pointerType !== 'mouse') return;
       if (!cancelled) {
         promoteActive();
         focusTerminalWithoutScroll();
+        holdsSize = true;
+        scheduleFit();
       }
     };
 
@@ -458,6 +548,7 @@ export function TerminalTile({
       if (!cancelled) {
         promoteActive();
         focusTerminalWithoutScroll();
+        scheduleFit();
       }
     };
 
@@ -526,8 +617,10 @@ export function TerminalTile({
 
     frameViewportRef.current?.addEventListener('pointerdown', handlePointerFocus, { passive: true, capture: true });
     frameViewportRef.current?.addEventListener('mousedown', handlePointerFocus, { passive: true, capture: true });
-    frameViewportRef.current?.addEventListener('touchstart', handlePointerFocus, { passive: true, capture: true });
     frameViewportRef.current?.addEventListener('focusin', handleFocusIn, true);
+    // Leaving the tile hands the size back to whoever is used next; show the whole grid again.
+    const handleFocusOut = () => { if (!cancelled) scheduleFit(); };
+    frameViewportRef.current?.addEventListener('focusout', handleFocusOut, true);
     frameViewportRef.current?.addEventListener('mousedown', handleTerminalMouseDown, true);
     frameViewportRef.current?.addEventListener('mousemove', handleTerminalMouseMove, true);
     frameViewportRef.current?.addEventListener('mouseup', handleTerminalMouseUp, true);
@@ -537,8 +630,8 @@ export function TerminalTile({
     pointerFocusCleanup = () => {
       frameViewportRef.current?.removeEventListener('pointerdown', handlePointerFocus, true);
       frameViewportRef.current?.removeEventListener('mousedown', handlePointerFocus, true);
-      frameViewportRef.current?.removeEventListener('touchstart', handlePointerFocus, true);
       frameViewportRef.current?.removeEventListener('focusin', handleFocusIn, true);
+      frameViewportRef.current?.removeEventListener('focusout', handleFocusOut, true);
       frameViewportRef.current?.removeEventListener('mousedown', handleTerminalMouseDown, true);
       frameViewportRef.current?.removeEventListener('mousemove', handleTerminalMouseMove, true);
       frameViewportRef.current?.removeEventListener('mouseup', handleTerminalMouseUp, true);
@@ -605,6 +698,7 @@ export function TerminalTile({
               return;
             }
             if (message?.type === 'sync') {
+              requestedFit = '';
               // Record whether the user is pinned to the bottom *before* we
               // reset/replay, so finishReplay can preserve their position.
               // A full reset always re-renders fresh content, so snap to bottom.
@@ -624,6 +718,9 @@ export function TerminalTile({
               return;
             }
             if (message?.type === 'size') {
+              // A size this tile did not ask for: another client is in use now.
+              if (requestedFit !== `${message.cols}:${message.rows}`) holdsSize = false;
+              requestedFit = '';
               const serverSize = canonicalFrame.applyServerSize(message.cols, message.rows);
               if (serverSize) {
                 term.resize(serverSize.cols, serverSize.rows);
@@ -714,7 +811,10 @@ export function TerminalTile({
           // keyboard input by the PTY.
           if (replayingBuffer) return;
           if (socket && socket.readyState === WebSocket.OPEN) {
-            sendInput(textEncoder.encode(data));
+            // Typing here (not focus/mouse reports) makes this the client in use.
+            if (!/^\x1b\[[IO]$|^\x1b\[<\d+;\d+;\d+[Mm]$/.test(data)) takeSize();
+            // Ctrl/Alt latched on the key bar modify the next key typed.
+            sendInput(textEncoder.encode(applyStickyModifiers(data)));
           }
         });
 
@@ -775,6 +875,7 @@ export function TerminalTile({
 
     return () => {
       cancelled = true;
+      unregisterInput();
       isIntentionalClose = true;
       window.removeEventListener('online', handleOnline);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
@@ -813,7 +914,7 @@ export function TerminalTile({
   }, [session.id, wsUrl]);
 
   return (
-    <div className={clsx('terminal-tile', isActive && 'active')} ref={tileRef}>
+    <div className={clsx('terminal-tile', isActive && 'active', displayMode === 'native' && 'terminal-tile-native')} ref={tileRef}>
       <div className="terminal-tile-header">
         <span>{liveTitle || session.title}</span>
         {connectionStatus !== 'connected' && (
@@ -822,6 +923,21 @@ export function TerminalTile({
           </small>
         )}
         <div className="terminal-font-controls" aria-label="文字サイズ">
+          <button
+            type="button"
+            className="terminal-display-mode"
+            aria-pressed={displayMode === 'native'}
+            title={displayMode === 'native'
+              ? '表示領域に合わせた文字数。全体表示に切り替える'
+              : '固定の文字数を縮小表示。フィットに切り替える'}
+            onClick={() => {
+              const next = displayMode === 'native' ? 'overview' : 'native';
+              try { localStorage.setItem('deckide-terminal-display', next); } catch { /* Storage can be unavailable. */ }
+              setDisplayMode(next);
+            }}
+          >
+            {displayMode === 'native' ? 'フィット' : '全体'}
+          </button>
           <button
             type="button"
             className="terminal-tile-icon-btn"

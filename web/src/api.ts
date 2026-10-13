@@ -358,9 +358,9 @@ export function createTerminal(
  */
 export function listTerminals(
   deckId: string
-): Promise<{ id: string; title: string }[]> {
+): Promise<{ id: string; title: string; createdAt?: string }[]> {
   const query = new URLSearchParams({ deckId });
-  return request<{ id: string; title: string }[]>(
+  return request<{ id: string; title: string; createdAt?: string }[]>(
     `/api/terminals?${query.toString()}`
   );
 }

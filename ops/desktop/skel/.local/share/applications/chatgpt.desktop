@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=ChatGPT
+Comment=ChatGPT by OpenAI
+Exec=chatgpt --no-sandbox %U
+Icon=chatgpt
+StartupNotify=true
+Categories=Utility;Development;
+MimeType=x-scheme-handler/codex;

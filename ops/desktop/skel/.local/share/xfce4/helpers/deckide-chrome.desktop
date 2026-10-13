@@ -1,0 +1,10 @@
+[Desktop Entry]
+NoDisplay=true
+Version=1.0
+Type=X-XFCE-Helper
+X-XFCE-Category=WebBrowser
+Name=Google Chrome (shared)
+Icon=google-chrome
+X-XFCE-Binaries=/usr/local/lib/deckide-desktop/chrome.sh;
+X-XFCE-Commands=%B;
+X-XFCE-CommandsWithParameter=%B "%s";

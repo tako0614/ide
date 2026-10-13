@@ -13,6 +13,7 @@ type Descriptor = {
   xvfb_owner_differs_from_app: boolean; xvfb_owner_uid: number;
   desktop_owner_uid: number; dbus_owner_uid: number; chatgpt_owner_uid: number;
   x11_tcp_listening: boolean; x11_authentication: string; sandbox_disabled: boolean;
+  root_desktop_mode?: boolean; app_user?: string;
   root_credentials_inherited: boolean;
   lifecycle_mode?: string; session_id?: string; session_deadline_utc?: string | null;
   owner_process?: Identity | null; anchors?: Record<string, Identity>;
@@ -238,17 +239,21 @@ function descriptorSnapshot(data: Descriptor, probe: Probe, procRoot: string):
   const expires = Date.parse(data.expires_utc);
   const rolling = data.schema === 'chatgpt-private-desktop/v2';
   const bounded = data.schema === 'chatgpt-private-desktop/v1';
+  const rootMode = data.root_desktop_mode === true;
+  const expectedUid = rootMode ? 0 : 993;
+  const expectedGid = rootMode ? 0 : 982;
   const now = probe.now();
   if (!rolling && !bounded || data.state !== 'ready' ||
     !Number.isFinite(created) || !Number.isFinite(expires) || expires <= now ||
     rolling && data.lifecycle_mode !== 'deckide-owned' ||
     bounded && data.lifecycle_mode !== undefined && data.lifecycle_mode !== 'bounded' ||
-    data.uid !== 993 || data.gid !== 982 ||
-    data.xvfb_owner_differs_from_app !== true || data.xvfb_owner_uid !== 0 ||
-    data.desktop_owner_uid !== 993 || data.dbus_owner_uid !== 993 ||
-    data.chatgpt_owner_uid !== 993 || data.x11_tcp_listening !== false ||
+    rootMode && data.app_user !== 'root' ||
+    data.uid !== expectedUid || data.gid !== expectedGid ||
+    data.xvfb_owner_differs_from_app !== !rootMode || data.xvfb_owner_uid !== 0 ||
+    data.desktop_owner_uid !== expectedUid || data.dbus_owner_uid !== expectedUid ||
+    data.chatgpt_owner_uid !== expectedUid || data.x11_tcp_listening !== false ||
     data.x11_authentication !== 'MIT-MAGIC-COOKIE-1' ||
-    data.sandbox_disabled !== false || data.root_credentials_inherited !== false ||
+    data.sandbox_disabled !== rootMode || data.root_credentials_inherited !== rootMode ||
     !/^:[1-9]\d{1,3}$/.test(data.DISPLAY)) fail('descriptor.metadata');
   let publication: Publication;
   if (rolling) {

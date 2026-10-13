@@ -736,6 +736,26 @@ function buildTools(options: CreateMcpRouterOptions): McpTool[] {
       handler: apiTool(api, 'GET', (args) => appendQuery('/api/terminals', { deckId: stringArg(args, 'deckId') })),
     },
     {
+      name: 'deckide.agent.list',
+      title: 'List AI sessions',
+      description: 'List Codex, Claude Code and OpenCode sessions from the same DeckIDE backend. Does not start or resume a process.',
+      inputSchema: schema({ tool: { type: 'string', enum: ['codex', 'claude', 'opencode'] }, search: { type: 'string' }, offset: { type: 'integer' }, limit: { type: 'integer', minimum: 1, maximum: 100 } }),
+      annotations: { readOnlyHint: true },
+      handler: apiTool(api, 'GET', args => appendQuery('/api/agents', {
+        tool: stringArg(args, 'tool', false), search: stringArg(args, 'search', false),
+        offset: args.offset === undefined ? undefined : numberArg(args, 'offset'),
+        limit: args.limit === undefined ? undefined : numberArg(args, 'limit')
+      })),
+    },
+    {
+      name: 'deckide.agent.read',
+      title: 'Read AI conversation',
+      description: 'Read user/assistant conversation text for a selected AI session. Does not send a prompt or restart the agent.',
+      inputSchema: schema({ tool: { type: 'string', enum: ['codex', 'claude', 'opencode'] }, sourceId: { type: 'string' }, id: { type: 'string' } }, ['tool', 'sourceId', 'id']),
+      annotations: { readOnlyHint: true },
+      handler: apiTool(api, 'GET', args => '/api/agents/' + ['tool', 'sourceId', 'id'].map(name => encodeURIComponent(stringArg(args, name))).join('/')),
+    },
+    {
       name: 'deckide.terminal.create',
       title: 'Create terminal',
       description: 'Create a terminal in a deck. Optional command runs in the deck workspace shell.',

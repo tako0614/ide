@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import clsx from 'clsx';
 import { TerminalPane } from './TerminalPane';
 import { TerminalSwitcher } from './TerminalSwitcher';
+import { TerminalKeyBar } from './TerminalKeyBar';
 import { resolveActiveTerminalId } from '../utils/stateUtils';
 import type { Deck, DeckState } from '../types';
 
@@ -88,6 +89,9 @@ export function DeckTerminals({
         onExitTerminal={(terminalId) => onExitTerminal(deck.id, terminalId)}
         onTerminalTitle={onTerminalTitle}
       />
+      {deckState.terminals.length > 0 && (
+        <TerminalKeyBar terminalId={resolveActiveTerminalId(deckState.terminals, deckState.activeTerminalId) ?? null} />
+      )}
     </>
   );
 }

@@ -1,0 +1,29 @@
+{
+  "upstreamSourceCommit": "5593907009721ed3e15b9af66f6b8762ee271ca7",
+  "upstreamSourceBranch": "restore-oct6-layer-20261013",
+  "upstreamSourcePath": "/root/dev/deckide-combined-20261004",
+  "releaseVersion": "3.5.49-combined.20261004.10",
+  "releasePath": "/root/dev/deckide-releases/3.5.49-combined.20261004.10/node_modules/deckide",
+  "sourceStatus": "dirty overlay captured separately; 5593907 alone is not the released source",
+  "reproduction": {
+    "distFiles": 65,
+    "byteMatches": 65,
+    "webDistFiles": 4,
+    "webByteMatches": 4,
+    "binFiles": 5,
+    "binByteMatches": 5
+  },
+  "opsRecoveredFromInstalledRelease": [
+    "ops/README-terminal-update.md",
+    "ops/chatgpt-launcher/product/SOURCE-ADAPTATION.json",
+    "ops/chatgpt-launcher/product/desktop-session.py",
+    "ops/chatgpt-launcher/product/session-bus.conf",
+    "ops/chatgpt-launcher/product/session-supervisor.py",
+    "ops/terminal-update-guards.mjs"
+  ],
+  "notes": [
+    "Published package.json version restored to .10; released shrinkwrap retains its original .6 root version.",
+    "The .10 installed ops payload includes root desktop adaptations made after the source commit; reconstructed from the release files without executing those helpers.",
+    "This source baseline is reconstruction evidence, not a deployment or qualification claim."
+  ]
+}

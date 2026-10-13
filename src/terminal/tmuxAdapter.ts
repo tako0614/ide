@@ -420,6 +420,13 @@ export class TmuxTerminalAdapter {
     return this.attach(meta);
   }
 
+  nativeAttachment(id: string, readOnly = false): { id: string; meta: TmuxTerminalMeta; binary: string; args: string[] } {
+    const meta = this.load(id);
+    const actual = this.verify(meta);
+    if (actual.dead) throw new Error('Terminal pane has exited');
+    return { id, meta, binary: 'tmux', args: this.tmuxArgs(meta.socketPath, 'attach-session', '-E', '-f', readOnly ? 'ignore-size,read-only' : 'ignore-size', '-t', `=${meta.sessionName}`) };
+  }
+
   attach(value: string | TmuxTerminalMeta): TmuxTerminalHandle {
     const id = typeof value === 'string' ? value : value.id;
     const meta = this.load(id);

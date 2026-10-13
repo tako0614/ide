@@ -19,6 +19,18 @@
     {
       "change": "Before nonroot desktop launch, hash-check only the two fixed public package helpers; require canonical root-owned non-writable ancestors with other-execute traversal; stage helpers in a unique root-owned 0750 directory under protected /run as root:app-group 0640 files; use only those paths for DBus and Python; clean only an unchanged exact two-file directory.",
       "path": "session-supervisor.py"
+    },
+    {
+      "path": "session-supervisor.py",
+      "change": "Explicit local root mode supersedes earlier nonroot account/environment adaptations: root:root desktop, HOME=/root, CODEX_HOME=/root/.codex, separate root runtime/temp/profile, identity-pinned cleanup of owned descendants only."
+    },
+    {
+      "path": "desktop-session.py",
+      "change": "Require root:root with the intended HOME/CODEX_HOME/profile; launch root ChatGPT with --no-sandbox and a separate root DeckIDE profile."
+    },
+    {
+      "path": "session-bus.conf",
+      "change": "Use the separate root-owned /run/deckide-chatgpt-root DBus socket directory."
     }
   ],
   "format": "deckide-chatgpt-launcher-source-adaptation/v1",
@@ -32,19 +44,19 @@
     {
       "changed": true,
       "path": "session-supervisor.py",
-      "product_sha256": "de6a4e6fe52024faae4704aeb8f84a748fefab76b485b0810b6b7812ed34ed54",
+      "product_sha256": "79941ba5014bae66eb3b9602f1e72e077bf6de8934bcfdc55d04c3d4b6ea0444",
       "source_sha256": "44b24ea74e652344210dff456bd72c12f7c41fed173b94c16ae062cb80e08241"
     },
     {
-      "changed": false,
+      "changed": true,
       "path": "desktop-session.py",
-      "product_sha256": "388664cd9740251d0b5808e7c7aab139d29b32f16454611ce7ef03eb0709e7af",
+      "product_sha256": "9c479f68e48f8b1506a575ee64bc36b461a9e3a0326abbd6319a6691de3e0232",
       "source_sha256": "388664cd9740251d0b5808e7c7aab139d29b32f16454611ce7ef03eb0709e7af"
     },
     {
-      "changed": false,
+      "changed": true,
       "path": "session-bus.conf",
-      "product_sha256": "4a39a9fd1ada39a52ff6a3e13222a84e5edfb5f8dcee41c8752ed40d3ab6a145",
+      "product_sha256": "04db9d190be2a4827492a7d4c320c4c66730fd62788d524bd448ae8f025a5c3d",
       "source_sha256": "4a39a9fd1ada39a52ff6a3e13222a84e5edfb5f8dcee41c8752ed40d3ab6a145"
     },
     {
@@ -59,12 +71,22 @@
   "source_package_id": "deckide-chatgpt-launcher-source-sha256-727257708d6562495374122099cc707a94d48322658039c0af6fe30abaf87855",
   "source_seal_applies_to_product": false,
   "state_contract": {
-    "app_work": "/root/dev/deckide-chatgpt-20261004/app-work",
+    "app_work": "/root/.cache/deckide-chatgpt-root/app-work",
     "control_and_logs": ".app-session-control",
     "default_root": "/root/dev/deckide-chatgpt-20261004",
     "descriptor": "app-session.json",
     "optional_root_environment": "CHATGPT_LAUNCHER_STATE_ROOT",
     "override_scope": "descriptor, control lock and logs only",
-    "public_helper_staging": "Two fixed public helpers only in a nonce-named root:app-group 0750 directory under protected /run; root:app-group 0640 files; no descriptor, authority, control, runtime, log, or config state copied"
+    "public_helper_staging": "Two fixed public helpers only in a nonce-named root:root 0750 directory under /run; root:root 0640 files; identity/hash checked; no private state copied."
+  },
+  "local_root_adaptation": {
+    "explicit_root_mode": true,
+    "home": "/root",
+    "codex_home": "/root/.codex",
+    "runtime": "/run/deckide-chatgpt-root",
+    "profile": "/root/.config/chatgpt-root-deckide",
+    "sandbox_disabled": true,
+    "existing_root_config_auth_history_preserved": true,
+    "cleanup_scope": "Only tracked PID/starttime/UID/GID identities of this desktop generation."
   }
 }
