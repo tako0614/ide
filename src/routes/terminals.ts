@@ -98,10 +98,17 @@ export function createTerminalRouter(
   const restoring = new Map<string, Promise<void>>();
 
   async function restoreSession(meta: TmuxTerminalMeta): Promise<void> {
-    if (options.db) persistTerminalMetadata(options.db, meta);
     const existing = terminals.get(meta.id);
     const sameNativeIdentity = existing && ['generation', 'serverPid', 'sessionId', 'windowId', 'paneId', 'pid']
       .every((key) => existing.tmux[key as keyof TmuxTerminalMeta] === meta[key as keyof TmuxTerminalMeta]);
+    if (existing && (existing.deckId !== meta.deckId || !sameNativeIdentity)) {
+      options.hostSessions?.revokeTerminal(meta.id);
+    }
+    try { if (options.db) persistTerminalMetadata(options.db, meta); }
+    catch (error) {
+      if (existing && (existing.deckId !== meta.deckId || !sameNativeIdentity)) existing.detach();
+      throw error;
+    }
     if (existing?.available && !sameNativeIdentity) {
       options.hostSessions?.revokeTerminal(meta.id);
       existing.detach();
@@ -109,7 +116,6 @@ export function createTerminalRouter(
     if (existing?.available) {
       const previousDeckId = existing.deckId;
       const changed = previousDeckId !== meta.deckId || existing.title !== meta.title;
-      if (previousDeckId !== meta.deckId) options.hostSessions?.revokeTerminal(meta.id);
       existing.deckId = meta.deckId;
       existing.title = meta.title;
       Object.assign(existing.tmux, meta);

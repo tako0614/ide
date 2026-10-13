@@ -34,8 +34,14 @@ jobs:
       - name: Materialize and verify reviewed native launcher
         run: npm run prepare:vnc-launcher
 
-      - name: Test (launcher UID isolation fixtures require root)
-        run: sudo env PATH="$PATH" DECKIDE_TMUX_TEST_WITH_BROKER=1 npm test
+      - name: Test in a disposable root-owned checkout
+        run: |
+          test_root="$(sudo mktemp -d /var/lib/deckide-ci.XXXXXXXX)"
+          tar --exclude='./.git' --exclude='./tmp' --exclude='./data' \
+            --exclude='./artifacts' -cf - . | \
+            sudo tar --no-same-owner -xf - -C "$test_root"
+          sudo env PATH="$PATH" TERM=xterm-256color DECKIDE_TMUX_TEST_WITH_BROKER=1 \
+            bash -c 'cd "$1" && npm test' bash "$test_root"
 
       - name: Pack and verify runtime inventory
         run: |

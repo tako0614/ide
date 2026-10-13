@@ -22,7 +22,7 @@ const canonical = (value) => value && typeof value === 'object'
 async function fixture(t, rootOwnedAncestors = false) {
   // The public-helper validator checks every ancestor. A checkout under /root
   // and a world-writable /tmp cannot serve this UID isolation fixture.
-  const temporary = rootOwnedAncestors ? '/opt' : path.join(sourceRoot, 'tmp');
+  const temporary = rootOwnedAncestors ? '/var/lib' : path.join(sourceRoot, 'tmp');
   if (rootOwnedAncestors) {
     const parent = await lstat(temporary);
     assert.ok(parent.isDirectory());
@@ -93,7 +93,7 @@ test('original and relocated app lifecycle regressions run only in disposable co
 });
 
 test('relocated launcher resolves its own helpers without creating app state', async (t) => {
-  const directory = await fixture(t);
+  const directory = await fixture(t, true);
   const product = path.join(directory, 'moved product');
   const state = path.join(directory, 'private-state');
   await copyProduct(product, 'product');
