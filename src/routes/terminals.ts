@@ -654,20 +654,5 @@ export function createTerminalRouter(
     }
   }
 
-  function deleteUnattachedDeckTerminals(deckId: string) {
-    // Initial display creation/restore may have failed after tmux launched the
-    // shell. Explicit deck deletion also owns those DB records, not just Map entries.
-    const rows = db.prepare('SELECT id, tmux_socket FROM terminals WHERE deck_id = ?').all(deckId);
-    for (const row of rows) {
-      const id = String(row.id);
-      if (terminals.has(id)) continue;
-      if (row.tmux_socket !== null) {
-        if (row.tmux_socket !== tmuxSocket) continue; // Never touch another instance's socket.
-        deleteTerminalTmuxSession(tmuxSocket!, id);
-      }
-      deleteTerminal.run(id);
-    }
-  }
-
-  return Object.assign(router, { restoreSessions, deleteUnattachedDeckTerminals });
+  return Object.assign(router, { restoreSessions });
 }

@@ -37,7 +37,8 @@ user (mode `0700`). The instance uses `<runtime-dir>/tmux.sock`; sessions are na
 tmux-owned shells. Startup attaches existing sessions whose database records
 match that exact socket. It never re-executes the saved command. Display-client
 disconnects are also reattached without replacing the shell. Explicit terminal
-or deck deletion keeps its existing terminating semantics.
+deletion terminates that terminal. Deck deletion refuses any remaining terminal,
+including persisted records whose displays are not attached.
 
 Each independent instance needs its own port, copied data directory and tmux
 runtime directory. Point `DB_PATH` at the copied database and disable browser,

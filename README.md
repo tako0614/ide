@@ -79,9 +79,9 @@ deckide send <terminal> <text> 文字列 + Enter を入力（-n で Enter なし
 deckide show <terminal>        開いているブラウザでその端末を前面に
 deckide kill <terminal>        端末を閉じる
 deckide resize <t> <c> <r>     全クライアント共通のサイズを指定
-deckide deck list [--json]     デッキ一覧（完全なIDを表示）
-deckide deck delete <id>       空のデッキを削除（端末が残っていれば拒否）
-deckide deck rename <id> <name> デッキ名を変更して保存
+deckide deck list [--json]     デッキの ID・名前・ルート一覧
+deckide deck rename <id> <name> デッキ名を変更
+deckide deck delete <id>        空のデッキを削除（端末が残っていれば拒否）
 deckide events                 状態変化を JSON Lines で購読
 ```
 
@@ -93,11 +93,6 @@ CLI はサーバー起動ごとにデータディレクトリへ書き出され�
 （モード 0600、同じ OS ユーザーのみ読める）のトークンで認証するため、
 セッション認証が有効でもログイン不要です。別ホストのサーバーへは
 `DECKIDE_URL` と `DECKIDE_TOKEN` で接続先を指定します。
-
-デッキ管理コマンドも session コマンドと同じ local-admin の CLI トークンを使います。
-delete / rename の `<id>` は `deckide deck list` に表示される完全な ID を指定します。
-削除はサーバー側でメモリと DB の端末を確認し、未接続の保存済み端末が残る場合も拒否します。
-API・イベントの仕様は [デッキ管理](docs/deck-admin.md) を参照してください。
 
 ### 複数クライアントでの端末サイズ
 
@@ -158,7 +153,7 @@ DeckIDE 自体を loopback に bind してください。プロキシを使う�
 
 デッキタブの「+」から別のデッキを作成できます。タブをドラッグして並び替え、
 メイン領域へドロップして分割表示します。各端末の最大化ボタンで一つに集中できます。
-タブの × は表示を閉じる操作です。端末の × またはデッキの削除はプロセスを終了します。
+タブの × は表示を閉じる操作です。端末の × はプロセスを終了します。デッキは端末が残っていれば削除を拒否します。
 
 メイン画面は端末操作に絞っています。Deck Drive、code-server、ファイル編集、Git 操作の
 画面はありません。共有 Agent Browser の既存 HTTP/MCP API は別の利用経路です。
@@ -334,7 +329,8 @@ MCP tools からはワークスペース、ファイル、ディレクトリ、�
 | GET | `/api/decks` | 一覧 |
 | POST | `/api/decks` | 作成 |
 | PUT | `/api/decks/order` | 並び替え |
-| DELETE | `/api/decks/:id` | 削除 |
+| PATCH | `/api/decks/:id` | 名前変更 `{ name }`（DB・メモリを更新） |
+| DELETE | `/api/decks/:id` | 空のデッキを削除（端末が残る場合は 409） |
 
 ### ファイル
 

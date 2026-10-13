@@ -96,7 +96,7 @@ test('deck CLI lists full IDs, persists rename, deletes empty decks and refuses 
     ['deck', 'delete'], ['deck', 'delete', empty.id, 'extra'], ['deck', 'rename', empty.id],
     ['deck', 'rename', empty.id, ' '], ['deck', 'rename', empty.id, 'a', 'b'],
     ['deck', 'delete', 'missing'], ['deck', 'rename', 'missing', 'name'],
-    ['deck', 'delete', empty.id.slice(0, 8)], ['deck', 'rename', 'renamed 日本語 with spaces', 'name']]) {
+    ['deck', 'delete', empty.id.slice(0, 3)], ['deck', 'rename', 'renamed 日本語 with spaces', 'name']]) {
     assert.equal(run(...args).status, 1, JSON.stringify(args));
   }
   const db = new DatabaseSync(env.DB_PATH);
