@@ -42,9 +42,10 @@ export function createLocalControl(options) {
             return options.api('/api/decks/' + encodeURIComponent(args.id), 'PATCH', { name: args.name });
         }
         if (request.method === 'decks.delete') {
-            if (typeof args.id !== 'string' || !args.id)
+            if (typeof args.id !== 'string' || !args.id || args.pruneStale !== undefined && typeof args.pruneStale !== 'boolean')
                 throw Error('invalid_request');
-            await options.api('/api/decks/' + encodeURIComponent(args.id), 'DELETE');
+            const route = '/api/decks/' + encodeURIComponent(args.id) + (args.pruneStale === true ? '?pruneStale=true' : '');
+            await options.api(route, 'DELETE');
             return { id: args.id, deleted: true };
         }
         if (request.method === 'agents.list')

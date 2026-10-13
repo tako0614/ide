@@ -237,9 +237,9 @@ if (command === 'session') {
 }
 
 if (command === 'deck') {
-  const { runDeckClient } = await import('./deckide-session.js');
+  const { runDeckClient, formatDeckOperationError } = await import('./deckide-session.js');
   try { await runDeckClient(args.slice(1)); }
-  catch { console.error('Deck operation failed. Check the backend, socket, deck ID and CLI installation.'); process.exitCode = 1; }
+  catch (error) { console.error(formatDeckOperationError(error)); process.exitCode = 1; }
   process.exit(process.exitCode || 0);
 }
 
