@@ -48,7 +48,7 @@ export function hasTerminalTmuxSession(socket: string, id: string): boolean {
   return terminalTmuxStatus(socket, id) === 'live';
 }
 
-/** Used only for an explicit user-requested terminal/deck deletion. */
+/** Used only for an explicit user-requested terminal deletion. */
 export function deleteTerminalTmuxSession(socket: string, id: string): void {
   if (terminalTmuxStatus(socket, id) === 'missing') return;
   tmux(socket, ['kill-session', '-t', `=${sessionName(id)}`]);
@@ -88,7 +88,7 @@ export function openTerminalProcess(options: {
   } as any);
   return {
     pty,
-    // Only explicit terminal/deck deletion terminates the named session.
+    // Only explicit terminal deletion terminates the named session.
     kill: () => deleteTerminalTmuxSession(socket, id),
     // The PTY hosts a display client, not the shell. Closing it leaves the pane alive.
     detach: () => pty.kill(),

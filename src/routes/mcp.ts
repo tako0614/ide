@@ -693,7 +693,7 @@ function buildTools(options: CreateMcpRouterOptions): McpTool[] {
     {
       name: 'deckide.deck.delete',
       title: 'Delete deck',
-      description: 'Delete a deck and terminate its terminals.',
+      description: 'Delete an empty deck. Refuses deletion if any terminals remain.',
       inputSchema: schema({ deckId: idParam }, ['deckId']),
       annotations: { destructiveHint: true },
       handler: apiTool(api, 'DELETE', (args) => `/api/decks/${encodeURIComponent(stringArg(args, 'deckId')!)}`),

@@ -318,7 +318,7 @@ function AuthenticatedApp() {
     if (!deckContextMenu) return;
     const { deckId } = deckContextMenu;
     setDeckContextMenu(null);
-    if (!window.confirm('\u3053\u306e\u30c7\u30c3\u30ad\u3092\u5b8c\u5168\u306b\u524a\u9664\u3057\u307e\u3059\u304b\uff1f\n\u30bf\u30fc\u30df\u30ca\u30eb\u3082\u3059\u3079\u3066\u524a\u9664\u3055\u308c\u307e\u3059\u3002')) return;
+    if (!window.confirm('このデッキを削除しますか？\nターミナルが残っている場合は削除できません。')) return;
     handleDeleteDeck(deckId);
   }, [deckContextMenu, handleDeleteDeck]);
 

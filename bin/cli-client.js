@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
-export const CLIENT_COMMANDS = new Set(['ls', 'list', 'open', 'new', 'attach', 'a', 'send', 'kill', 'show', 'events', 'resize', 'gui', 'session']);
+export const CLIENT_COMMANDS = new Set(['ls', 'list', 'open', 'new', 'attach', 'a', 'send', 'kill', 'show', 'events', 'resize', 'gui', 'session', 'deck']);
 
 export const CLIENT_HELP = `
 Terminals (talk to the running server; the web UI updates live):
@@ -27,6 +27,9 @@ Terminals (talk to the running server; the web UI updates live):
   deckide resize <t> <cols> <rows>  Set the size for every client
   deckide session move <id> <deckId>  Move a terminal without interrupting its process
   deckide session rename <id> <title>  Change a terminal's saved title
+  deckide deck list [--json]     List decks with their ids, names and roots
+  deckide deck rename <id> <name>  Change a deck's saved name
+  deckide deck delete <id>       Delete an empty deck (refuses remaining terminals)
   deckide events                 Stream state changes as JSON lines
 
 Desktop (one shared GUI desktop for the agent browser and your GUI apps;
@@ -387,6 +390,43 @@ async function commandSession(conn, args) {
   return 0;
 }
 
+/** Deck mutations accept an exact id or an unambiguous id prefix. */
+export function matchDeck(decks, selector) {
+  const exact = decks.find((deck) => deck.id === selector);
+  if (exact) return exact;
+  const matches = selector.length >= 4 ? decks.filter((deck) => deck.id.startsWith(selector)) : [];
+  if (matches.length > 1) fail(`"${selector}" matches several decks. Use a longer id.`);
+  return matches[0] ?? null;
+}
+
+async function commandDeck(conn, args) {
+  const [action, selector, name] = args;
+  const listing = action === 'list' && (args.length === 1 || (args.length === 2 && selector === '--json'));
+  const deleting = action === 'delete' && args.length === 2 && selector;
+  const renaming = action === 'rename' && args.length === 3 && selector && name?.trim();
+  if (!listing && !deleting && !renaming) {
+    fail('Usage: deckide deck list [--json] | deckide deck delete <id> | deckide deck rename <id> <name>');
+  }
+  // Uses the same local CLI credential and connection as session commands.
+  const decks = await api(conn, 'GET', '/api/decks');
+  if (listing) {
+    if (selector === '--json') console.log(JSON.stringify(decks, null, 2));
+    else if (decks.length === 0) console.log('No decks. Create one with "deckide open [dir]".');
+    else for (const deck of decks) console.log(`${deck.id}  ${deck.name}  (${deck.root})`);
+    return 0;
+  }
+  const deck = matchDeck(decks, selector);
+  if (!deck) fail(`No deck matches id "${selector}".`);
+  if (deleting) {
+    await api(conn, 'DELETE', `/api/decks/${deck.id}`);
+    console.log(`Deleted ${deck.id}  ${deck.name}`);
+  } else {
+    const updated = await api(conn, 'PATCH', `/api/decks/${deck.id}`, { name });
+    console.log(`${updated.id}  ${updated.name}`);
+  }
+  return 0;
+}
+
 async function commandEvents(conn) {
   const headers = conn.token ? { Authorization: `Bearer ${conn.token}` } : {};
   let response;
@@ -642,6 +682,7 @@ export async function runClientCommand(command, args, { dataDir, settings }) {
       case 'show': return await commandShow(conn, args);
       case 'resize': return await commandResize(conn, args);
       case 'session': return await commandSession(conn, args);
+      case 'deck': return await commandDeck(conn, args);
       case 'events': return await commandEvents(conn);
       case 'gui': return await commandGui(conn, args);
       default: return 1;

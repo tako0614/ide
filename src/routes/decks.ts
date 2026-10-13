@@ -3,7 +3,6 @@ import { Hono } from 'hono';
 import type { DatabaseSync } from 'node:sqlite';
 import type { Workspace, Deck } from '../types.js';
 import { createHttpError, handleError, readJson } from '../utils/error.js';
-import { closeTerminalClients } from '../utils/terminal-control.js';
 import { emitDeckIdeEvent } from '../utils/events.js';
 import { requireWorkspace } from './workspaces.js';
 
@@ -11,8 +10,7 @@ export function createDeckRouter(
   db: DatabaseSync,
   workspaces: Map<string, Workspace>,
   decks: Map<string, Deck>,
-  terminals: Map<string, import('../types.js').TerminalSession>,
-  deleteUnattachedTerminals?: (deckId: string) => void
+  terminals: Map<string, import('../types.js').TerminalSession>
 ) {
   const router = new Hono();
 
@@ -99,30 +97,46 @@ export function createDeckRouter(
     }
   });
 
-  const deleteDeckStmt = db.prepare('DELETE FROM decks WHERE id = ?');
+  const renameDeckStmt = db.prepare('UPDATE decks SET name = ? WHERE id = ?');
+  router.patch('/:id', async (c) => {
+    try {
+      const deck = decks.get(c.req.param('id'));
+      if (!deck) throw createHttpError('Deck not found', 404);
+      const body = await readJson<{ name?: unknown }>(c);
+      if (!body || typeof body !== 'object' || Array.isArray(body) ||
+          typeof body.name !== 'string' || !body.name.trim()) {
+        throw createHttpError('name must be a nonblank string', 400);
+      }
+      const name = body.name.trim();
+      // Persist first so a failed write never changes the in-memory deck.
+      const result = renameDeckStmt.run(name, deck.id);
+      if (result.changes !== 1) throw createHttpError('Deck metadata not found', 409);
+      deck.name = name;
+      emitDeckIdeEvent({ type: 'deck.updated', deck });
+      return c.json(deck);
+    } catch (error) {
+      return handleError(c, error);
+    }
+  });
 
+  const hasPersistedTerminals = db.prepare('SELECT 1 FROM terminals WHERE deck_id = ? LIMIT 1');
+  // Keep the database guard in the DELETE too, so a separate DB writer cannot
+  // insert a terminal between our existence check and the deletion statement.
+  const deleteDeckStmt = db.prepare(
+    'DELETE FROM decks WHERE id = ? AND NOT EXISTS (SELECT 1 FROM terminals WHERE deck_id = decks.id)'
+  );
   router.delete('/:id', (c) => {
     try {
       const deckId = c.req.param('id');
-      if (!decks.has(deckId)) {
-        throw createHttpError('Deck not found', 404);
+      if (!decks.has(deckId)) throw createHttpError('Deck not found', 404);
+      // Includes failed/unattached displays and records owned by another socket.
+      // Never terminate, detach, or erase a terminal as a side effect of this API.
+      if (Array.from(terminals.values()).some((session) => session.deckId === deckId) ||
+          hasPersistedTerminals.get(deckId)) {
+        throw createHttpError('Deck still has terminals; move or close them before deleting it', 409);
       }
-
-      deleteUnattachedTerminals?.(deckId);
-
-      const deckTerminalIds = Array.from(terminals.values())
-        .filter((session) => session.deckId === deckId)
-        .map((session) => session.id);
-
-      deckTerminalIds.forEach((terminalId) => {
-        const session = terminals.get(terminalId);
-        if (!session) return;
-        session.kill();
-        terminals.delete(terminalId);
-        closeTerminalClients(session, 'Deck deleted');
-      });
-
-      deleteDeckStmt.run(deckId);
+      const result = deleteDeckStmt.run(deckId);
+      if (result.changes !== 1) throw createHttpError('Deck metadata not found', 409);
       decks.delete(deckId);
       emitDeckIdeEvent({ type: 'deck.deleted', deckId });
       return c.json({ deleted: true });
