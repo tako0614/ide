@@ -348,6 +348,7 @@ MCP tools からはワークスペース、ファイル、ディレクトリ、�
 | GET | `/api/terminals` | 一覧（`?deckId=` で絞り込み。サイズ・接続クライアント・動的タイトル付き） |
 | POST | `/api/terminals` | 作成 |
 | GET | `/api/terminals/:id` | 詳細 |
+| PATCH | `/api/terminals/:id` | deckId / title metadata update (keeps the process alive) |
 | POST | `/api/terminals/:id/input` | 入力を送る `{ data }` |
 | POST | `/api/terminals/:id/resize` | 全クライアント共通のサイズを設定 `{ cols, rows }` |
 | POST | `/api/terminals/:id/focus` | 開いている Web UI でこの端末を前面に |
@@ -438,3 +439,5 @@ MIT
 ## 作者
 
 [tako0614](https://github.com/tako0614)
+
+Move/rename CLI commands and optional tmux persistence: [session metadata](docs/session-metadata.md).

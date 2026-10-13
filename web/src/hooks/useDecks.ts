@@ -117,6 +117,18 @@ export const useDecks = ({
                 }
           );
           return;
+        case 'terminal.updated':
+          if (event.previousDeckId !== event.deckId) {
+            updateDeckState(event.previousDeckId, (state) => withoutTerminal(state, event.terminal.id));
+          }
+          updateDeckState(event.deckId, (state) => ({
+            ...state,
+            terminals: state.terminals.some((t) => t.id === event.terminal.id)
+              ? state.terminals.map((t) => t.id === event.terminal.id ? event.terminal : t)
+              : [...state.terminals, event.terminal],
+            activeTerminalId: state.activeTerminalId ?? event.terminal.id
+          }));
+          return;
         case 'terminal.removed':
           updateDeckState(event.deckId, (state) => withoutTerminal(state, event.terminalId));
           return;

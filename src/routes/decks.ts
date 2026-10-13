@@ -11,7 +11,8 @@ export function createDeckRouter(
   db: DatabaseSync,
   workspaces: Map<string, Workspace>,
   decks: Map<string, Deck>,
-  terminals: Map<string, import('../types.js').TerminalSession>
+  terminals: Map<string, import('../types.js').TerminalSession>,
+  deleteUnattachedTerminals?: (deckId: string) => void
 ) {
   const router = new Hono();
 
@@ -107,6 +108,8 @@ export function createDeckRouter(
         throw createHttpError('Deck not found', 404);
       }
 
+      deleteUnattachedTerminals?.(deckId);
+
       const deckTerminalIds = Array.from(terminals.values())
         .filter((session) => session.deckId === deckId)
         .map((session) => session.id);
@@ -114,9 +117,9 @@ export function createDeckRouter(
       deckTerminalIds.forEach((terminalId) => {
         const session = terminals.get(terminalId);
         if (!session) return;
+        session.kill();
         terminals.delete(terminalId);
         closeTerminalClients(session, 'Deck deleted');
-        session.kill();
       });
 
       deleteDeckStmt.run(deckId);
