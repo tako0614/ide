@@ -26,7 +26,7 @@ class FakePty extends EventEmitter {
   resume() { this.paused = false; }
 }
 
-function fixture(t: test.TestContext) {
+function fixture(t: test.TestContext, extra: { isProcessAlive?: (pid: number) => boolean } = {}) {
   const runtimeDir = mkdtempSync(path.join(os.tmpdir(), 'tmux-adapter-'));
   t.after(() => rmSync(runtimeDir, { recursive: true, force: true }));
   const calls: Array<{args: string[]; env?: Record<string, string>}> = [];
@@ -75,6 +75,8 @@ function fixture(t: test.TestContext) {
       run,
       assertSocket: () => undefined,
       socketExists: () => state.generation !== '' && !state.killed,
+      // The fake server lives until killed; the fake shell until its pane dies.
+      isProcessAlive: extra.isProcessAlive ?? ((pid) => pid === state.serverPid ? !state.killed : !state.dead),
       ptySpawn: (_file, args, options) => {
         const pty = new FakePty();
         displays.push({args, options, pty});
@@ -402,6 +404,60 @@ test('identity polling failure disposes only the display and detach remains idem
   assert.equal(f.displays[0].pty.kills, 1);
   assert.equal(f.state.killed, false);
   assert.ok(readdirSync(f.runtimeDir).includes(`${ID}.json`));
+});
+
+test('pane polling forks tmux only for periodic verification or a vanished PID', (t) => {
+  let alive = true;
+  const probed: number[] = [];
+  const f = fixture(t, { isProcessAlive: (pid) => { probed.push(pid); return alive; } });
+  const handle = f.create();
+  let exits = 0;
+  let disconnects = 0;
+  handle.onExit(() => exits++);
+  handle.on('disconnect', () => disconnects++);
+  const tmuxCalls = () => f.calls.filter((call) => call.args.includes('display-message') ||
+    call.args.includes('show-options')).length;
+  const before = tmuxCalls();
+  for (let tick = 0; tick < 14; tick++) (handle as any).poll();
+  assert.equal(tmuxCalls(), before, 'live shell and server PIDs need no tmux query');
+  assert.ok(probed.includes(400) && probed.includes(300));
+  (handle as any).poll();
+  assert.ok(tmuxCalls() > before, 'identity is still fully verified periodically');
+  assert.equal(exits + disconnects, 0);
+  const afterPeriodic = tmuxCalls();
+  alive = false;
+  f.state.dead = true;
+  (handle as any).poll();
+  assert.ok(tmuxCalls() > afterPeriodic, 'a vanished PID is confirmed through tmux at once');
+  assert.equal(exits, 1);
+  assert.equal(f.state.killed, true);
+});
+
+test('repeated listing reuses a recent verification only while recorded PIDs live', (t) => {
+  const f = fixture(t);
+  f.create().detach();
+  const tmuxQueries = () => f.calls.filter((call) => call.args.includes('display-message') ||
+    call.args.includes('show-options')).length;
+  assert.equal(f.adapter.list().length, 1);
+  const afterFirst = tmuxQueries();
+  for (let n = 0; n < 5; n++) assert.equal(f.adapter.list().length, 1);
+  assert.equal(tmuxQueries(), afterFirst, 'live verified records are not re-queried');
+  f.state.dead = true; // Shell PID vanished: the cache is bypassed and the pane reaped.
+  const exited: string[] = [];
+  assert.deepEqual(f.adapter.list(undefined, (id) => exited.push(id)), []);
+  assert.ok(tmuxQueries() > afterFirst);
+  assert.deepEqual(exited, [ID]);
+});
+
+test('a stale registry entry whose tmux server is gone is reported without forking tmux', (t) => {
+  const f = fixture(t, { isProcessAlive: () => false });
+  f.create().detach();
+  const before = f.calls.length;
+  const unavailable: string[] = [];
+  assert.deepEqual(f.adapter.list((id) => unavailable.push(id)), []);
+  assert.deepEqual(unavailable, [ID]);
+  assert.equal(f.calls.length, before, 'no tmux process is spawned for a dead recorded server');
+  assert.ok(readdirSync(f.runtimeDir).includes(`${ID}.json`), 'registry is retained for review');
 });
 
 test('list reaps a verified dead pane but never a changed identity', (t) => {

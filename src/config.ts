@@ -83,6 +83,10 @@ export const CORS_ORIGIN = process.env.CORS_ORIGIN;
 export const NODE_ENV = process.env.NODE_ENV || 'development';
 export const MAX_FILE_SIZE = parseIntEnv(process.env.MAX_FILE_SIZE, 10 * 1024 * 1024);
 export const TERMINAL_BUFFER_LIMIT = parseIntEnv(process.env.TERMINAL_BUFFER_LIMIT, 500_000);
+// Live terminal output is batched per terminal into one WebSocket frame per
+// interval. 0 flushes on the next event-loop turn.
+export const TERMINAL_OUTPUT_COALESCE_MS = Math.min(100, Math.max(0,
+  parseIntEnv(process.env.TERMINAL_OUTPUT_COALESCE_MS, 16)));
 export const MAX_REQUEST_BODY_SIZE = parseIntEnv(process.env.MAX_REQUEST_BODY_SIZE, 1024 * 1024); // 1MB default
 export const TRUST_PROXY = process.env.TRUST_PROXY === 'true'; // Only trust proxy headers if explicitly enabled
 

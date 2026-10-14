@@ -24,11 +24,15 @@ const HEARTBEAT_INTERVAL_MS = 30_000;
 
 type ClientControlMessage =
   | { type: 'claim' }
+  | { type: 'visibility'; visible: boolean }
   | { type: 'resize'; cols: number; rows: number; explicit: true };
 
 type ServerControlMessage =
   | { type: 'sync'; offsetBase: number; reset: boolean; cols: number; rows: number; epoch: string; snapshotBytes: number }
   | { type: 'ready' }
+  // Optional client messages this server understands. Older servers forward
+  // unknown text frames to the PTY, so clients send them only when advertised.
+  | { type: 'features'; visibility: true }
   // この接続が「主」クライアントか。端末クエリ（DSR/DA など）への応答は
   // 主クライアントのみが返し、複数クライアント時の二重応答を防ぐ。
   | { type: 'primary'; value: boolean };
@@ -206,7 +210,36 @@ function sendControl(socket: WebSocket, message: ServerControlMessage): boolean 
   }
 }
 
-function readBufferedRange(session: TerminalSession, startOffset: number, endOffset: number, align = true): Buffer {
+// --- Terminal output delivery -------------------------------------------
+// A burst larger than this is sent without waiting for the coalescing timer.
+const IMMEDIATE_FLUSH_BYTES = 64 * 1024;
+// A viewer returning from hidden with more missed output than this gets a
+// fresh snapshot, which is smaller than replaying a long redraw stream.
+const MAX_CATCH_UP_BYTES = 256 * 1024;
+
+/**
+ * Per-viewer cursor into the session's retained output. Every live frame is
+ * the range [sentOffset, end of buffer), so a hidden viewer resumes with the
+ * exact bytes it missed, and a viewer whose missing range was trimmed is
+ * resynchronized from a fresh snapshot instead.
+ */
+type ViewerState = {
+  visible: boolean;
+  sentOffset: number;
+  resyncing: boolean;
+  resync: () => void;
+};
+
+type FlushState = { timer: NodeJS.Timeout | null; pendingBytes: number };
+
+const viewers = new WeakMap<WebSocket, ViewerState>();
+const flushes = new WeakMap<TerminalSession, FlushState>();
+
+export function bufferEnd(session: TerminalSession): number {
+  return session.bufferBase + session.bufferLength;
+}
+
+export function readBufferedRange(session: TerminalSession, startOffset: number, endOffset: number, align = true): Buffer {
   const relativeStart = Math.max(0, startOffset - session.bufferBase);
   const relativeEnd = Math.max(relativeStart, Math.min(session.bufferLength, endOffset - session.bufferBase));
 
@@ -255,6 +288,133 @@ function readBufferedRange(session: TerminalSession, startOffset: number, endOff
     return raw;
   }
   return Buffer.from(raw.subarray(alignedStart, alignedEnd));
+}
+
+/** Start live delivery to a viewer that has received everything before sentOffset. */
+export function registerViewer(session: TerminalSession, socket: WebSocket, sentOffset: number, resync: () => void): void {
+  viewers.set(socket, { visible: true, sentOffset, resyncing: false, resync });
+  session.sockets.add(socket);
+}
+
+export function viewerState(socket: WebSocket): Readonly<ViewerState> | undefined {
+  return viewers.get(socket);
+}
+
+export function beginViewerResync(socket: WebSocket): void {
+  const state = viewers.get(socket);
+  if (state) state.resyncing = true;
+}
+
+export function finishViewerResync(socket: WebSocket, sentOffset: number): void {
+  const state = viewers.get(socket);
+  if (!state) return;
+  state.sentOffset = sentOffset;
+  state.resyncing = false;
+}
+
+/** Hidden viewers receive nothing; on becoming visible they catch up at once. */
+export function setViewerVisible(session: TerminalSession, socket: WebSocket, visible: boolean): void {
+  const state = viewers.get(socket);
+  if (!state || state.visible === visible) return;
+  state.visible = visible;
+  if (!visible || state.resyncing) return;
+  if (bufferEnd(session) - state.sentOffset > MAX_CATCH_UP_BYTES) {
+    state.resyncing = true;
+    state.resync();
+    return;
+  }
+  flushOutput(session, socket);
+}
+
+/** Batch output that was just appended to the session buffer. */
+export function scheduleOutputFlush(session: TerminalSession, byteLength: number, delayMs: number): void {
+  let state = flushes.get(session);
+  if (!state) {
+    state = { timer: null, pendingBytes: 0 };
+    flushes.set(session, state);
+  }
+  state.pendingBytes += byteLength;
+  if (state.pendingBytes >= IMMEDIATE_FLUSH_BYTES) {
+    flushOutput(session);
+    return;
+  }
+  if (state.timer) return;
+  let streaming = false;
+  for (const socket of session.sockets) {
+    const viewer = viewers.get(socket);
+    if (viewer && viewer.visible && !viewer.resyncing) { streaming = true; break; }
+  }
+  if (!streaming) return;
+  const pending = state;
+  pending.timer = setTimeout(() => {
+    pending.timer = null;
+    flushOutput(session);
+  }, delayMs);
+  pending.timer.unref?.();
+}
+
+export function cancelOutputFlush(session: TerminalSession): void {
+  const state = flushes.get(session);
+  if (state?.timer) clearTimeout(state.timer);
+  flushes.delete(session);
+}
+
+/**
+ * Send each visible viewer one binary frame with everything it has not yet
+ * received. includeHidden is for ordering barriers such as a resize, which
+ * every viewer must apply after the output that preceded it. Returns the
+ * number of frames sent.
+ */
+export function flushOutput(session: TerminalSession, only?: WebSocket, includeHidden = false): number {
+  const state = flushes.get(session);
+  if (!only && state) {
+    if (state.timer) clearTimeout(state.timer);
+    state.timer = null;
+    state.pendingBytes = 0;
+  }
+  const end = bufferEnd(session);
+  const payloads = new Map<number, Buffer>();
+  const dead: WebSocket[] = [];
+  let frames = 0;
+  for (const socket of only ? [only] : session.sockets) {
+    const viewer = viewers.get(socket);
+    if (!viewer || (!viewer.visible && !includeHidden) || viewer.resyncing) continue;
+    if (socket.readyState !== 1) {
+      dead.push(socket);
+      continue;
+    }
+    if (viewer.sentOffset >= end) continue;
+    if (viewer.sentOffset < session.bufferBase) {
+      // The bytes this viewer missed were trimmed; a snapshot replaces them.
+      viewer.resyncing = true;
+      viewer.resync();
+      continue;
+    }
+    if (socket.bufferedAmount > MAX_SOCKET_BUFFERED_AMOUNT) {
+      try { socket.close(1009, 'Terminal output overflow'); } catch { /* ignore */ }
+      dead.push(socket);
+      continue;
+    }
+    let payload = payloads.get(viewer.sentOffset);
+    if (!payload) {
+      // Exact live-stream range: never trim UTF-8 or ANSI at either edge.
+      payload = readBufferedRange(session, viewer.sentOffset, end, false);
+      payloads.set(viewer.sentOffset, payload);
+    }
+    viewer.sentOffset = end;
+    try {
+      socket.send(payload, { binary: true }, (error) => {
+        if (error) {
+          try { socket.close(1011, 'Terminal stream error'); } catch { /* ignore */ }
+        }
+      });
+      frames++;
+    } catch {
+      dead.push(socket);
+    }
+  }
+  for (const socket of dead) session.sockets.delete(socket);
+  return frames;
 }
 
 /**
@@ -514,44 +674,64 @@ export function setupWebSocketServer(
 
     session.lastActive = Date.now();
     // A full canonical snapshot has its own byte length; offset remains a cursor
-    // in the live display stream. Subscribe only after snapshot+queued tail are sent.
-    let snapshot: Awaited<ReturnType<TerminalSession['snapshot']>>;
-    try {
-      snapshot = await session.snapshot();
-      // Output may have advanced beyond the bounded raw tail during capture.
-      // A fresh barrier replaces that missing prefix; never join across a gap.
-      for (let attempt = 0; snapshot.offset < session.bufferBase; attempt++) {
-        if (attempt === 2) throw new Error('Terminal output advanced beyond snapshot tail');
+    // in the live display stream. Returns the stream offset the viewer has
+    // received, or null when the viewer was closed.
+    const sendSnapshot = async (): Promise<number | null> => {
+      let snapshot: Awaited<ReturnType<TerminalSession['snapshot']>>;
+      try {
         snapshot = await session.snapshot();
+        // Output may have advanced beyond the bounded raw tail during capture.
+        // A fresh barrier replaces that missing prefix; never join across a gap.
+        for (let attempt = 0; snapshot.offset < session.bufferBase; attempt++) {
+          if (attempt === 2) throw new Error('Terminal output advanced beyond snapshot tail');
+          snapshot = await session.snapshot();
+        }
       }
-    }
-    catch {
-      untrackConnection(clientIP, socket);
-      heartbeatState.delete(socket);
-      socket.close(1013, 'Terminal snapshot unavailable');
-      return;
-    }
-    if (socket.readyState !== WebSocket.OPEN || terminals.get(id) !== session || !session.available) {
-      untrackConnection(clientIP, socket);
-      heartbeatState.delete(socket);
-      if (socket.readyState === WebSocket.OPEN) socket.close(1013, 'Terminal transport unavailable');
-      return;
-    }
-    if (!sendControl(socket, {
-      type: 'sync', offsetBase: snapshot.offset, reset: true,
-      cols: snapshot.cols, rows: snapshot.rows, epoch: session.bufferEpoch,
-      snapshotBytes: snapshot.data.length,
-    })) return;
-    if (snapshot.data.length) socket.send(snapshot.data, { binary: true });
-    const bufferEnd = session.bufferBase + session.bufferLength;
-    if (bufferEnd > snapshot.offset) {
-      // These bytes may finish a fragment included in the snapshot parser tail.
-      // Do not trim UTF-8 or ANSI at either edge of this exact live-stream range.
-      socket.send(readBufferedRange(session, snapshot.offset, bufferEnd, false), { binary: true });
-    }
-    session.sockets.add(socket);
+      catch {
+        untrackConnection(clientIP, socket);
+        heartbeatState.delete(socket);
+        session.sockets.delete(socket);
+        socket.close(1013, 'Terminal snapshot unavailable');
+        return null;
+      }
+      if (socket.readyState !== WebSocket.OPEN || terminals.get(id) !== session || !session.available) {
+        untrackConnection(clientIP, socket);
+        heartbeatState.delete(socket);
+        session.sockets.delete(socket);
+        if (socket.readyState === WebSocket.OPEN) socket.close(1013, 'Terminal transport unavailable');
+        return null;
+      }
+      if (!sendControl(socket, {
+        type: 'sync', offsetBase: snapshot.offset, reset: true,
+        cols: snapshot.cols, rows: snapshot.rows, epoch: session.bufferEpoch,
+        snapshotBytes: snapshot.data.length,
+      })) return null;
+      if (snapshot.data.length) socket.send(snapshot.data, { binary: true });
+      const end = bufferEnd(session);
+      if (end > snapshot.offset) {
+        // These bytes may finish a fragment included in the snapshot parser tail.
+        // Do not trim UTF-8 or ANSI at either edge of this exact live-stream range.
+        socket.send(readBufferedRange(session, snapshot.offset, end, false), { binary: true });
+      }
+      return end;
+    };
+    // A hidden viewer whose missed output was trimmed restarts from a snapshot.
+    const resync = () => {
+      beginViewerResync(socket);
+      void sendSnapshot().then((end) => {
+        if (end === null) return;
+        finishViewerResync(socket, end);
+        sendControl(socket, { type: 'ready' });
+        flushOutput(session, socket);
+      });
+    };
+    const initialEnd = await sendSnapshot();
+    if (initialEnd === null) return;
+    // Subscribe only after snapshot+queued tail are sent.
+    registerViewer(session, socket, initialEnd, resync);
     sendControl(socket, { type: 'ready' });
     sendControl(socket, { type: 'primary', value: false }); // The headless display bridge owns query replies.
+    sendControl(socket, { type: 'features', visibility: true });
 
     socket.on('message', (data, isBinary) => {
       try {
@@ -583,6 +763,11 @@ export function setupWebSocketServer(
 
           if (control?.type === 'claim') {
             sendControl(socket, { type: 'primary', value: false });
+            return;
+          }
+
+          if (control?.type === 'visibility') {
+            setViewerVisible(session, socket, control.visible !== false);
             return;
           }
 

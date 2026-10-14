@@ -1,6 +1,6 @@
 {
   "name": "deckide",
-  "version": "3.5.49-combined.20261014.port2",
+  "version": "3.5.49-combined.20261014.port3",
   "description": "Deck IDE - Browser-based shell workspace with decks and terminals",
   "type": "module",
   "bin": {
