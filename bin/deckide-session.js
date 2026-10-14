@@ -284,6 +284,9 @@ export async function sendAndSubmit({ text, write, capture, delayMs = DEFAULT_SU
 }
 
 export async function runSessionClient(argv) {
+  if (argv[0] === 'queue') {
+    return runQueueClient(argv, { resolve: resolveTerminalId, rpc: sessionRpc, capture: captureScreen });
+  }
   const { action, args, positionals } = parseSessionArgs(argv);
   if (['help', '--help', '-h'].includes(action)) {
     console.log(`Usage:
@@ -296,6 +299,8 @@ export async function runSessionClient(argv) {
   deckide session new [--deck ID | --cwd PATH] [--title T] [--json] [-- COMMAND...]
   deckide session send [--no-enter] [--no-verify] [--submit-delay MS] TERMINAL TEXT...
   deckide session show [--lines N] TERMINAL
+  deckide session queue show TERMINAL
+  deckide session queue replace TERMINAL TEXT
   deckide session focus TERMINAL
   deckide session kill TERMINAL
   deckide session move TERMINAL DECK_ID
@@ -397,4 +402,111 @@ Deck mutations accept a deck ID or a unique ID prefix of at least four character
     ? await sessionRpc('decks.rename', { id, name: positionals[1] })
     : await sessionRpc('decks.delete', { id, ...(pruneStale ? { pruneStale: true } : {}) });
   console.log(JSON.stringify(value, null, 2));
+}
+
+// Queue operations have a separate path from session send/show: every input
+// step is guarded by a fresh, complete Codex screen, and Enter is never retried.
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const HEADER = /^\s*• (?:Queued follow-up inputs|Queued messages):?\s*$/;
+const EDIT_HINT = /^\s*(?:⇧←|shift\+(?:left|←))\s+(?:to )?edit last queued message\s*$/i;
+const BLOCKED = /^\s*(?:Would you like to (?:run|make|allow)|Do you want to (?:run|allow|proceed)|Approval required|(?:•\s*)?\d+ questions?\b|(?:⇧←|shift\+(?:left|←)|alt\+up|.*\s·\s).*\bto answer\b|(?:enter to (?:confirm|submit)|esc to (?:dismiss|go back)))/i;
+const FOOTER = /for shortcuts|context left|tab to queue|\s·\s/;
+const compact = (text) => text.replace(/\s+/g, ' ').trim();
+
+function fail(code) { throw Object.assign(Error(code), { code }); }
+export function queueError(error) {
+  const code = typeof error?.code === 'string' && /^queue_[a-z_]+$/.test(error.code)
+    ? error.code : 'queue_unavailable';
+  return { ok: false, error: code };
+}
+
+export function parseQueueArgs(argv) {
+  if (argv[0] !== 'queue' || !['show', 'replace'].includes(argv[1]) ||
+      (argv[1] === 'show' ? argv.length !== 3 : argv.length !== 4) || !argv[2])
+    fail('queue_invalid_arguments');
+  if (argv[1] === 'replace' && (!argv[3].trim() || /[\u0000-\u001f\u007f-\u009f]/.test(argv[3]) ||
+      Buffer.byteLength(argv[3]) > 8192 || /^\s*[!/]/.test(argv[3]))) fail('queue_invalid_text');
+  return { action: argv[1], terminal: argv[2], text: argv[3] };
+}
+
+/** Read only the current Codex bottom pane, never scrollback or conversation history. */
+export function inspectQueue(screen) {
+  const lines = String(screen).split('\n').map((line) => line.replace(/\s+$/, ''));
+  const prompt = lines.findLastIndex((line) => /^›(?: |$)/.test(line));
+  // Modal footers and collapsed questions can retain the composer as backdrop.
+  const lastStatus = lines.findLastIndex((line) => /^\s*• (?:Working|Thinking)\b/.test(line));
+  const active = lines.slice(lastStatus < 0 ? Math.max(0, prompt - 20) : lastStatus);
+  if (active.some((line) => BLOCKED.test(line))) fail('queue_dialog_open');
+  if (prompt < 0 || !lines.slice(prompt + 1).some((line) => FOOTER.test(line))) fail('queue_unknown_screen');
+  const end = lines.findIndex((line, index) => index > prompt && FOOTER.test(line));
+  const composer = [lines[prompt].slice(1).trimStart(), ...lines.slice(prompt + 1, end)
+    .filter((line) => line.trim()).map((line) => line.replace(/^  /, ''))].join('\n').trim();
+  if (/\[(?:Pasted text|Image)|…|\.\.\./.test(composer)) fail('queue_incomplete_screen');
+  const header = lines.findLastIndex((line, index) => index < prompt && HEADER.test(line));
+  const hint = lines.findLastIndex((line, index) => index < prompt && EDIT_HINT.test(line));
+  let messages = [];
+  if (header >= 0 && (lastStatus < 0 || header > lastStatus)) {
+    if (hint <= header || lines.slice(hint + 1, prompt).some((line) => line.trim())) fail('queue_incomplete_screen');
+    for (const line of lines.slice(header + 1, hint)) {
+      const first = /^  ↳ (.+)$/.exec(line);
+      if (first) messages.push(first[1]);
+      else if (/^    \S/.test(line) && messages.length) messages[messages.length - 1] += '\n' + line.slice(4);
+      else fail('queue_incomplete_screen');
+    }
+    if (!messages.length || messages.some((text) => /…|\.\.\.|\[(?:Pasted text|Image)/.test(text))) fail('queue_incomplete_screen');
+  } else if ((hint >= 0 && (lastStatus < 0 || hint > lastStatus)) || active.some((line) => /queued|follow-up inputs|↳|Messages to be submitted/i.test(line)))
+    fail('queue_incomplete_screen');
+  if (active.some((line) => /Messages to be submitted|edit last queued message/.test(line) &&
+      !EDIT_HINT.test(line))) fail('queue_incomplete_screen');
+  return { count: messages.length, messages, composer,
+    busy: lastStatus >= 0 && lastStatus < prompt,
+    empty: !composer || /^(?:Ask Codex to do anything|Write tests for .*|Implement .*|Summarize recent commits|Find and fix a bug in .*|Improve documentation in .*|Explain this codebase|Run \/review.*)$/.test(composer) };
+}
+
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+/** Match the manual Shift+Left edit flow, checking each transition before sending more keys. */
+export async function replaceQueuedMessage({ text, capture, write, wait = pause, delayMs = 200 }) {
+  parseQueueArgs(['queue', 'replace', 'terminal', text]);
+  const before = inspectQueue(await capture());
+  if (!before.count) fail('queue_empty');
+  if (!before.busy) fail('queue_not_busy');
+  if (!before.empty) fail('queue_draft_present');
+  const earlier = before.messages.slice(0, -1);
+  const read = async () => { await wait(delayMs); return inspectQueue(await capture()); };
+  // Recheck immediately before the first write as well as after every write.
+  const fresh = inspectQueue(await capture());
+  if (!same(before, fresh)) fail('queue_changed');
+  await write('\x1b[1;2D'); // Shift+Left, the Codex tmux edit binding.
+  const editing = await read();
+  if (!editing.busy || !same(editing.messages, earlier) || compact(editing.composer) !== compact(before.messages.at(-1)))
+    fail('queue_edit_not_loaded');
+  // Ctrl+A moves to the start, and at BOL into the preceding line. Ctrl+K
+  // deletes to EOL, then its newline. The bounded visible preview has <=3 rows.
+  await write('\x01'.repeat(4) + '\x0b'.repeat(7));
+  const cleared = await read();
+  if (!cleared.busy || !same(cleared.messages, earlier) || !cleared.empty) fail('queue_clear_failed');
+  await write(text);
+  const typed = await read();
+  if (!typed.busy || !same(typed.messages, earlier) || compact(typed.composer) !== compact(text)) fail('queue_text_not_loaded');
+  await write('\r'); // One isolated CR only. No LF, Tab, or Enter retries.
+  const after = await read();
+  if (!after.busy || !after.empty || after.count !== before.count ||
+      !same(after.messages.slice(0, -1), earlier) || compact(after.messages.at(-1)) !== compact(text))
+    fail('queue_replace_unverified');
+  return { count: after.count, messages: after.messages, replaced: true };
+}
+
+export async function runQueueClient(argv, { resolve, rpc, capture, output = console.log }) {
+  try {
+    const { action, terminal, text } = parseQueueArgs(argv);
+    const id = await resolve(terminal);
+    const read = async () => capture(await rpc('terminals.attach', { id, readOnly: true }));
+    const value = action === 'show' ? inspectQueue(await read()) : await replaceQueuedMessage({ text,
+      capture: read, write: (data) => rpc('terminals.input', { id, data }) });
+    output(JSON.stringify({ id, count: value.count, messages: value.messages, ...(value.replaced ? { replaced: true } : {}) }, null, 2));
+  } catch (error) {
+    output(JSON.stringify(queueError(error)));
+    process.exitCode = 1;
+  }
 }
