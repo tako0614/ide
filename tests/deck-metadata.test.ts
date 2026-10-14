@@ -47,6 +47,33 @@ function deferCommitFailure(db: DatabaseSync) {
       BEGIN INSERT INTO commit_child(parent_id) VALUES ('missing'); END;`);
 }
 
+test('unchanged metadata does not update the projection or invoke update triggers', (t) => {
+  const f = transactionFixture(t);
+  f.db.exec(`CREATE TRIGGER reject_metadata_rewrite BEFORE UPDATE ON terminal_metadata
+    BEGIN SELECT RAISE(ABORT, 'metadata rewritten'); END;`);
+  assert.doesNotThrow(() => persistTerminalMetadata(f.db, f.previous));
+  assert.throws(() => persistTerminalMetadata(f.db, f.next), /metadata rewritten/);
+});
+
+test('each persisted metadata field remains updateable after an unchanged restore', (t) => {
+  const f = transactionFixture(t);
+  const changes = {
+    deckId: 'another-deck', title: 'renamed', createdAt: '2026-10-14T00:00:00Z',
+    cols: 80, rows: 24, generation: 'a455393a-7bc2-4717-8e51-8ce4e0205e37',
+    socketPath: '/isolated/another.sock',
+  };
+  const columns: Record<string, string> = { deckId: 'deck_id', createdAt: 'created_at', socketPath: 'tmux_socket' };
+  for (const [key, value] of Object.entries(changes)) {
+    const next = { ...f.previous, [key]: value };
+    persistTerminalMetadata(f.db, f.previous);
+    persistTerminalMetadata(f.db, f.previous);
+    persistTerminalMetadata(f.db, next);
+    const row = f.db.prepare('SELECT * FROM terminal_metadata WHERE id=?').get('native')!;
+    const column = columns[key] ?? key;
+    assert.equal(row[column], value, key);
+  }
+});
+
 test('metadata transaction commits registry and DB together', (t) => {
   const f = transactionFixture(t);
   commitTerminalMetadata(f.db, f.next, f.writeRegistry, f.restoreRegistry);
