@@ -25,7 +25,10 @@ function fixture(t: test.TestContext, hasUnixListener?: (socketPath: string) => 
         if (state.probe !== 'live') throw new Error('no server');
         return '';
       }
-      if (args.includes('display-message')) return `123456789\t$0\t@0\t%0\t123456790\t80\t24\t0\n`;
+      if (args.includes('display-message')) {
+        if (state.probe !== 'live') throw new Error('no server');
+        return `123456789\t$0\t@0\t%0\t123456790\t80\t24\t0\n`;
+      }
       if (args.includes('show-options')) return `${state.generation}\n`;
       throw new Error('unexpected tmux command');
     },
@@ -256,4 +259,29 @@ test('runtime directory replacement fails closed', (t) => {
   t.after(() => fs.rmSync(moved, { recursive: true, force: true }));
   assert.throws(() => f.adapter.inspectDeckRecords('deck-1'), /runtime directory changed/);
   assert.throws(() => f.adapter.pruneDeadRecords('deck-1'), /runtime directory changed/);
+});
+
+test('explicit close removes a dead server registry, config and stale socket without kill-session', (t) => {
+  const f = fixture(t);
+  const meta = f.registry(); f.staleSocket();
+  f.adapter.close(meta);
+  assert.deepEqual(fs.readdirSync(f.runtimeDir), []);
+  assert.ok(f.calls.every((args) => !args.includes('kill-session')));
+});
+
+test('explicit close tolerates records already removed for a dead server', (t) => {
+  const f = fixture(t);
+  const meta = f.registry();
+  fs.rmSync(path.join(f.runtimeDir, `${ID}.json`));
+  fs.rmSync(path.join(f.runtimeDir, `${ID}.conf`));
+  f.adapter.close(meta);
+  assert.deepEqual(fs.readdirSync(f.runtimeDir), []);
+});
+
+test('explicit close retains an unavailable identity when a recorded process may still be live', (t) => {
+  const f = fixture(t);
+  const meta = f.registry(); f.state.alive = true;
+  assert.throws(() => f.adapter.close(meta));
+  assert.ok(fs.existsSync(path.join(f.runtimeDir, `${ID}.json`)));
+  assert.ok(f.calls.every((args) => !args.includes('kill-session')));
 });

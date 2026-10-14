@@ -21,8 +21,13 @@ distinct from live output offsets. Input is sent once through the live client;
 failed writes, shell creation, and input are never replayed. Shell exit is
 recognized only after checking the recorded tmux identity and dead-pane state.
 HTTP shutdown detaches display clients. Explicit terminal deletion closes
-only verified sessions. Deck deletion refuses any remaining terminal. Unknown or changed identities retain their registry
-for investigation and are never automatically restarted or killed.
+only verified live sessions. If the recorded server and shell are gone and no
+Unix listener remains, `DELETE /api/terminals/:id` removes the dead registry,
+config, stale socket and both database projections, returning 204. It also
+removes DB-only rows whose canonical native resources are already absent.
+Deck deletion refuses any remaining terminal. Unknown or changed identities
+retain their registry for investigation and are never automatically restarted
+or killed.
 
 Creation retains the service user, inherited environment, original shell and
 arguments, and deck cwd. Each fresh server receives that creation environment,

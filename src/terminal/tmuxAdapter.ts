@@ -508,46 +508,68 @@ export class TmuxTerminalAdapter {
       if (meta.deckId !== deckId || this.inspectRegistry(meta).state !== 'dead') {
         throw new Error('Terminal native state changed; refusing stale prune');
       }
-      const config = this.configPath(id);
-      const socket = meta.socketPath;
-      const assertStillDead = () => {
-        this.assertRuntimeCurrent();
-        if (!this.unchangedFile(original)) throw new Error('Terminal registry changed; refusing stale prune');
-        if (this.inspectRegistry(meta).state !== 'dead') {
-          throw new Error('Terminal native state changed; refusing stale prune');
-        }
-        this.assertRuntimeCurrent();
-        if (!this.unchangedFile(original)) throw new Error('Terminal registry changed; refusing stale prune');
-      };
-      const configSnapshot = pathExists(config) ? this.snapshotOwnedFile(config) : null;
-      let socketIdentity: { dev: number; ino: number } | null = null;
-      if (this.socketExists(socket)) {
-        this.assertSocket(socket);
-        const info = fs.lstatSync(socket);
-        socketIdentity = { dev: info.dev, ino: info.ino };
-      }
-      if (configSnapshot) {
-        assertStillDead();
-        if (!this.unchangedFile(configSnapshot)) throw new Error('Terminal config changed; refusing stale prune');
-        fs.unlinkSync(config);
-      }
-      if (socketIdentity) {
-        assertStillDead();
-        this.assertSocket(socket);
-        const info = fs.lstatSync(socket);
-        if (info.dev !== socketIdentity.dev || info.ino !== socketIdentity.ino ||
-            this.isProcessAlive(meta.serverPid) || this.isProcessAlive(meta.pid) ||
-            this.hasUnixListener(socket) || !this.isSocketConnectionRefused(socket)) {
-          throw new Error('Terminal socket changed or became live; refusing stale prune');
-        }
-        fs.unlinkSync(socket);
-      }
-      assertStillDead();
-      fs.unlinkSync(original.path);
+      this.removeDeadRecord(meta, original);
       removed.push(id);
     }
     return { terminalIds: removed };
   }
+
+  /** Cleanup never signals a native process; every unlink rechecks its death and identity. */
+  private removeDeadRecord(meta: TmuxTerminalMeta, original: RecordSnapshot | null): void {
+    validateMeta(meta, this.runtimeDir);
+    const id = meta.id;
+    const config = this.configPath(id);
+    const socket = meta.socketPath;
+    const assertStillDead = () => {
+      this.assertRuntimeCurrent();
+      if (original && !this.unchangedFile(original)) throw new Error('Terminal registry changed; refusing stale prune');
+      if (!original && pathExists(this.registryPath(id))) throw new Error('Terminal registry appeared; refusing deletion');
+      if (pathExists(this.pendingPath(id))) throw new Error('Terminal creation pending; refusing deletion');
+      if (this.inspectRegistry(meta).state !== 'dead') {
+        throw new Error('Terminal native state changed; refusing stale prune');
+      }
+      this.assertRuntimeCurrent();
+      if (original && !this.unchangedFile(original)) throw new Error('Terminal registry changed; refusing stale prune');
+    };
+    const configSnapshot = pathExists(config) ? this.snapshotOwnedFile(config) : null;
+    let socketIdentity: { dev: number; ino: number } | null = null;
+    if (this.socketExists(socket)) {
+      this.assertSocket(socket);
+      const info = fs.lstatSync(socket);
+      socketIdentity = { dev: info.dev, ino: info.ino };
+    }
+    if (configSnapshot) {
+      assertStillDead();
+      if (!this.unchangedFile(configSnapshot)) throw new Error('Terminal config changed; refusing stale prune');
+      fs.unlinkSync(config);
+    }
+    if (socketIdentity) {
+      assertStillDead();
+      this.assertSocket(socket);
+      const info = fs.lstatSync(socket);
+      if (info.dev !== socketIdentity.dev || info.ino !== socketIdentity.ino ||
+          this.isProcessAlive(meta.serverPid) || this.isProcessAlive(meta.pid) ||
+          this.hasUnixListener(socket) || !this.isSocketConnectionRefused(socket)) {
+        throw new Error('Terminal socket changed or became live; refusing stale prune');
+      }
+      fs.unlinkSync(socket);
+    }
+    assertStillDead();
+    if (original) fs.unlinkSync(original.path);
+    this.verifiedAt.delete(id);
+  }
+
+  /** Delete a persisted terminal even when no display handle could be restored. */
+  remove(id: string, rememberedSocket?: string | null): void {
+    this.assertRuntimeCurrent();
+    if (!ID_RE.test(id)) throw new Error('Invalid terminal ID');
+    if (pathExists(this.registryPath(id))) {
+      this.close(this.load(id));
+    } else if (this.inspectTerminalRecord(id, rememberedSocket).state !== 'dead') {
+      throw new Error('Terminal native state unavailable; refusing deletion');
+    }
+  }
+
   private tmuxArgs(socketPath: string, ...command: string[]): string[] {
     return ['-S', socketPath, '-N', ...command];
   }
@@ -828,7 +850,23 @@ export class TmuxTerminalAdapter {
   }
 
   close(meta: TmuxTerminalMeta): void {
-    this.verify(meta);
+    try { this.verify(meta); }
+    catch (error) {
+      // Explicit DELETE may reap a vanished server, but a timeout, changed
+      // identity or possibly live process must never turn into kill-session.
+      this.assertRuntimeCurrent();
+      validateMeta(meta, this.runtimeDir);
+      if (this.inspectRegistry(meta).state !== 'dead') throw error;
+      const original = pathExists(this.registryPath(meta.id)) ? this.snapshotOwnedFile(this.registryPath(meta.id)) : null;
+      if (original) {
+        const current = validateMeta(JSON.parse(original.bytes.toString('utf8')), this.runtimeDir);
+        if (current.id !== meta.id || identityKey(current) !== identityKey(meta)) {
+          throw new Error('Terminal registry changed; refusing deletion');
+        }
+      }
+      this.removeDeadRecord(meta, original);
+      return;
+    }
     this.verifiedAt.delete(meta.id);
     this.run(this.tmuxArgs(meta.socketPath, 'kill-session', '-t', `=${meta.sessionName}`));
     fs.unlinkSync(this.registryPath(meta.id));

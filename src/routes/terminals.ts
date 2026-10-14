@@ -598,18 +598,23 @@ export function createTerminalRouter(
     try {
       const terminalId = c.req.param('id');
       const session = terminals.get(terminalId);
-      if (!session) throw createHttpError('Terminal not found', 404);
+      const persisted = options.db?.prepare(`SELECT deck_id, tmux_socket FROM terminal_metadata WHERE id = ?
+        UNION ALL SELECT deck_id, tmux_socket FROM terminals WHERE id = ? LIMIT 1`).get(terminalId, terminalId);
+      if (!session && !persisted) throw createHttpError('Terminal not found', 404);
 
-      await session.kill();
+      if (session) await session.kill();
+      else backend.remove(terminalId, persisted?.tmux_socket as string | null);
       options.db?.prepare('DELETE FROM terminal_metadata WHERE id = ?').run(terminalId);
+      options.db?.prepare('DELETE FROM terminals WHERE id = ?').run(terminalId);
       terminals.delete(terminalId);
       options.hostSessions?.revokeTerminal(terminalId);
-      emitDeckIdeEvent({ type: 'terminal.removed', deckId: session.deckId, terminalId, reason: 'deleted' });
+      if (session) cancelOutputFlush(session);
+      emitDeckIdeEvent({ type: 'terminal.removed', deckId: session?.deckId ?? String(persisted!.deck_id), terminalId, reason: 'deleted' });
 
-      session.sockets.forEach((socket) => {
+      session?.sockets.forEach((socket) => {
         try { socket.close(1000, 'Terminal deleted'); } catch { /* ignore */ }
       });
-      session.sockets.clear();
+      session?.sockets.clear();
 
       return c.body(null, 204);
     } catch (error) {
