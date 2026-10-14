@@ -1,0 +1,16 @@
+  >_ OpenAI Codex (v0.162.1)
+     /tmp/throwaway/workspace
+  permissions: YOLO mode
+
+• Running sleep 45
+
+• Working (0s • esc to interrupt)
+
+• Queued follow-up inputs
+  ↳ Keep real Codex first
+  ↳ Replace real Codex last
+    shift+← edit last queued message
+
+› Ask Codex to do anything
+
+  queue-test default · /tmp/throwaway/workspace · ← for agents
