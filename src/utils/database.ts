@@ -128,11 +128,20 @@ export function loadPersistedState(
 
 
 export function persistTerminalMetadata(db: DatabaseSync, meta: import('../terminal/tmuxAdapter.js').TmuxTerminalMeta): void {
+  // GET restoration repeats this upsert. An identical UPDATE would still
+  // append to WAL and synchronously commit once per terminal.
   db.prepare(`INSERT INTO terminal_metadata (id, deck_id, title, created_at, cols, rows, generation, tmux_socket)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET deck_id=excluded.deck_id, title=excluded.title,
       created_at=excluded.created_at, cols=excluded.cols, rows=excluded.rows,
-      generation=excluded.generation, tmux_socket=excluded.tmux_socket`)
+      generation=excluded.generation, tmux_socket=excluded.tmux_socket
+    WHERE terminal_metadata.deck_id IS NOT excluded.deck_id
+       OR terminal_metadata.title IS NOT excluded.title
+       OR terminal_metadata.created_at IS NOT excluded.created_at
+       OR terminal_metadata.cols IS NOT excluded.cols
+       OR terminal_metadata.rows IS NOT excluded.rows
+       OR terminal_metadata.generation IS NOT excluded.generation
+       OR terminal_metadata.tmux_socket IS NOT excluded.tmux_socket`)
     .run(meta.id, meta.deckId, meta.title, meta.createdAt, meta.cols, meta.rows, meta.generation, meta.socketPath);
 }
 
