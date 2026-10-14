@@ -1,0 +1,8 @@
+   ┃
+   ┃  Reply with exactly the word PING3LF and nothing else
+   ┃
+   ┃
+   ┃  Build · Muse Spark 1.3 Contributor OpenCode Go · xhigh
+   ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+   /tmp/enterfix-cwd                         shift+tab agents  ctrl+p commands
+  ⊙ 1 MCP /mcps                                                         2.0.15

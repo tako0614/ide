@@ -1,0 +1,8 @@
+     PING1DELAY200
+     Build · Muse Spark 1.3 Contributor · 1.3s · 26.0 tok/s
+  ┃
+  ┃
+  ┃
+  ┃  Build · Muse Spark 1.3 Contributor OpenCode Go · xhigh
+  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+  /tmp/enterfix-cwd                        12.3K (1%) · $0.00  ctrl+p commands

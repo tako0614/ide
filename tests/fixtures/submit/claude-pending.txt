@@ -1,0 +1,8 @@
+ ▐▛███▛█   Claude Code v2.1.299
+▝▜██████▀  Opus 5.5 with xhigh effort · Claude Max
+ ▝▝   ▝▝   ~/dev
+                                                         ctrl+g to edit in Vim
+────────────────────────────────────────────────────────────────────────────────
+❯ Reply with exactly the word PING3LF and nothing else
+────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)

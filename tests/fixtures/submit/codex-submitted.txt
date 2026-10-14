@@ -1,0 +1,8 @@
+  /status - show current session configuration
+  /permissions - choose what Codex is allowed to do
+  /model - choose what model and reasoning effort to use
+  /review - review any changes and find issues
+› Reply with exactly the word PING1DELAY200 and nothing else
+› Ask Codex to do anything
+  GPT-6.1-Sol xhigh · /tmp/enterfix-cwd
+  ? for shortcuts

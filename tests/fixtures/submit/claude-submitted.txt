@@ -1,0 +1,8 @@
+  tmux detected · scroll with PgUp/PgDn · or add 'set -g mouse on' to ~/.tmux…
+────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  ⚠ Usage limit reached · limit resets 2am
+    Continuing automatically at 2am · esc to cancel · /usage-credits to
+    continue now
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents

@@ -77,8 +77,8 @@ export function parseSessionArgs(argv) {
   for (let index = 1; index < argv.length; index++) {
     const item = argv[index];
     if (item === '--') { positionals.push(...argv.slice(index + 1)); break; }
-    if (item === '--read-only' || item === '--fit' || item === '--json' || item === '--no-enter') { args[item.slice(2)] = true; continue; }
-    if (['--deck', '--cwd', '--tool', '--search', '--offset', '--limit', '--title', '--lines'].includes(item)) {
+    if (item === '--read-only' || item === '--fit' || item === '--json' || item === '--no-enter' || item === '--no-verify') { args[item.slice(2)] = true; continue; }
+    if (['--deck', '--cwd', '--tool', '--search', '--offset', '--limit', '--title', '--lines', '--submit-delay'].includes(item)) {
       if (!argv[index + 1]) throw Error('missing_option'); args[item.slice(2)] = argv[++index]; continue;
     }
     if (item.startsWith('-')) throw Error('unknown_option');
@@ -92,6 +92,7 @@ export function parseSessionArgs(argv) {
   if (action === 'rename' && !positionals[1].trim()) throw Error('invalid_title');
   if (action === 'move' && !positionals[1]) throw Error('invalid_deck');
   if (args.lines !== undefined && !(/^\d{1,5}$/.test(args.lines))) throw Error('invalid_lines');
+  if (args['submit-delay'] !== undefined && !(/^\d{1,5}$/.test(args['submit-delay']))) throw Error('invalid_submit_delay');
   return { action, args, positionals };
 }
 
@@ -223,6 +224,65 @@ export async function captureScreen(value, lines = 0) {
   return text.replace(/\s+$/, '') + '\n';
 }
 
+
+// TUIs (codex especially) treat a burst of bytes that ends in CR as a paste and
+// turn that CR into a newline, leaving the prompt unsent. So the text is typed
+// first and Enter (CR) is sent on its own after a short pause, then the screen
+// is checked and Enter retried while the text still sits in the input box.
+export const DEFAULT_SUBMIT_DELAY_MS = 200;
+export const SUBMIT_ENTER_RETRIES = 2;
+export function submitDelayMs(args = {}, env = process.env) {
+  const raw = args['submit-delay'] ?? env.DECKIDE_SUBMIT_DELAY_MS;
+  const value = raw === undefined || raw === '' ? DEFAULT_SUBMIT_DELAY_MS : Number(raw);
+  return Number.isInteger(value) && value >= 0 && value <= 10000 ? value : DEFAULT_SUBMIT_DELAY_MS;
+}
+const BOX_GLYPHS = /[\s│┃┆┊║╹╻▀▄█─━═╭╮╰╯┌┐└┘›❯>]/g;
+const SUBMITTED_BELOW = /^\s*(?:[›❯>]\s|[›❯>]$)|esc to interrupt|esc interrupt|Working \(|Thinking/;
+// Footer/status lines TUIs draw under their input box (model · cwd, key hints).
+const BOX_CHROME = /\s·\s|⏵⏵|tab to queue|for shortcuts|shift\+tab|ctrl\+p commands|\/mcps|esc to cancel|ctrl\+g to edit/;
+const normalize = (line) => line.replace(BOX_GLYPHS, '');
+/**
+ * True when the end of `text` still sits in a TUI input box near the bottom of
+ * `screen`: its last occurrence is followed only by a few lines of box chrome
+ * (borders, model/cwd footer, key hints), with no fresh prompt, no output and
+ * no "working" indicator below it. Shell output below the text means it ran.
+ */
+export function inputStillPending(screen, text) {
+  const key = normalize(String(text)).slice(-24);
+  if (!key) return false;
+  const lines = String(screen).split('\n');
+  for (let end = lines.length - 1; end >= 0; end--) {
+    const from = Math.max(0, end - 8);
+    const joined = lines.slice(from, end + 1).map(normalize).join('');
+    if (!joined.includes(key)) continue;
+    if (lines.slice(from, end).map(normalize).join('').includes(key)) continue;
+    const below = lines.slice(end + 1).filter((line) => normalize(line) !== '');
+    if (below.length > 6) return false;
+    return below.every((line) => !SUBMITTED_BELOW.test(line) && (normalize(line).replace(/[▀▄█─━═]/g, '') === '' || BOX_CHROME.test(line)));
+  }
+  return false;
+}
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+/** Type text, pause, press Enter separately, verify and retry Enter. Dependencies injectable for tests. */
+export async function sendAndSubmit({ text, write, capture, delayMs = DEFAULT_SUBMIT_DELAY_MS, verify = true,
+  retries = SUBMIT_ENTER_RETRIES, settleMs = 700, wait = sleep }) {
+  let bytes = 0;
+  if (text) bytes += (await write(text))?.bytes ?? Buffer.byteLength(text);
+  await wait(delayMs);
+  bytes += (await write('\r'))?.bytes ?? 1;
+  let enterAttempts = 1;
+  if (!verify || !text.trim()) return { bytes, enterAttempts, submitted: null, verification: 'skipped' };
+  for (;;) {
+    await wait(settleMs);
+    let screen;
+    try { screen = await capture(); } catch { return { bytes, enterAttempts, submitted: null, verification: 'capture_failed' }; }
+    if (!inputStillPending(screen, text)) return { bytes, enterAttempts, submitted: true, verification: 'input_cleared' };
+    if (enterAttempts > retries) return { bytes, enterAttempts, submitted: false, verification: 'input_still_pending' };
+    bytes += (await write('\r'))?.bytes ?? 1;
+    enterAttempts++;
+  }
+}
+
 export async function runSessionClient(argv) {
   const { action, args, positionals } = parseSessionArgs(argv);
   if (['help', '--help', '-h'].includes(action)) {
@@ -234,7 +294,7 @@ export async function runSessionClient(argv) {
   deckide session run [--deck ID | --cwd PATH] [--json] -- codex|claude|opencode [ARGS...]
   deckide session attach [--read-only] TERMINAL
   deckide session new [--deck ID | --cwd PATH] [--title T] [--json] [-- COMMAND...]
-  deckide session send [--no-enter] TERMINAL TEXT...
+  deckide session send [--no-enter] [--no-verify] [--submit-delay MS] TERMINAL TEXT...
   deckide session show [--lines N] TERMINAL
   deckide session focus TERMINAL
   deckide session kill TERMINAL
@@ -251,6 +311,10 @@ terminal's screen as text (with N lines of scrollback) and changes nothing;
 focus brings the terminal to the front of every open web UI (only when a person
 asked for it). read displays selected conversation text. Other output is JSON;
 run attaches unless --json is supplied.
+send types TEXT, waits MS (default 200, or DECKIDE_SUBMIT_DELAY_MS), then
+presses Enter on its own and checks the screen, retrying Enter up to 2 times
+while the text still sits in the input box; the JSON reports submitted and
+verification (exit code 3 when the text is still pending).
 Use the backend's DECKIDE_DATA_DIR or DECKIDE_SESSION_SOCKET when customized.`); return;
   }
   let value;
@@ -275,8 +339,16 @@ Use the backend's DECKIDE_DATA_DIR or DECKIDE_SESSION_SOCKET when customized.`);
     await attachFollowing(await sessionRpc('terminals.attach', { id }), follow(id)); return;
   } else if (action === 'send') {
     const text = positionals.slice(1).join(' ');
-    // Enter is CR, as a keyboard sends it (TUIs ignore a bare LF).
-    value = await sessionRpc('terminals.input', { id: await resolveTerminalId(positionals[0]), data: args['no-enter'] ? text : text + '\r' });
+    const id = await resolveTerminalId(positionals[0]);
+    const write = (data) => sessionRpc('terminals.input', { id, data });
+    if (args['no-enter']) value = await write(text);
+    else {
+      // Enter is CR, as a keyboard sends it (TUIs ignore a bare LF), sent apart from the text.
+      const result = await sendAndSubmit({ text, write, delayMs: submitDelayMs(args), verify: !args['no-verify'],
+        capture: async () => captureScreen(await sessionRpc('terminals.attach', { id, readOnly: true })) });
+      value = { id, ...result };
+      if (result.submitted === false) process.exitCode = 3;
+    }
   } else if (action === 'show') {
     const attachment = await sessionRpc('terminals.attach', { id: await resolveTerminalId(positionals[0]), readOnly: true });
     process.stdout.write(await captureScreen(attachment, Number(args.lines || 0)));
