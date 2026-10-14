@@ -57,10 +57,14 @@ type ServerControlMessage =
   | { type: 'size'; cols: number; rows: number }
   | { type: 'ready' }
   // この接続が「主」クライアントか（端末クエリ応答を送るのは主のみ）。
-  | { type: 'primary'; value: boolean };
+  | { type: 'primary'; value: boolean }
+  // The server accepts the optional client messages listed here.
+  | { type: 'features'; visibility?: boolean };
 
 type ClientControlMessage =
   | { type: 'claim' }
+  // Hidden viewers are not streamed to; becoming visible replays what was missed.
+  | { type: 'visibility'; visible: boolean }
   // An explicit resize of the shared tmux window (native display mode).
   | { type: 'resize'; cols: number; rows: number; explicit: true };
 
@@ -68,6 +72,8 @@ type TerminalDisplayMode = 'native' | 'overview';
 
 const DEFAULT_TERMINAL_COLS = 120;
 const DEFAULT_TERMINAL_ROWS = 32;
+// Bounds per-terminal memory and reflow cost; the server snapshot holds less.
+const TERMINAL_SCROLLBACK_LINES = 5000;
 const TERMINAL_FRAME_PADDING = 10;
 
 const textEncoder = new TextEncoder();
@@ -216,8 +222,8 @@ export function TerminalTile({
       fontFamily: TERMINAL_FONT_FAMILY,
       fontSize,
       allowProposedApi: true,
-      // ネイティブターミナル相当のスクロールバックと慣性スクロール感度。
-      scrollback: 10000,
+      // スクロールバック上限と慣性スクロール感度。
+      scrollback: TERMINAL_SCROLLBACK_LINES,
       scrollSensitivity: 3,
       // macOS で Option/Alt を Meta として送り、readline の単語移動を有効化。
       macOptionIsMeta: true,
@@ -271,9 +277,28 @@ export function TerminalTile({
       terminalElement.style.transformOrigin = 'top left';
     }
 
+    // Whether this tile is on screen (not display:none, not scrolled away)
+    // and the page is in the foreground. Reported to servers that support it.
+    let intersecting = true;
+    let visibilitySupported = false;
+    let reportedVisible = true;
+    const reportVisibility = () => {
+      if (!visibilitySupported) return;
+      const visible = intersecting && document.visibilityState === 'visible';
+      if (visible === reportedVisible) return;
+      const current = socketRef.current;
+      if (!current || current.readyState !== WebSocket.OPEN) return;
+      reportedVisible = visible;
+      current.send(JSON.stringify({ type: 'visibility', visible } satisfies ClientControlMessage));
+    };
+
     // Recompute local scale when a hidden/mobile tile becomes visible.
     const visibilityObserver = new IntersectionObserver((entries) => {
-      if (entries.some((entry) => entry.isIntersecting)) scheduleFit(true);
+      const entry = entries[entries.length - 1];
+      if (!entry) return;
+      intersecting = entry.isIntersecting;
+      if (intersecting) scheduleFit(true);
+      reportVisibility();
     });
     visibilityObserver.observe(frameViewportRef.current);
 
@@ -673,6 +698,9 @@ export function TerminalTile({
           finalUrl = `${finalUrl}${sep}reconnect=1`;
         }
         const connection = new WebSocket(finalUrl);
+        // Every new server connection starts out streaming (visible).
+        visibilitySupported = false;
+        reportedVisible = true;
         socket = connection;
         connection.binaryType = 'arraybuffer';
         socketRef.current = connection;
@@ -740,6 +768,11 @@ export function TerminalTile({
             }
             if (message?.type === 'primary') {
               isPrimary = message.value;
+              return;
+            }
+            if (message?.type === 'features') {
+              visibilitySupported = message.visibility === true;
+              reportVisibility();
               return;
             }
             // Unknown control message type — ignore
@@ -866,6 +899,7 @@ export function TerminalTile({
     };
     const handleOnline = () => forceReconnect();
     const handleVisibilityChange = () => {
+      reportVisibility();
       if (document.visibilityState === 'visible') {
         forceReconnect();
       }

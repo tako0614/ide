@@ -81,6 +81,30 @@ test('snapshot ordering, fixed grid, reconnect input and close use disposable We
   assert.deepEqual(first.messages[2], liveTail);
   assert.equal(first.messages[3].type, 'ready');
   assert.deepEqual(first.messages[4], { type: 'primary', value: false });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(first.messages[5], { type: 'features', visibility: true });
+
+  // Live output reaches a viewer only while it reports itself visible; the
+  // visibility control frame itself is never written to the PTY.
+  const { flushOutput } = await import('../dist/websocket.js');
+  const appendLive = (text) => {
+    const chunk = Buffer.from(text);
+    session.bufferChunks.push(chunk); session.bufferLength += chunk.length;
+    flushOutput(session);
+  };
+  const binaryFrames = (viewer) => viewer.messages.filter((message) => Buffer.isBuffer(message));
+  first.socket.send(JSON.stringify({ type: 'visibility', visible: false }));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const framesWhileHidden = binaryFrames(first).length;
+  appendLive('hidden-1|'); appendLive('hidden-2|');
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(binaryFrames(first).length, framesWhileHidden, 'hidden viewer is not streamed to');
+  first.socket.send(JSON.stringify({ type: 'visibility', visible: true }));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepEqual(binaryFrames(first).at(-1), Buffer.from('hidden-1|hidden-2|'), 'missed output is replayed in one frame');
+  assert.deepEqual(inputs, []);
+  session.bufferChunks = [liveTail]; session.bufferLength = liveTail.length;
+
   const second = await connect('?bufferOffset=999999&epoch=old-http-epoch');
   for (const [viewer, cols, rows] of [[first, 40, 10], [second, 200, 70]]) {
     viewer.socket.send(JSON.stringify({ type: 'resize', cols, rows }));

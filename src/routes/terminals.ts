@@ -5,19 +5,18 @@ import { Hono } from 'hono';
 import path from 'node:path';
 import { TerminalSnapshot } from '../terminal/snapshot.js';
 import { TmuxTerminalAdapter, type TmuxTerminalMeta } from '../terminal/tmuxAdapter.js';
-import type { WebSocket } from 'ws';
 import type { Deck, TerminalSession, Workspace } from '../types.js';
 import type { HostComputerSessions, HostSessionCreator } from '../computer/host-session.js';
 import { currentSession, isAuthEnabled, verifiedInternalActor } from '../middleware/auth.js';
 import { mcpGrantForActor } from './mcp.js';
-import { PORT, TERMINAL_BUFFER_LIMIT, dataDir } from '../config.js';
+import { PORT, TERMINAL_BUFFER_LIMIT, TERMINAL_OUTPUT_COALESCE_MS, dataDir } from '../config.js';
+import { cancelOutputFlush, flushOutput, scheduleOutputFlush } from '../websocket.js';
 import { createHttpError, handleError, readJson } from '../utils/error.js';
 import { getDefaultShell, getAvailableLocales, getShellBasename } from '../utils/shell.js';
 import { alignToUtf8Start, skipPartialEscapeSequence } from '../utils/utf8.js';
 import { emitDeckIdeEvent } from '../utils/events.js';
 
 const DEFAULT_TERMINAL_TITLE = 'ターミナル';
-const MAX_SOCKET_BUFFERED_AMOUNT = 1024 * 1024;
 
 // 初期端末サイズ（リクエストで指定がない場合のデフォルト）。
 const DEFAULT_TERMINAL_COLS = 120;
@@ -282,34 +281,6 @@ export function createTerminalRouter(
     return `${baseTitle} ${suffix}`;
   }
 
-  function broadcastToSockets(session: TerminalSession, data: Buffer | string): void {
-    const payload = toBuffer(data);
-    const deadSockets = new Set<WebSocket>();
-    session.sockets.forEach((socket) => {
-      try {
-        if (socket.readyState !== 1) {
-          deadSockets.add(socket);
-          return;
-        }
-        if (socket.bufferedAmount > MAX_SOCKET_BUFFERED_AMOUNT) {
-          try { socket.close(1009, 'Terminal output overflow'); } catch { /* ignore */ }
-          deadSockets.add(socket);
-          return;
-        }
-        socket.send(payload, { binary: true }, (error) => {
-          if (error) {
-            try { socket.close(1011, 'Terminal stream error'); } catch { /* ignore */ }
-          }
-        });
-      } catch {
-        deadSockets.add(socket);
-      }
-    });
-    deadSockets.forEach((s) => {
-      session.sockets.delete(s);
-    });
-  }
-
   function handleTerminalExit(id: string): void {
     options.hostSessions?.revokeTerminal(id);
     options.db?.prepare('DELETE FROM terminal_metadata WHERE id = ?').run(id);
@@ -317,6 +288,8 @@ export function createTerminalRouter(
     if (!session) return;
 
     console.log(`[TERMINAL] Terminal ${id} exited`);
+    flushOutput(session);
+    cancelOutputFlush(session);
     terminals.delete(id);
     emitDeckIdeEvent({ type: 'terminal.removed', deckId: session.deckId, terminalId: id, reason: 'exited' });
 
@@ -456,6 +429,8 @@ export function createTerminalRouter(
         term.resize(nextCols, nextRows);
         screen.resize(nextCols, nextRows, () => {
           if (!session.available) return;
+          // Every viewer applies the size after the output written before it.
+          flushOutput(session, undefined, true);
           for (const socket of session.sockets) {
             if (socket.readyState === 1) socket.send(JSON.stringify({ type: 'size', cols: nextCols, rows: nextRows }));
           }
@@ -466,14 +441,15 @@ export function createTerminalRouter(
         if (options.db) persistTerminalMetadata(options.db, term.meta);
       },
       kill: async () => { await term.close(); await screen.dispose(); },
-      detach: () => { session.available = false; term.detach(); screen.dispose(); },
+      detach: () => { session.available = false; cancelOutputFlush(session); term.detach(); screen.dispose(); },
     };
 
-    // Slow viewers are bounded individually by broadcastToSockets. A display
+    // Slow viewers are bounded individually by flushOutput. A display
     // projection backlog reconnects our client without interrupting the shell.
     const disconnectBridge = () => {
       if (terminals.get(id) !== session || !session.available) return;
       session.available = false;
+      cancelOutputFlush(session);
       term.detach();
       screen.dispose();
       for (const socket of session.sockets) {
@@ -493,7 +469,7 @@ export function createTerminalRouter(
         if (!session.available) return;
         appendToTerminalBuffer(session, chunk);
         session.lastActive = Date.now();
-        broadcastToSockets(session, chunk);
+        scheduleOutputFlush(session, chunk.length, TERMINAL_OUTPUT_COALESCE_MS);
       });
     });
 

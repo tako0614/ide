@@ -11,6 +11,11 @@ import { runTmuxCreationInBroker } from './tmuxBrokerClient.js';
 const ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const PRODUCTION_RUNTIME = '/var/lib/deckide-tmux/terminal-tmux';
 const MAX_SOCKET_BYTES = 107; // Linux sockaddr_un.sun_path includes a trailing NUL.
+const PANE_POLL_MS = 2000;
+const PANE_FULL_VERIFY_TICKS = 15;
+// list() reuses a full verification this recent while both recorded PIDs live.
+// Attached displays refresh it every PANE_POLL_MS * PANE_FULL_VERIFY_TICKS.
+const VERIFY_CACHE_MS = 40_000;
 const SNAPSHOT_FORMAT = '#{pid}\t#{session_id}\t#{window_id}\t#{pane_id}\t#{pane_pid}\t#{window_width}\t#{window_height}\t#{pane_dead}';
 
 export type TmuxTerminalMeta = {
@@ -152,6 +157,10 @@ function checkedSize(value: number, name: string): number {
   return value;
 }
 
+function identityKey(meta: TmuxTerminalMeta): string {
+  return [meta.generation, meta.serverPid, meta.pid, meta.sessionId, meta.windowId, meta.paneId].join('\t');
+}
+
 function parsePositive(value: string, name: string): number {
   const n = Number(value);
   if (!Number.isSafeInteger(n) || n < 1) throw new Error(`Invalid tmux ${name}`);
@@ -276,6 +285,7 @@ export class TmuxTerminalAdapter {
   private isSocketConnectionRefused: NonNullable<TmuxAdapterDependencies['isSocketConnectionRefused']>;
   private runtimeIdentity: { dev: number; ino: number };
   private recordFingerprints = new WeakMap<TerminalRecordStatus, string>();
+  private verifiedAt = new Map<string, { key: string; at: number }>();
 
   constructor(options: { runtimeDir: string; dependencies?: TmuxAdapterDependencies }) {
     this.runtimeDir = options.runtimeDir;
@@ -571,9 +581,24 @@ export class TmuxTerminalAdapter {
         (actual.panePid !== 0 && actual.panePid !== meta.pid) ||
         (!actual.dead && actual.panePid === 0) ||
         this.generation(meta) !== meta.generation) {
+      this.verifiedAt.delete(meta.id);
       throw new Error('Terminal identity changed; refusing to attach or mutate');
     }
+    if (actual.dead) this.verifiedAt.delete(meta.id);
+    else this.verifiedAt.set(meta.id, { key: identityKey(meta), at: Date.now() });
     return actual;
+  }
+
+  /**
+   * Listing is polled by every client. A live record fully verified moments
+   * ago, whose shell and tmux server PIDs still exist, is not re-queried:
+   * each query forks this process synchronously. A vanished PID or an
+   * expired entry falls back to the full tmux verification.
+   */
+  private recentlyVerified(meta: TmuxTerminalMeta): boolean {
+    const entry = this.verifiedAt.get(meta.id);
+    if (!entry || entry.key !== identityKey(meta) || Date.now() - entry.at > VERIFY_CACHE_MS) return false;
+    try { return this.processesAlive(meta); } catch { return false; }
   }
 
   private save(meta: TmuxTerminalMeta): void {
@@ -692,6 +717,10 @@ export class TmuxTerminalAdapter {
       const id = name.slice(0, -5);
       try {
         const meta = this.load(id);
+        if (this.recentlyVerified(meta)) return [meta];
+        // verify() requires this exact server PID; a stale registry entry
+        // whose server is gone cannot match, so it is not queried via tmux.
+        if (!this.isProcessAlive(meta.serverPid)) throw new Error('Recorded tmux server is not running');
         const identity = this.verify(meta);
         if (identity.dead) {
           this.finishExited(meta);
@@ -800,11 +829,17 @@ export class TmuxTerminalAdapter {
 
   close(meta: TmuxTerminalMeta): void {
     this.verify(meta);
+    this.verifiedAt.delete(meta.id);
     this.run(this.tmuxArgs(meta.socketPath, 'kill-session', '-t', `=${meta.sessionName}`));
     fs.unlinkSync(this.registryPath(meta.id));
     // tmux exits its per-terminal server after the final session is killed.
     // The configuration file is nonsecret, but is no longer needed.
     fs.unlinkSync(this.configPath(meta.id));
+  }
+
+  /** Signal-0 probe of the shell and tmux server; never proves identity. */
+  processesAlive(meta: TmuxTerminalMeta): boolean {
+    return this.isProcessAlive(meta.pid) && this.isProcessAlive(meta.serverPid);
   }
 
   paneState(meta: TmuxTerminalMeta): { dead: boolean; exitCode: number } {
@@ -828,6 +863,7 @@ export class TmuxTerminalHandle extends EventEmitter {
   private queued: Buffer[] = [];
   private queuedBytes = 0;
   private poller: NodeJS.Timeout;
+  private pollTicks = 0;
   private exitEvent: { exitCode: number } | null = null;
   private disconnectEvent: { reason: string } | null = null;
 
@@ -842,8 +878,20 @@ export class TmuxTerminalHandle extends EventEmitter {
       } else this.emit('data', chunk);
     });
     pty.onExit(() => { if (this.attached && !this.closed) this.checkPane(true); });
-    this.poller = setInterval(() => this.checkPane(false), 2000);
+    this.poller = setInterval(() => this.poll(), PANE_POLL_MS);
     this.poller.unref();
+  }
+
+  // Each tmux query forks the server process. While the shell and tmux server
+  // PIDs answer signal 0 the pane cannot have exited, so the full identity
+  // check runs only when a PID disappears or every PANE_FULL_VERIFY_TICKS.
+  private poll(): void {
+    if (!this.attached || this.closed) return;
+    this.pollTicks = (this.pollTicks + 1) % PANE_FULL_VERIFY_TICKS;
+    let alive = false;
+    try { alive = this.adapter.processesAlive(this.meta); } catch { alive = false; }
+    if (alive && this.pollTicks !== 0) return;
+    this.checkPane(false);
   }
 
   get pid(): number { return this.meta.pid; }
