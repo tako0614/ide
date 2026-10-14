@@ -654,13 +654,26 @@ export function createTerminalRouter(
     try {
       const session = terminals.get(c.req.param('id'));
       if (!session) throw createHttpError('Terminal not found', 404);
-      const body = await readJson<{ data?: unknown }>(c);
+      const body = await readJson<{ data?: unknown; submit?: unknown; submitDelayMs?: unknown }>(c);
       if (typeof body?.data !== 'string' || Buffer.byteLength(body.data) > 1024 * 1024) {
         throw createHttpError('data must be a string of at most 1 MiB', 400);
       }
+      const delay = body.submitDelayMs === undefined ? 200 : body.submitDelayMs;
+      if (body.submit !== undefined && typeof body.submit !== 'boolean') throw createHttpError('submit must be a boolean', 400);
+      if (typeof delay !== 'number' || !Number.isInteger(delay) || delay < 0 || delay > 5000) {
+        throw createHttpError('submitDelayMs must be an integer from 0 to 5000', 400);
+      }
       session.write(body.data);
+      let bytes = Buffer.byteLength(body.data);
+      // submit: press Enter as a separate keystroke after a pause, so TUIs that
+      // detect pastes (codex) do not turn a trailing CR into a newline.
+      if (body.submit === true) {
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        session.write('\r');
+        bytes += 1;
+      }
       session.lastActive = Date.now();
-      return c.json({ id: session.id, bytes: Buffer.byteLength(body.data) });
+      return c.json({ id: session.id, bytes, ...(body.submit === true ? { submitted: true, submitDelayMs: delay } : {}) });
     } catch (error) { return handleError(c, error); }
   });
 

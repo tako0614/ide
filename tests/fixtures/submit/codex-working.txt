@@ -1,0 +1,8 @@
+  /permissions - choose what Codex is allowed to do
+  /model - choose what model and reasoning effort to use
+  /review - review any changes and find issues
+› Reply with exactly the word PING2DELAY600 and nothing else
+◦ Working (1s • esc to interrupt)
+› Ask Codex to do anything
+  GPT-6.1-Sol xhigh · /tmp/enterfix-cwd · ⠇
+  ? for shortcuts
