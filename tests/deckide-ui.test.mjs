@@ -62,8 +62,8 @@ async function freePort() {
 }
 
 test('deckide ui shows the decks and terminals, drives them, and leaves them running', { skip: !haveTmux }, async (t) => {
-  const dataDir = mkdtempSync('/tmp/dku-');
-  const runtimeDir = mkdtempSync('/tmp/dkv-');
+  const dataDir = mkdtempSync(path.join(os.tmpdir(), 'dku-'));
+  const runtimeDir = mkdtempSync(path.join(os.tmpdir(), 'dkv-'));
   const work = mkdtempSync(path.join(os.tmpdir(), 'deckide-ui-work-'));
   const port = await freePort();
   writeFileSync(path.join(dataDir, 'settings.json'), JSON.stringify({ port }));
@@ -73,12 +73,24 @@ test('deckide ui shows the decks and terminals, drives them, and leaves them run
   const origin = `http://127.0.0.1:${port}`;
   const session = (...args) => spawnSync(process.execPath, [cli, 'session', ...args], { cwd: work, env, encoding: 'utf8' });
   const list = () => JSON.parse(session('list').stdout);
+  let ui;
+  let uiExited;
+  let uiClosed = false;
+  let outer;
   t.after(async () => {
+    if (ui && !uiClosed) {
+      const deadline = setTimeout(() => ui.kill('SIGKILL'), 2000);
+      try { ui.kill(); await uiExited; } finally { clearTimeout(deadline); }
+    }
+    outer?.dispose();
     for (const terminal of (() => { try { return list(); } catch { return []; } })()) {
       await fetch(`${origin}/api/terminals/${terminal.id}`, { method: 'DELETE' }).catch(() => undefined);
     }
-    server.kill('SIGTERM');
-    await new Promise((resolve) => server.once('exit', resolve));
+    if (server.exitCode === null && server.signalCode === null) {
+      const stopped = new Promise((resolve) => server.once('exit', resolve));
+      const deadline = setTimeout(() => server.kill('SIGKILL'), 2000);
+      try { server.kill('SIGTERM'); await stopped; } finally { clearTimeout(deadline); }
+    }
     for (const dir of [dataDir, runtimeDir, work]) rmSync(dir, { recursive: true, force: true });
   });
   for (let n = 0; n < 100; n++) {
@@ -90,10 +102,10 @@ test('deckide ui shows the decks and terminals, drives them, and leaves them run
 
   const cols = 100;
   const rows = 24;
-  const outer = new Terminal({ cols, rows, allowProposedApi: true });
-  const ui = pty.spawn(process.execPath, [cli, 'ui'], { name: 'xterm-256color', cols, rows, cwd: work, env });
+  outer = new Terminal({ cols, rows, allowProposedApi: true });
+  ui = pty.spawn(process.execPath, [cli, 'ui'], { name: 'xterm-256color', cols, rows, cwd: work, env });
   ui.onData((data) => outer.write(data));
-  const exited = new Promise((resolve) => ui.onExit(resolve));
+  uiExited = new Promise((resolve) => ui.onExit((event) => { uiClosed = true; resolve(event); }));
   const screen = () => new Promise((resolve) => outer.write('', () => {
     const buffer = outer.buffer.active;
     resolve(Array.from({ length: rows }, (_, y) => buffer.getLine(buffer.viewportY + y)?.translateToString(true) ?? '').join('\n'));
@@ -101,6 +113,8 @@ test('deckide ui shows the decks and terminals, drives them, and leaves them run
   const until = async (predicate, label) => {
     for (let n = 0; n < 120; n++) {
       if (await predicate()) return;
+      const current = await screen();
+      if (current.includes('(接続できません)')) throw new Error(`terminal pane failed to attach: ${label}\n${current}`);
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     throw new Error(`timeout: ${label}\n${await screen()}`);
@@ -120,7 +134,7 @@ test('deckide ui shows the decks and terminals, drives them, and leaves them run
   await until(async () => (await screen()).includes('3:'), 'third pane shown');
 
   ui.write('\x1dq');
-  const { exitCode } = await exited;
+  const { exitCode } = await uiExited;
   assert.equal(exitCode, 0);
   assert.equal(list().length, 3, 'leaving the UI leaves every terminal running');
 });
