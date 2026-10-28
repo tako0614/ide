@@ -242,4 +242,9 @@ test('terminal selection renders only changed tiles and preserves browser termin
   await call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
   await until(() => evaluate(`document.querySelectorAll('.xterm-rows')[2].textContent.includes('split:split-route')`), 'split input reaches correct deck');
   for (const index of [0, 1]) assert.equal(await evaluate(`document.querySelectorAll('.xterm-rows')[${index}].textContent.includes('split-route')`), false);
+
+  await t.test('live output preserves scrollback and still follows the bottom', async () => {
+    const { verifyTerminalOutput } = await import('./fixtures/terminal-output.mjs');
+    await verifyTerminalOutput({ call, evaluate });
+  });
 });
