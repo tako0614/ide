@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import clsx from 'clsx';
 import { Terminal, type IDisposable } from '@xterm/xterm';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
@@ -29,16 +29,16 @@ import {
 interface TerminalTileProps {
   session: TerminalSession;
   wsUrl: string;
-  onDelete: () => void;
-  onExit: () => void;
+  onDelete: (terminalId: string) => void;
+  onExit: (terminalId: string) => void;
   // OSC 0/2 で受け取った動的タイトルを親へ通知（端末セレクタの表示用）。
-  onTitle?: (title: string | null) => void;
+  onTitle?: (terminalId: string, title: string | null) => void;
   // この端末がデッキのアクティブ端末か（グリッドでの強調表示用）。
   isActive?: boolean;
   // クリック/フォーカスでこの端末をアクティブにする（activeTerminalId を同期）。
-  onSetActive?: () => void;
+  onSetActive?: (terminalId: string) => void;
   // 最大化トグル。渡された場合のみタイルヘッダに最大化ボタンを表示する。
-  onToggleMaximize?: () => void;
+  onToggleMaximize?: (terminalId: string) => void;
   // 現在この端末が単一表示（最大化/モバイル）で前面かどうか。ボタンの図柄に使う。
   maximized?: boolean;
   // 単一表示で前面になった瞬間にこの端末へフォーカスを移す。
@@ -105,7 +105,9 @@ function encodeBinaryInput(data: string): Uint8Array {
   return bytes;
 }
 
-export function TerminalTile({
+// Keep unrelated terminals out of selection/title updates in a large grid.
+// Callbacks accept the ID so the parent can pass stable functions to every tile.
+export const TerminalTile = memo(function TerminalTile({
   session,
   wsUrl,
   onDelete,
@@ -203,7 +205,7 @@ export function TerminalTile({
   // セッションが切り替わったら動的タイトルをリセット（effect も再実行される）。
   useEffect(() => {
     setLiveTitle(null);
-    onTitleRef.current?.(null);
+    onTitleRef.current?.(session.id, null);
   }, [session.id]);
 
   useEffect(() => {
@@ -309,7 +311,7 @@ export function TerminalTile({
     // ウィンドウタイトル（OSC 0/2）。ヘッダ表示を動的タイトルで上書きする（#9）。
     const titleDisposable = term.onTitleChange((title) => {
       setLiveTitle(title);
-      onTitleRef.current?.(title);
+      onTitleRef.current?.(session.id, title);
     });
 
     // ビジュアルベル（#10）。ベル受信時にタイル要素へ一瞬クラスを付与して点滅。
@@ -552,7 +554,7 @@ export function TerminalTile({
     // グリッドの強調表示・最大化・モバイル単一表示が「実際に使った端末」を指す。
     const promoteActive = () => {
       if (!isActiveRef.current) {
-        onSetActiveRef.current?.();
+        onSetActiveRef.current?.(session.id);
       }
     };
 
@@ -822,7 +824,7 @@ export function TerminalTile({
 
           if (event.code === 1000) {
             if (TERMINAL_REMOVED_REASONS.has(event.reason)) {
-              onExitRef.current();
+              onExitRef.current(session.id);
               return;
             }
           }
@@ -996,7 +998,7 @@ export function TerminalTile({
           <button
             type="button"
             className="terminal-tile-icon-btn"
-            onClick={onToggleMaximize}
+            onClick={() => onToggleMaximize?.(session.id)}
             title={maximized ? 'グリッド表示に戻す' : 'このターミナルを最大表示'}
             aria-label={maximized ? 'グリッド表示に戻す' : 'このターミナルを最大表示'}
             aria-pressed={maximized}
@@ -1007,7 +1009,7 @@ export function TerminalTile({
         <button
           type="button"
           className="terminal-tile-icon-btn"
-          onClick={() => { if (window.confirm('このターミナルを閉じますか？')) onDelete(); }}
+          onClick={() => { if (window.confirm('このターミナルを閉じますか？')) onDelete(session.id); }}
           aria-label="ターミナルを閉じる"
         >
           ×
@@ -1020,4 +1022,4 @@ export function TerminalTile({
       </div>
     </div>
   );
-}
+});

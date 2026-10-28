@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useCallback, useState, useEffect } from 'react';
 import clsx from 'clsx';
 import type { TerminalSession } from '../types';
 import { resolveActiveTerminalId } from '../utils';
@@ -73,12 +73,12 @@ export function TerminalPane({
 
   // タイルの最大化ボタン: グリッド表示中はその端末をアクティブにしてから最大化、
   // 最大化表示中は元のグリッドへ戻す。
-  const handleTileMaximize = (terminalId: string) => {
+  const handleTileMaximize = useCallback((terminalId: string) => {
     if (!singleView) {
       onSetActiveTerminal?.(terminalId);
     }
     onToggleMaximize?.();
-  };
+  }, [singleView, onSetActiveTerminal, onToggleMaximize]);
 
   return (
     <section className="terminal-pane">
@@ -114,13 +114,13 @@ export function TerminalPane({
                 session={terminal}
                 wsUrl={`${wsBase}/api/terminals/${terminal.id}`}
                 isActive={terminal.id === resolvedActiveId}
-                onSetActive={onSetActiveTerminal ? () => onSetActiveTerminal(terminal.id) : undefined}
-                onToggleMaximize={canMaximize ? () => handleTileMaximize(terminal.id) : undefined}
+                onSetActive={onSetActiveTerminal}
+                onToggleMaximize={canMaximize ? handleTileMaximize : undefined}
                 maximized={Boolean(singleView)}
                 autoFocus={(single || terminals.length === 1) && terminal.id === resolvedActiveId}
-                onDelete={() => onDeleteTerminal(terminal.id)}
-                onExit={() => onExitTerminal(terminal.id)}
-                onTitle={(title) => onTerminalTitle?.(terminal.id, title)}
+                onDelete={onDeleteTerminal}
+                onExit={onExitTerminal}
+                onTitle={onTerminalTitle}
               />
             </div>
           ))}

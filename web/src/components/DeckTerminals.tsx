@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import clsx from 'clsx';
 import { TerminalPane } from './TerminalPane';
 import { TerminalSwitcher } from './TerminalSwitcher';
@@ -50,6 +50,11 @@ export function DeckTerminals({
       setMaximized(false);
     }
   }, [maximized, deckState.terminals.length]);
+  const setActiveTerminal = useCallback((terminalId: string) => onSetActiveTerminal(deck.id, terminalId), [deck.id, onSetActiveTerminal]);
+  const newTerminal = useCallback(() => onNewTerminal(deck.id), [deck.id, onNewTerminal]);
+  const deleteTerminal = useCallback((terminalId: string) => onDeleteTerminal(deck.id, terminalId), [deck.id, onDeleteTerminal]);
+  const exitTerminal = useCallback((terminalId: string) => onExitTerminal(deck.id, terminalId), [deck.id, onExitTerminal]);
+  const toggleMaximize = useCallback(() => setMaximized((m) => !m), []);
   return (
     <>
       <div className={clsx('flex items-center justify-between px-2 py-1 border-b border-border bg-sidebar gap-2 min-h-[28px]', maximized && 'deck-terminals-single')}>
@@ -63,7 +68,7 @@ export function DeckTerminals({
             terminals={deckState.terminals}
             liveTitles={liveTitles}
             value={resolveActiveTerminalId(deckState.terminals, deckState.activeTerminalId) ?? ''}
-            onChange={(terminalId) => onSetActiveTerminal(deck.id, terminalId)}
+            onChange={setActiveTerminal}
           />
         )}
         <div className="flex items-center gap-1 ml-auto">
@@ -82,11 +87,11 @@ export function DeckTerminals({
         wsBase={wsBase}
         activeTerminalId={deckState.activeTerminalId ?? null}
         singleView={maximized}
-        onSetActiveTerminal={(terminalId) => onSetActiveTerminal(deck.id, terminalId)}
-        onToggleMaximize={() => setMaximized((m) => !m)}
-        onNewTerminal={() => onNewTerminal(deck.id)}
-        onDeleteTerminal={(terminalId) => onDeleteTerminal(deck.id, terminalId)}
-        onExitTerminal={(terminalId) => onExitTerminal(deck.id, terminalId)}
+        onSetActiveTerminal={setActiveTerminal}
+        onToggleMaximize={toggleMaximize}
+        onNewTerminal={newTerminal}
+        onDeleteTerminal={deleteTerminal}
+        onExitTerminal={exitTerminal}
         onTerminalTitle={onTerminalTitle}
       />
       {deckState.terminals.length > 0 && (

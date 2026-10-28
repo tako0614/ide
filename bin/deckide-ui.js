@@ -9,8 +9,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
+import { createRequire } from 'node:module';
 import { sessionRpc, isTerminalReport } from './deckide-session.js';
 
+const require = createRequire(import.meta.url);
 const PREFIX = 0x1d; // Ctrl+]
 const POLL_MS = 1500;
 const CLAIM_INTERVAL_MS = 1000;
@@ -127,12 +129,12 @@ class Pane {
   }
 
   async start(width, height) {
-    const [{ Terminal }, { Unicode11Addon }, { default: pty }, { TmuxTerminalAdapter }] = await Promise.all([
-      import('@xterm/headless').then((module) => module.default ?? module),
-      import('@xterm/addon-unicode11').then((module) => module.default ?? module),
-      import('node-pty'),
-      import('../dist/terminal/tmuxAdapter.js'),
-    ]);
+    // The adapter requires these CommonJS modules too. Load them completely
+    // before importing it, instead of racing import/require on the same cache.
+    const { Terminal } = require('@xterm/headless');
+    const { Unicode11Addon } = require('@xterm/addon-unicode11');
+    const pty = require('node-pty');
+    const { TmuxTerminalAdapter } = await import('../dist/terminal/tmuxAdapter.js');
     const value = await sessionRpc('terminals.attach', { id: this.id });
     // Recheck the registry/identity right before attaching, like `session attach`.
     const adapter = new TmuxTerminalAdapter({ runtimeDir: path.dirname(value.meta.socketPath) });

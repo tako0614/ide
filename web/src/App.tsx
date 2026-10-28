@@ -267,6 +267,11 @@ function AuthenticatedApp() {
     handleCreateTerminal(deckId, deckState.terminals.length);
   }, [deckStates, defaultDeckState, handleCreateTerminal]);
 
+  const handleSetActiveTerminal = useCallback((deckId: string, terminalId: string) => {
+    updateDeckState(deckId, (state) => state.activeTerminalId === terminalId
+      ? state : { ...state, activeTerminalId: terminalId });
+  }, [updateDeckState]);
+
   const handleTerminalDeleteForDeck = useCallback(
     (deckId: string, terminalId: string) => {
       handleDeleteTerminal(deckId, terminalId);
@@ -511,7 +516,7 @@ function AuthenticatedApp() {
                   liveTitles={liveTitles}
                   showName={activeDeckIds.length > 1}
                   onNewTerminal={handleNewTerminalForDeck}
-                  onSetActiveTerminal={(id, terminalId) => updateDeckState(id, (s) => ({ ...s, activeTerminalId: terminalId }))}
+                  onSetActiveTerminal={handleSetActiveTerminal}
                   onDeleteTerminal={handleTerminalDeleteForDeck}
                   onExitTerminal={handleTerminalExitForDeck}
                   onTerminalTitle={handleTerminalTitle}
