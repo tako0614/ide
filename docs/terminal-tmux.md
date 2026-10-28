@@ -375,3 +375,83 @@ external manipulation of runtime files during administration is unsupported.
 The CLI allows 60 seconds for explicit pruning; a client disconnect does not
 cancel a server operation, so check `deck list` before retrying an uncertain
 result. Neither mode changes running terminal processes.
+
+## Codex history storage
+
+DeckIDE exposes Codex history through its existing authorized routes. The index may
+live outside the Codex home; transcripts remain confined to that home's
+`sessions/` and `archived_sessions/`. This reader does not relocate Codex state.
+
+### Selecting an index
+
+For each source, DeckIDE selects the SQLite directory in this order:
+
+1. The root `sqlite_home` string in that source's `config.toml`.
+2. The absolute `CODEX_SQLITE_HOME` captured when the default **current** source
+   is constructed. Leading/trailing whitespace is removed; blank means unset.
+3. That source's Codex home (the existing layout).
+
+The default current home is `CODEX_HOME`, or `~/.codex`. The legacy Desktop source
+uses its own config/home and never borrows the current source's environment.
+Root-config relative paths resolve against the config's directory. A nonempty
+relative environment path is refused: its native Codex launch directory is not
+known to this reader. Explicit missing or invalid locations never fall back to
+an old home index. The highest `state_N.sqlite` is selected; an unsafe highest
+version is refused rather than skipped.
+
+This is a bounded root-config/environment observer. It does not reconstruct
+Codex project, profile, managed, system, or command-line configuration layers.
+Do not assume DeckIDE and a separately launched Codex share an environment.
+See Codex's [official location settings](https://learn.chatgpt.com/docs/config-file/environment-variables#core-locations)
+and [configuration layers](https://learn.chatgpt.com/docs/config-file/config-basic).
+
+### Read and path boundaries
+
+Both directories must exist at their canonical absolute paths with matching UID
+and without group/other write permission. Ancestors must belong to root or that
+UID and be nonwritable by others (root-owned sticky temporary ancestors are
+allowed). Config, index and existing WAL/SHM sidecars must be regular,
+single-link files with the home owner's UID. Config reads use `O_NOFOLLOW`, a
+1 MiB bound and a TOML parser; malformed or unsafe config makes the source
+unavailable. Symlink aliases of the home, SQLite directory, config, index or
+rollout are not a supported storage offload mechanism.
+
+Every listed/read rollout must remain an existing canonical `.jsonl` under its
+source home's session directories, with matching UID, one link and the existing
+256 MiB size bound. Refused rows are removed before list publication/pagination;
+an index in the SQLite directory does not authorize transcripts there or under
+another source. One read transaction covers batched list queries. A request
+scans at most 10,000 matching index rows per source; exhausting that budget before
+filling the page makes the source unavailable. Separate page requests can still
+overlap or skip entries if native Codex changes the index between requests.
+
+SQLite is opened with `readOnly: true` and `query_only=ON`; this connection cannot
+write SQL data, repair, checkpoint or migrate the index. Normal SQLite WAL
+readers may create/update coordination sidecars, including SHM metadata. This is
+not a bytewise no-touch or immutable snapshot interface. WAL contents are read,
+not discarded with `immutable`/locking overrides. Node opens SQLite by pathname;
+ownership checks and pre/post inode checks narrow but do not eliminate a rename
+race by a trusted directory owner. They do not attest an fd-pinned SQLite inode.
+
+`/api/codex` retains owner-only authorization and generic failures. The broader
+`/api/agents` adapter retains access for the owner or verified internal actors
+with approved MCP grants; this change does not widen either route. Split
+sources have no resume command until native resume parity is separately
+qualified; ordinary same-home resume behavior is preserved.
+
+### Verification and application boundary
+
+Run `node --import tsx --test tests/codex-storage.test.mjs` with `TMPDIR` pointing
+to disposable SSD storage. Tests create synthetic homes, indexes and transcripts;
+they do not use an actual user's Codex home or credentials. Verify a copied
+native DB/WAL set separately, keeping it with its matching sidecars. Native
+discovery on an empty index alone does not prove conversation read or resume.
+
+Build/package this source through the normal source review and CI path. This
+change needs no schema migration. Any later installation uses the existing
+[guarded updater and rollback procedure](#candidate-installation-and-rollback-operator-actions-only), with the exact
+reviewed source and artifact hashes. First qualify list/read against isolated
+copy-state. Preserve the prior package for code rollback; do not move, delete,
+symlink or rewrite home/DB/WAL/auth as part of applying or reverting this reader.
+Actual storage relocation, live activation and native resume/archive testing are
+separate operator actions.

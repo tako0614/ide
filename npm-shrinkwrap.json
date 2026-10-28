@@ -20,6 +20,7 @@
         "hono": "^4.5.10",
         "node-pty": "^1.0.0",
         "simple-git": "^3.27.0",
+        "smol-toml": "1.9.1",
         "ws": "^8.17.0",
         "zod": "^4.0.0"
       },
@@ -3018,6 +3019,15 @@
       "funding": {
         "type": "github",
         "url": "https://github.com/steveukx/git-js?sponsor=1"
+      }
+    },
+    "node_modules/smol-toml": {
+      "version": "1.9.1",
+      "resolved": "https://registry.npmjs.org/smol-toml/-/smol-toml-1.9.1.tgz",
+      "integrity": "sha512-j7WyPdf0CJoutMzMoPLF/bVXHtKZIT9Rb4eGeEbWw8X2t5oirjPgpL+OpaENZrILYaXqYwnVH+qgUwVbl+pUJQ==",
+      "license": "BSD-3-Clause",
+      "engines": {
+        "node": ">= 18"
       }
     },
     "node_modules/source-map-js": {

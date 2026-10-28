@@ -19,6 +19,8 @@
 既存の旧方式端末は自動移行しません。固定サイズ・外部 attach・更新と rollback の手順は
 [tmux lifecycle](docs/terminal-tmux.md) を参照してください。tmux は実行時の必須依存です。
 
+Codex履歴の別SQLite配置とread-only境界は [Codex history storage](docs/terminal-tmux.md#codex-history-storage) を参照してください。
+
 ## クイックスタート
 
 この tmux 候補は未公開です。候補 tarball の導入は [guarded updater](docs/terminal-tmux.md)
