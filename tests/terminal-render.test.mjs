@@ -243,6 +243,56 @@ test('terminal selection renders only changed tiles and preserves browser termin
   await until(() => evaluate(`document.querySelectorAll('.xterm-rows')[2].textContent.includes('split:split-route')`), 'split input reaches correct deck');
   for (const index of [0, 1]) assert.equal(await evaluate(`document.querySelectorAll('.xterm-rows')[${index}].textContent.includes('split-route')`), false);
 
+  await t.test('native grid keeps a history-bearing input frame visible after resize', async () => {
+    // Keep the existing native/browser fixture: no additional Chromium startup.
+    for (let i = 0; i < 6; i++) terminals.push(await request('/api/terminals', 'POST', {
+      deckId: deck.id, title: `native-frame-${i}`, cols: 120, rows: 32,
+      command: `while IFS= read -r line; do printf 'received:%s\\n' "$line"; done`,
+    }));
+    await call('Page.navigate', { url: `${origin}/?workspace=${workspace.id}&deck=${deck.id}` });
+    await call('Page.bringToFront');
+    await until(() => evaluate(`document.hasFocus()`), 'native foreground precondition');
+    await until(() => evaluate(`document.querySelectorAll('.xterm').length === 8 &&
+      document.querySelectorAll('.terminal-tile [role="status"]').length === 0`), 'eight native frame viewers');
+    await evaluate(`document.querySelector('.terminal-display-mode').click()`);
+    await select(0);
+    let initialGridSize;
+    await until(async () => {
+      initialGridSize = (await request(`/api/terminals?deckId=${deck.id}`, 'GET')).find(x => x.id === terminals[0].id);
+      return initialGridSize.cols < 120;
+    }, 'initial native grid size claim');
+    await evaluate(`document.querySelector('button[title="このターミナルを最大表示"]').click()`);
+    await until(() => evaluate(`document.querySelectorAll('.terminal-tile-slot-single-hidden').length === 7`), 'native full size precondition');
+    await select(0);
+    let fullSize;
+    await until(async () => {
+      fullSize = (await request(`/api/terminals?deckId=${deck.id}`, 'GET')).find(x => x.id === terminals[0].id);
+      return fullSize.cols > initialGridSize.cols && fullSize.rows > initialGridSize.rows;
+    }, 'native full size claim');
+    await request(`/api/terminals/${terminals[0].id}/input`, 'POST', {
+      data: Array.from({ length: 120 }, (_, i) => `frame-history-${String(i).padStart(3, '0')}\r`).join(''),
+    });
+    await until(() => evaluate(`document.querySelector('.xterm-rows').textContent.includes('received:frame-history-119')`), 'history parsed at full size');
+    await evaluate(`document.querySelector('button[title="グリッド表示に戻す"]').click()`);
+    await select(0);
+    await until(async () => {
+      const size = (await request(`/api/terminals?deckId=${deck.id}`, 'GET')).find(x => x.id === terminals[0].id);
+      return size.cols < fullSize.cols && size.rows < fullSize.rows;
+    }, 'native grid size claim');
+    for (const text of ['native-frame-one', 'native-frame-two']) {
+      await call('Input.insertText', { text });
+      await call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', text: '\r', windowsVirtualKeyCode: 13 });
+      await call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
+      await until(() => evaluate(`document.querySelector('.xterm-rows').textContent.includes(${JSON.stringify('received:' + text)})`), 'resized native frame displays new input');
+    }
+    const frame = await evaluate(`(() => {
+      const viewport = document.querySelector('.terminal-frame-viewport'), screen = viewport.querySelector('.xterm-screen');
+      return { scrollTop: viewport.scrollTop, top: screen.getBoundingClientRect().top - viewport.getBoundingClientRect().top };
+    })()`);
+    assert.equal(frame.scrollTop, 0, 'outer frame must not scroll the terminal off screen');
+    assert.ok(frame.top >= 0, 'native screen stays inside the frame');
+  });
+
   await t.test('live output preserves scrollback and still follows the bottom', async () => {
     const { verifyTerminalOutput } = await import('./fixtures/terminal-output.mjs');
     await verifyTerminalOutput({ call, evaluate });
