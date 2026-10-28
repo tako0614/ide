@@ -645,7 +645,8 @@
 }
 
 /* A terminal keeps its canonical cell grid and scales as one local frame. */
-.terminal-frame-viewport { display: block; position: relative; }
+/* Keep browser caret reveal from scrolling this outer crop; xterm owns scrolling. */
+.terminal-frame-viewport { display: block; position: relative; overflow: clip; }
 .terminal-frame-wrapper { position: relative; flex: none; overflow: visible; }
 .terminal-frame-content {
   box-sizing: border-box;
