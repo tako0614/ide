@@ -348,6 +348,8 @@ export const TerminalTile = memo(function TerminalTile({
     let focusAfterFirstReplay = true;
 
     const finishReplay = () => {
+      // Live writes must not repeat replay's forced fit or reset scrollback.
+      if (!replayingBuffer) return;
       replayingBuffer = false;
       if (focusAfterFirstReplay && autoFocusRef.current) focusTerminalWithoutScroll();
       focusAfterFirstReplay = false;
