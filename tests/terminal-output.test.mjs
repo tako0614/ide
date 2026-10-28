@@ -81,15 +81,19 @@ test('live terminal output preserves scrollback and still follows the bottom', {
   browser = spawn(chrome, ['--headless=new', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '--no-first-run',
     '--no-default-browser-check', '--disable-background-networking', '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0',
     '--user-data-dir=' + path.join(dir, 'chrome'), '--window-size=1440,1000', 'about:blank'], {
-    env: { PATH: '/usr/bin:/bin', HOME: path.join(dir, 'home'), TMPDIR: os.tmpdir() }, stdio: 'ignore' });
+    env: { PATH: '/usr/bin:/bin', HOME: path.join(dir, 'home'), TMPDIR: os.tmpdir() }, stdio: ['ignore', 'ignore', 'pipe'] });
+  let browserErrors = '';
+  browser.stderr.on('data', chunk => { browserErrors = (browserErrors + chunk.toString()).slice(-12_000); });
   let endpoint;
-  await until(async () => {
+  try { await until(async () => {
+    if (browser.exitCode !== null || browser.signalCode !== null) throw Error('Chromium exited before readiness');
     try {
       const port = Number((await readFile(path.join(dir, 'chrome/DevToolsActivePort'), 'utf8')).split('\n')[0]);
       endpoint = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()).find(tab => tab.type === 'page')?.webSocketDebuggerUrl;
       return Boolean(endpoint);
     } catch { return false; }
-  }, 'private Chromium');
+  }, 'private Chromium'); }
+  catch (error) { throw Error(`${error.message}; exit=${browser.exitCode}; signal=${browser.signalCode}; stderr=${browserErrors}`); }
   cdp = new WebSocket(endpoint); await once(cdp, 'open');
   cdp.on('message', raw => {
     const message = JSON.parse(raw), handler = pending.get(message.id);
